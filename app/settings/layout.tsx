@@ -9,7 +9,7 @@ export default async function SettingsLayout({ children }: { children: React.Rea
 
   const { data: attendant } = await supabase
     .from('chat_attendants')
-    .select('id, name, email, role, avatar_url')
+    .select('id, name, email, role, avatar_url, is_active, created_at')
     .eq('id', user.id)
     .single()
 
