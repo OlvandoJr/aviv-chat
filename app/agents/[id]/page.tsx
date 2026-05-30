@@ -8,8 +8,14 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const { id } = await params
   const supabase = await createClient()
 
+  // Inboxes sempre buscadas (necessário para o seletor de caixas)
+  const { data: inboxes } = await supabase
+    .from('chat_inboxes')
+    .select('*')
+    .order('created_at', { ascending: true })
+
   if (id === 'new') {
-    return <AgentEditor agent={null} rules={[]} />
+    return <AgentEditor agent={null} rules={[]} inboxes={inboxes || []} />
   }
 
   const [{ data: agent }, { data: rules }] = await Promise.all([
@@ -19,5 +25,5 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
 
   if (!agent) notFound()
 
-  return <AgentEditor agent={agent} rules={rules || []} />
+  return <AgentEditor agent={agent} rules={rules || []} inboxes={inboxes || []} />
 }

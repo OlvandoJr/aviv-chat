@@ -1,5 +1,17 @@
 export type ConversationStatus = 'open' | 'resolved' | 'archived'
 
+export interface Inbox {
+  id:              string
+  name:            string
+  description:     string | null
+  phone_number:    string
+  phone_number_id: string
+  access_token:    string
+  verify_token:    string
+  is_active:       boolean
+  created_at:      string
+}
+
 export interface Contact {
   id:                  string
   wa_id:               string

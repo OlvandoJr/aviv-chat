@@ -8,11 +8,12 @@ import {
   AlertTriangle, GitBranch, Star, Trash2, Plus, X
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Agent, AgentModel, AgentRule, AgentRuleType } from '@/lib/types'
+import type { Agent, AgentModel, AgentRule, AgentRuleType, Inbox } from '@/lib/types'
 
 interface Props {
-  agent: Agent | null
-  rules: AgentRule[]
+  agent:   Agent | null
+  rules:   AgentRule[]
+  inboxes: Inbox[]
 }
 
 const MODELS: { value: AgentModel; label: string; desc: string }[] = [
@@ -21,7 +22,7 @@ const MODELS: { value: AgentModel; label: string; desc: string }[] = [
   { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', desc: 'Mais antigo — alta velocidade' },
 ]
 
-export default function AgentEditor({ agent, rules: initialRules }: Props) {
+export default function AgentEditor({ agent, rules: initialRules, inboxes }: Props) {
   const router  = useRouter()
   const supabase = createClient()
   const isNew   = !agent
@@ -50,8 +51,14 @@ export default function AgentEditor({ agent, rules: initialRules }: Props) {
   const [escalationMessage,   setEscalationMessage]  = useState(agent?.escalation_message || '')
   const [newKeyword,          setNewKeyword]         = useState('')
 
+  // Regras de inbox separadas (checkboxes) das regras genéricas (tag/keyword)
+  const [selectedInboxIds,    setSelectedInboxIds]   = useState<string[]>(
+    initialRules.filter(r => r.rule_type === 'inbox').map(r => r.rule_value)
+  )
   const [rules,               setRules]              = useState<Omit<AgentRule, 'id' | 'created_at'>[]>(
-    initialRules.map(r => ({ agent_id: r.agent_id, rule_type: r.rule_type, rule_value: r.rule_value, priority: r.priority }))
+    initialRules
+      .filter(r => r.rule_type !== 'inbox')
+      .map(r => ({ agent_id: r.agent_id, rule_type: r.rule_type, rule_value: r.rule_value, priority: r.priority }))
   )
   const [newRuleType,         setNewRuleType]        = useState<AgentRuleType>('tag')
   const [newRuleValue,        setNewRuleValue]       = useState('')
@@ -142,10 +149,23 @@ export default function AgentEditor({ agent, rules: initialRules }: Props) {
     // Salvar regras (apagar e reinserir)
     await supabase.from('chat_agent_rules').delete().eq('agent_id', agentId!)
 
-    if (rules.length > 0) {
-      await supabase.from('chat_agent_rules').insert(
-        rules.map((r, i) => ({ agent_id: agentId, rule_type: r.rule_type, rule_value: r.rule_value, priority: i }))
-      )
+    const inboxRules = selectedInboxIds.map((inboxId, i) => ({
+      agent_id:   agentId,
+      rule_type:  'inbox' as AgentRuleType,
+      rule_value: inboxId,
+      priority:   i,
+    }))
+
+    const otherRules = rules.map((r, i) => ({
+      agent_id:   agentId,
+      rule_type:  r.rule_type,
+      rule_value: r.rule_value,
+      priority:   selectedInboxIds.length + i,
+    }))
+
+    const allRules = [...inboxRules, ...otherRules]
+    if (allRules.length > 0) {
+      await supabase.from('chat_agent_rules').insert(allRules)
     }
 
     setLoading(false)
@@ -458,14 +478,69 @@ export default function AgentEditor({ agent, rules: initialRules }: Props) {
           ) : (
             <div className="flex items-center gap-2 p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600">
               <Bot className="w-4 h-4 shrink-0" />
-              Este agente não é o padrão. Defina regras abaixo ou atribua manualmente nas conversas.
+              Este agente não é o padrão. Associe caixas de entrada ou defina regras abaixo.
             </div>
           )}
 
-          {/* Regras por tag */}
+          {/* Caixas de entrada */}
           <div className="mt-4">
             <label className="text-xs text-gray-500 mb-2 block font-medium">
-              Regras de roteamento automático
+              Caixas de entrada atendidas por este agente
+            </label>
+            {inboxes.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">
+                Nenhuma caixa de entrada configurada.{' '}
+                <a href="/inboxes/new" className="text-emerald-600 underline">Criar caixa →</a>
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {inboxes.map((inbox) => {
+                  const checked = selectedInboxIds.includes(inbox.id)
+                  return (
+                    <label
+                      key={inbox.id}
+                      className={cn(
+                        'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                        checked
+                          ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-gray-200 hover:border-gray-300 bg-white'
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedInboxIds([...selectedInboxIds, inbox.id])
+                          } else {
+                            setSelectedInboxIds(selectedInboxIds.filter(id => id !== inbox.id))
+                          }
+                        }}
+                        className="accent-emerald-600 w-4 h-4 shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-800">{inbox.name}</span>
+                          {!inbox.is_active && (
+                            <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded-full">Inativa</span>
+                          )}
+                        </div>
+                        {inbox.description && (
+                          <p className="text-xs text-gray-400 truncate">{inbox.description}</p>
+                        )}
+                        <p className="text-[11px] text-gray-400 font-mono">+{inbox.phone_number}</p>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Regras adicionais (tag / keyword) */}
+          <div className="mt-5 pt-4 border-t border-gray-100">
+            <label className="text-xs text-gray-500 mb-2 block font-medium">
+              Regras adicionais (por tag ou palavra-chave)
             </label>
 
             {rules.length > 0 && (
@@ -473,7 +548,7 @@ export default function AgentEditor({ agent, rules: initialRules }: Props) {
                 {rules.map((rule, i) => (
                   <div key={i} className="flex items-center gap-2 text-sm">
                     <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs font-medium border border-blue-200">
-                      {rule.rule_type}
+                      {rule.rule_type === 'tag' ? 'Tag' : 'Palavra-chave'}
                     </span>
                     <span className="text-gray-700">= <strong>{rule.rule_value}</strong></span>
                     <span className="text-gray-400">→ usa este agente</span>
@@ -496,13 +571,12 @@ export default function AgentEditor({ agent, rules: initialRules }: Props) {
               >
                 <option value="tag">Tag</option>
                 <option value="keyword">Palavra-chave</option>
-                <option value="inbox">Inbox</option>
               </select>
               <input
                 value={newRuleValue}
                 onChange={(e) => setNewRuleValue(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addRule())}
-                placeholder={newRuleType === 'tag' ? 'nome-da-tag' : newRuleType === 'keyword' ? 'palavra chave' : 'inbox-id'}
+                placeholder={newRuleType === 'tag' ? 'nome-da-tag' : 'palavra chave'}
                 className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
               <button

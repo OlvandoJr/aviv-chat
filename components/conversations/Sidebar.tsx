@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { MessageSquare, Settings, LogOut, Users, Bot } from 'lucide-react'
+import { MessageSquare, Settings, LogOut, Users, Bot, Inbox } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { getInitials } from '@/lib/utils'
@@ -40,6 +40,12 @@ export default function Sidebar({ attendant }: SidebarProps) {
         />
         {attendant?.role === 'admin' && (
           <>
+            <NavItem
+              href="/inboxes"
+              icon={<Inbox className="w-5 h-5" />}
+              label="Caixas de Entrada"
+              active={pathname.startsWith('/inboxes')}
+            />
             <NavItem
               href="/agents"
               icon={<Bot className="w-5 h-5" />}

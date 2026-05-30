@@ -34,7 +34,7 @@ Deno.serve(async (req) => {
     // 1. Buscar conversa
     const { data: conv, error: convErr } = await supabase
       .from('chat_conversations')
-      .select('id, handled_by, contact_id, agent_id')
+      .select('id, handled_by, contact_id, agent_id, inbox_id')
       .eq('id', conversationId)
       .single()
 
@@ -49,7 +49,22 @@ Deno.serve(async (req) => {
       })
     }
 
-    // 2. Buscar configuração do agente (por conversa ou padrão)
+    // 1b. Buscar credenciais da inbox (phone_number_id e access_token por número)
+    let phoneNumberId = WA_PHONE_NUMBER_ID
+    let accessToken   = WA_ACCESS_TOKEN
+
+    if (conv.inbox_id) {
+      const { data: inbox } = await supabase
+        .from('chat_inboxes')
+        .select('phone_number_id, access_token')
+        .eq('id', conv.inbox_id)
+        .single()
+
+      if (inbox?.phone_number_id) phoneNumberId = inbox.phone_number_id
+      if (inbox?.access_token)    accessToken   = inbox.access_token
+    }
+
+    // 2. Buscar configuração do agente (por conversa → inbox rule → padrão)
     let agent: any = null
 
     if (conv.agent_id) {
@@ -60,6 +75,28 @@ Deno.serve(async (req) => {
         .eq('is_active', true)
         .maybeSingle()
       agent = data
+    }
+
+    // Roteamento por inbox: se não há agent_id na conversa, busca regra de inbox
+    if (!agent && conv.inbox_id) {
+      const { data: rule } = await supabase
+        .from('chat_agent_rules')
+        .select('agent_id')
+        .eq('rule_type', 'inbox')
+        .eq('rule_value', conv.inbox_id)
+        .order('priority')
+        .limit(1)
+        .maybeSingle()
+
+      if (rule?.agent_id) {
+        const { data } = await supabase
+          .from('chat_agents')
+          .select('*')
+          .eq('id', rule.agent_id)
+          .eq('is_active', true)
+          .maybeSingle()
+        agent = data
+      }
     }
 
     if (!agent) {
@@ -225,12 +262,12 @@ Deno.serve(async (req) => {
     // 10. Enviar pelo WhatsApp
     let waMessageId: string | null = null
 
-    if (WA_ACCESS_TOKEN && WA_PHONE_NUMBER_ID && contactWaId) {
+    if (accessToken && phoneNumberId && contactWaId) {
       const waResp = await fetch(
-        `https://graph.facebook.com/v20.0/${WA_PHONE_NUMBER_ID}/messages`,
+        `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`,
         {
           method:  'POST',
-          headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             messaging_product: 'whatsapp',
             to:   contactWaId,
@@ -247,7 +284,7 @@ Deno.serve(async (req) => {
         console.error('WhatsApp send error:', waResp.status, await waResp.text())
       }
     } else {
-      console.error('WhatsApp secrets missing')
+      console.error('WhatsApp credentials missing', { accessToken: !!accessToken, phoneNumberId: !!phoneNumberId, contactWaId: !!contactWaId })
     }
 
     // 11. Salvar no banco
