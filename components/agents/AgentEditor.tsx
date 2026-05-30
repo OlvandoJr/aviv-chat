@@ -8,7 +8,7 @@ import {
   AlertTriangle, GitBranch, Star, Trash2, Plus, X
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Agent, AgentRule, AgentRuleType } from '@/lib/types'
+import type { Agent, AgentModel, AgentRule, AgentRuleType } from '@/lib/types'
 
 interface Props {
   agent: Agent | null
