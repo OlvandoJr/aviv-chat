@@ -79,6 +79,43 @@ export interface AiAnalysis {
   validated_at:   string
 }
 
+export type AgentModel = 'gpt-4o-mini' | 'gpt-4o' | 'gpt-3.5-turbo'
+export type AgentRuleType = 'tag' | 'keyword' | 'inbox'
+
+export interface Agent {
+  id:                   string
+  name:                 string
+  description:          string | null
+  avatar_emoji:         string
+  is_active:            boolean
+  is_default:           boolean
+  model:                AgentModel
+  temperature:          number
+  max_tokens:           number
+  memory_messages:      number
+  system_prompt:        string
+  greeting_message:     string | null
+  off_hours_message:    string | null
+  include_boletos:      boolean
+  include_contact_info: boolean
+  custom_context:       string | null
+  escalation_keywords:  string[]
+  escalation_message:   string | null
+  created_at:           string
+  updated_at:           string
+  // join
+  rules?:               AgentRule[]
+}
+
+export interface AgentRule {
+  id:         string
+  agent_id:   string
+  rule_type:  AgentRuleType
+  rule_value: string
+  priority:   number
+  created_at: string
+}
+
 export interface SiengeBoleto {
   id:                  string
   receivable_bill_id:  number

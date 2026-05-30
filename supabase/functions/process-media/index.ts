@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
         body: { conversationId: convId, messageId },
       })
     } else if (msgType === 'image' || msgType === 'document') {
-      await analyzeComprovante(messageId, convId, contactWaId, publicUrl, mimeType, mediaBuffer)
+      await analyzeComprovante(messageId, convId, contactWaId, publicUrl, mimeType)
       // Invocar bot com análise já salva no banco
       await supabase.functions.invoke('ai-responder', {
         body: { conversationId: convId, messageId },
@@ -107,7 +107,6 @@ async function analyzeComprovante(
   waId:      string,
   fileUrl:   string,
   mimeType:  string,
-  buffer:    ArrayBuffer
 ) {
   // Verificar se cliente tem boleto Sienge ativo
   const { data: boleto } = await supabase
@@ -119,13 +118,11 @@ async function analyzeComprovante(
     .limit(1)
     .single()
 
-  // Analisar imagem com GPT-4o-mini
+  // Analisar imagem com GPT-4o-mini usando URL pública (sem base64 para evitar stack overflow)
   let aiAnalysis: any = null
 
   if (mimeType?.startsWith('image/')) {
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)))
-    const dataUrl = `data:${mimeType};base64,${base64}`
-
+    console.log('Analyzing image:', fileUrl)
     const extractResp = await fetch('https://api.openai.com/v1/chat/completions', {
       method:  'POST',
       headers: {
@@ -140,9 +137,9 @@ async function analyzeComprovante(
           content: [
             {
               type: 'text',
-              text: 'Extraia do comprovante de pagamento: Beneficiário/favorecido, Valor documento, Data de vencimento, Data de pagamento, Pagador, CPF/CNPJ Pagador. Responda em JSON com as chaves: beneficiario, valor, vencimento, data_pagamento, pagador, cpf_cnpj.',
+              text: 'Extraia do comprovante de pagamento: Beneficiário/favorecido, Valor documento, Data de vencimento, Data de pagamento, Pagador, CPF/CNPJ Pagador. Responda em JSON com as chaves: beneficiario, valor, vencimento, data_pagamento, pagador, cpf_cnpj. Se não for um comprovante de pagamento, responda: {"nao_comprovante": true}',
             },
-            { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } },
+            { type: 'image_url', image_url: { url: fileUrl, detail: 'high' } },
           ],
         }],
       }),
@@ -151,12 +148,16 @@ async function analyzeComprovante(
     if (extractResp.ok) {
       const extractData = await extractResp.json()
       const rawText = extractData.choices?.[0]?.message?.content || '{}'
+      console.log('GPT analysis raw:', rawText)
       try {
         const jsonMatch = rawText.match(/\{[\s\S]*\}/)
         aiAnalysis = jsonMatch ? JSON.parse(jsonMatch[0]) : { raw: rawText }
       } catch {
         aiAnalysis = { raw: rawText }
       }
+    } else {
+      const errText = await extractResp.text()
+      console.error('GPT image analysis error:', extractResp.status, errText)
     }
   }
 
