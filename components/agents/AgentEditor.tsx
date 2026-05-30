@@ -15,10 +15,10 @@ interface Props {
   rules: AgentRule[]
 }
 
-const MODELS = [
-  { value: 'gpt-4o-mini',    label: 'GPT-4o Mini',   desc: 'Rápido e econômico — ideal para maioria dos casos' },
-  { value: 'gpt-4o',         label: 'GPT-4o',         desc: 'Mais capaz — melhor para casos complexos' },
-  { value: 'gpt-3.5-turbo',  label: 'GPT-3.5 Turbo',  desc: 'Mais antigo — alta velocidade' },
+const MODELS: { value: AgentModel; label: string; desc: string }[] = [
+  { value: 'gpt-4o-mini',   label: 'GPT-4o Mini',  desc: 'Rápido e econômico — ideal para maioria dos casos' },
+  { value: 'gpt-4o',        label: 'GPT-4o',        desc: 'Mais capaz — melhor para casos complexos' },
+  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', desc: 'Mais antigo — alta velocidade' },
 ]
 
 export default function AgentEditor({ agent, rules: initialRules }: Props) {
