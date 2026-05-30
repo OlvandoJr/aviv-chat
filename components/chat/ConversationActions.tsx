@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { CheckCircle, ArchiveIcon, RotateCcw, UserCheck, ChevronDown } from 'lucide-react'
+import { CheckCircle, ArchiveIcon, RotateCcw, UserCheck, ChevronDown, Bot, UserRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Conversation, Attendant } from '@/lib/types'
+import type { Conversation, Attendant, HandledBy } from '@/lib/types'
 
 interface Props {
   conversation: Conversation
@@ -46,10 +46,54 @@ export default function ConversationActions({ conversation, attendants, onUpdate
     router.refresh()
   }
 
-  const { status } = conversation
+  async function updateHandledBy(handledBy: HandledBy) {
+    setLoading(true)
+    const { data } = await supabase
+      .from('chat_conversations')
+      .update({ handled_by: handledBy })
+      .eq('id', conversation.id)
+      .select('*, contact:chat_contacts(*), assignee:chat_attendants(id,name,avatar_url)')
+      .single()
+
+    if (data) onUpdate(data as any)
+    setLoading(false)
+    router.refresh()
+  }
+
+  const { status, handled_by } = conversation
 
   return (
     <div className="flex items-center gap-1.5 relative">
+      {/* Bot / Humano */}
+      {handled_by === 'human' ? (
+        <button
+          onClick={() => updateHandledBy('bot')}
+          disabled={loading}
+          className="flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg bg-violet-50 text-violet-700 hover:bg-violet-100 transition-colors border border-violet-200"
+          title="Devolver para o bot"
+        >
+          <Bot className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Devolver ao Bot</span>
+        </button>
+      ) : (
+        <button
+          onClick={() => updateHandledBy('human')}
+          disabled={loading}
+          className={cn(
+            'flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg transition-colors border',
+            handled_by === 'pending_human'
+              ? 'bg-amber-50 text-amber-700 border-amber-300 animate-pulse'
+              : 'bg-gray-50 text-gray-600 hover:bg-gray-100 border-gray-200'
+          )}
+          title={handled_by === 'pending_human' ? 'Cliente aguardando atendente — clique para assumir' : 'Assumir atendimento'}
+        >
+          <UserRound className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">
+            {handled_by === 'pending_human' ? 'Assumir (urgente)' : 'Assumir'}
+          </span>
+        </button>
+      )}
+
       {/* Atribuir */}
       <div className="relative">
         <button

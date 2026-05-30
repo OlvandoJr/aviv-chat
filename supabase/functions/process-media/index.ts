@@ -52,11 +52,19 @@ Deno.serve(async (req) => {
       .update({ media_url: publicUrl })
       .eq('id', messageId)
 
-    // 5. Processar por tipo
+    // 5. Processar por tipo e invocar bot após conclusão
     if (msgType === 'audio') {
       await transcribeAudio(messageId, mediaBuffer, mimeType)
+      // Invocar bot com transcrição já salva no banco
+      await supabase.functions.invoke('ai-responder', {
+        body: { conversationId: convId, messageId },
+      })
     } else if (msgType === 'image' || msgType === 'document') {
       await analyzeComprovante(messageId, convId, contactWaId, publicUrl, mimeType, mediaBuffer)
+      // Invocar bot com análise já salva no banco
+      await supabase.functions.invoke('ai-responder', {
+        body: { conversationId: convId, messageId },
+      })
     }
 
     return new Response(JSON.stringify({ ok: true }), {

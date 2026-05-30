@@ -174,11 +174,23 @@ function ConversationItem({
             </Badge>
           )}
         </div>
-        {conv.assignee && (
-          <p className="text-[10px] text-gray-400 mt-0.5 truncate">
-            → {conv.assignee.name}
-          </p>
-        )}
+        <div className="flex items-center gap-1.5 mt-0.5">
+          {conv.assignee && (
+            <p className="text-[10px] text-gray-400 truncate">
+              → {conv.assignee.name}
+            </p>
+          )}
+          {conv.handled_by === 'pending_human' && (
+            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">
+              Aguarda atendente
+            </span>
+          )}
+          {conv.handled_by === 'human' && (
+            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 shrink-0">
+              Humano
+            </span>
+          )}
+        </div>
       </div>
     </button>
   )

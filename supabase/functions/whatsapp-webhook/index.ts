@@ -203,5 +203,14 @@ async function processMessage(msg: any, value: any, inboxId: string) {
         contactWaId: waId,
       },
     })
+    // O ai-responder será invocado pelo process-media após análise concluída
+  } else if (message && (msgType === 'text' || msgType === 'button')) {
+    // Para mensagens de texto, invocar o bot diretamente
+    await supabase.functions.invoke('ai-responder', {
+      body: {
+        conversationId: conversation.id,
+        messageId:      message.id,
+      },
+    })
   }
 }

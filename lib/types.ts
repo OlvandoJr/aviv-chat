@@ -19,12 +19,15 @@ export interface Attendant {
   created_at: string
 }
 
+export type HandledBy = 'bot' | 'human' | 'pending_human'
+
 export interface Conversation {
   id:                   string
   inbox_id:             string
   contact_id:           string
   assignee_id:          string | null
   status:               ConversationStatus
+  handled_by:           HandledBy
   last_message_at:      string | null
   last_message_preview: string | null
   unread_count:         number
