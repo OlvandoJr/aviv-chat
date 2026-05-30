@@ -199,12 +199,18 @@ Deno.serve(async (req) => {
         content = `[Áudio transcrito]: ${(msg.metadata as any).transcription}`
       } else if ((msg.type === 'image' || msg.type === 'document') && (msg.ai_analysis as any)) {
         const analysis = msg.ai_analysis as any
-        if (analysis.sienge_status) {
+        if (analysis.nao_comprovante) {
+          content = `[Cliente enviou ${msg.type === 'image' ? 'uma imagem' : 'um documento'} — não identificado como comprovante de pagamento]`
+        } else if (analysis.verdict) {
+          // Veredicto completo disponível — passar direto para o agente responder
+          content = `[Cliente enviou comprovante de pagamento]\nResultado da análise: ${analysis.verdict}`
+        } else if (analysis.sienge_status) {
+          // Fallback legado (análise sem veredicto)
           const statusText = analysis.sienge_status === 'pago' ? 'CONFIRMADO COMO PAGO' : 'PENDENTE DE CONFIRMAÇÃO'
           content =
             `[Cliente enviou comprovante de pagamento]\n` +
-            `Análise: Beneficiário: ${analysis.beneficiario || 'N/A'}, Valor: ${analysis.valor || 'N/A'}, ` +
-            `Data pagamento: ${analysis.data_pagamento || 'N/A'}\nSTATUS NO SISTEMA: ${statusText}`
+            `Beneficiário: ${analysis.beneficiario || 'N/A'}, Valor: ${analysis.valor || 'N/A'}, ` +
+            `Pagamento: ${analysis.data_pagamento || 'N/A'} — STATUS: ${statusText}`
         } else if (msg.direction === 'in') {
           content = `[Cliente enviou ${msg.type === 'image' ? 'uma imagem' : 'um documento'}]`
         }
