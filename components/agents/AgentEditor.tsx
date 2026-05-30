@@ -16,11 +16,55 @@ interface Props {
   inboxes: Inbox[]
 }
 
-const MODELS: { value: AgentModel; label: string; desc: string }[] = [
-  { value: 'gpt-4o-mini',   label: 'GPT-4o Mini',  desc: 'Rápido e econômico — ideal para maioria dos casos' },
-  { value: 'gpt-4o',        label: 'GPT-4o',        desc: 'Mais capaz — melhor para casos complexos' },
-  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', desc: 'Mais antigo — alta velocidade' },
+const MODEL_GROUPS: { group: string; models: { value: string; label: string; desc: string; badge?: string }[] }[] = [
+  {
+    group: 'GPT-4.1 — Mais recentes',
+    models: [
+      { value: 'gpt-4.1',      label: 'GPT-4.1',       desc: 'Último modelo da OpenAI — máxima capacidade e precisão',              badge: 'Novo' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini',  desc: 'Versão econômica do GPT-4.1 — ótimo custo-benefício',                 badge: 'Novo' },
+      { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano',  desc: 'Ultra-rápido e barato — ideal para alto volume de mensagens',         badge: 'Novo' },
+    ],
+  },
+  {
+    group: 'GPT-4o',
+    models: [
+      { value: 'gpt-4o',                label: 'GPT-4o',               desc: 'Multimodal — processa texto, imagens e áudio' },
+      { value: 'gpt-4o-mini',           label: 'GPT-4o Mini',          desc: 'Rápido e econômico — ótimo para atendimento' },
+      { value: 'chatgpt-4o-latest',     label: 'ChatGPT-4o Latest',    desc: 'Última versão do GPT-4o em produção no ChatGPT' },
+      { value: 'gpt-4o-2024-11-20',     label: 'GPT-4o (nov/2024)',    desc: 'Versão estável de novembro de 2024' },
+      { value: 'gpt-4o-2024-08-06',     label: 'GPT-4o (ago/2024)',    desc: 'Versão estável de agosto de 2024' },
+    ],
+  },
+  {
+    group: 'Raciocínio (o-series) — Thinking',
+    models: [
+      { value: 'o4-mini', label: 'o4-mini', desc: 'Raciocínio avançado eficiente — ótimo para perguntas complexas',  badge: 'Novo' },
+      { value: 'o3',      label: 'o3',      desc: 'Raciocínio de alto desempenho — resolve problemas difíceis',       badge: 'Novo' },
+      { value: 'o3-mini', label: 'o3-mini', desc: 'Raciocínio compacto e econômico' },
+      { value: 'o1',      label: 'o1',      desc: 'Modelo de raciocínio original da OpenAI' },
+      { value: 'o1-mini', label: 'o1-mini', desc: 'Versão compacta do o1' },
+    ],
+  },
+  {
+    group: 'GPT-4 Turbo — Legado',
+    models: [
+      { value: 'gpt-4-turbo',         label: 'GPT-4 Turbo',         desc: 'GPT-4 otimizado — 128k contexto' },
+      { value: 'gpt-4-turbo-preview', label: 'GPT-4 Turbo Preview', desc: 'Preview do GPT-4 Turbo' },
+      { value: 'gpt-4',               label: 'GPT-4',               desc: 'Modelo original GPT-4 — 8k contexto' },
+    ],
+  },
+  {
+    group: 'GPT-3.5 — Legado',
+    models: [
+      { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', desc: 'Rápido e barato — menor qualidade de resposta' },
+    ],
+  },
 ]
+
+// Mapa plano para lookup rápido
+const MODEL_MAP = Object.fromEntries(
+  MODEL_GROUPS.flatMap(g => g.models.map(m => [m.value, m]))
+)
 
 export default function AgentEditor({ agent, rules: initialRules, inboxes }: Props) {
   const router  = useRouter()
@@ -309,23 +353,40 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes }: Pro
           {/* Modelo */}
           <div>
             <label className="text-xs text-gray-500 mb-2 block">Modelo</label>
-            <div className="grid grid-cols-3 gap-2">
-              {MODELS.map((m) => (
-                <button
-                  key={m.value}
-                  onClick={() => setModel(m.value)}
-                  className={cn(
-                    'text-left p-3 rounded-lg border text-sm transition-colors',
-                    model === m.value
-                      ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
-                      : 'border-gray-200 hover:border-gray-300 text-gray-700'
-                  )}
-                >
-                  <div className="font-medium">{m.label}</div>
-                  <div className="text-[11px] text-gray-400 mt-0.5 leading-tight">{m.desc}</div>
-                </button>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+            >
+              {MODEL_GROUPS.map((g) => (
+                <optgroup key={g.group} label={g.group}>
+                  {g.models.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}{m.badge ? ` ★ ${m.badge}` : ''}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
-            </div>
+            </select>
+
+            {/* Descrição do modelo selecionado */}
+            {MODEL_MAP[model] ? (
+              <div className="mt-2 flex items-start gap-2 p-2.5 bg-emerald-50 border border-emerald-100 rounded-lg">
+                <span className="text-emerald-600 text-xs font-semibold shrink-0 mt-0.5">
+                  {MODEL_MAP[model].badge ? `✦ ${MODEL_MAP[model].badge}` : '●'}
+                </span>
+                <p className="text-xs text-emerald-800">{MODEL_MAP[model].desc}</p>
+              </div>
+            ) : (
+              <div className="mt-2 p-2.5 bg-gray-50 border border-gray-200 rounded-lg">
+                <p className="text-xs text-gray-500">Modelo personalizado: <code className="font-mono">{model}</code></p>
+              </div>
+            )}
+
+            <p className="text-[11px] text-gray-400 mt-1.5">
+              Modelos <em>o-series</em> (o1, o3, o4) são especializados em raciocínio — mais lentos e caros.
+              Para atendimento, prefira GPT-4.1 Mini ou GPT-4o Mini.
+            </p>
           </div>
 
           {/* Sliders */}

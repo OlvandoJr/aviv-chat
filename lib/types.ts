@@ -91,7 +91,7 @@ export interface AiAnalysis {
   validated_at:   string
 }
 
-export type AgentModel = 'gpt-4o-mini' | 'gpt-4o' | 'gpt-3.5-turbo'
+export type AgentModel = string   // Qualquer modelo de chat da OpenAI
 export type AgentRuleType = 'tag' | 'keyword' | 'inbox'
 
 export interface Agent {

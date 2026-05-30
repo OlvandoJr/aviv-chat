@@ -51,9 +51,20 @@ export default function AgentList({ agents }: { agents: Agent[] }) {
 
 function AgentCard({ agent, onClick }: { agent: Agent; onClick: () => void }) {
   const modelLabel: Record<string, string> = {
-    'gpt-4o-mini': 'GPT-4o Mini',
-    'gpt-4o':      'GPT-4o',
-    'gpt-3.5-turbo': 'GPT-3.5',
+    'gpt-4.1':            'GPT-4.1',
+    'gpt-4.1-mini':       'GPT-4.1 Mini',
+    'gpt-4.1-nano':       'GPT-4.1 Nano',
+    'gpt-4o':             'GPT-4o',
+    'gpt-4o-mini':        'GPT-4o Mini',
+    'chatgpt-4o-latest':  'GPT-4o Latest',
+    'o4-mini':            'o4-mini',
+    'o3':                 'o3',
+    'o3-mini':            'o3-mini',
+    'o1':                 'o1',
+    'o1-mini':            'o1-mini',
+    'gpt-4-turbo':        'GPT-4 Turbo',
+    'gpt-4':              'GPT-4',
+    'gpt-3.5-turbo':      'GPT-3.5',
   }
 
   return (
