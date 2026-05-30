@@ -8,14 +8,19 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const { id } = await params
   const supabase = await createClient()
 
-  // Inboxes sempre buscadas (necessário para o seletor de caixas)
-  const { data: inboxes } = await supabase
-    .from('chat_inboxes')
-    .select('*')
-    .order('created_at', { ascending: true })
+  // Buscar inboxes e modelos disponíveis em paralelo
+  const [
+    { data: inboxes },
+    modelsResult,
+  ] = await Promise.all([
+    supabase.from('chat_inboxes').select('*').order('created_at', { ascending: true }),
+    supabase.functions.invoke('list-models').catch(() => ({ data: null, error: null })),
+  ])
+
+  const availableModels: string[] = (modelsResult as any)?.data?.models || []
 
   if (id === 'new') {
-    return <AgentEditor agent={null} rules={[]} inboxes={inboxes || []} />
+    return <AgentEditor agent={null} rules={[]} inboxes={inboxes || []} availableModels={availableModels} />
   }
 
   const [{ data: agent }, { data: rules }] = await Promise.all([
@@ -25,5 +30,5 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
 
   if (!agent) notFound()
 
-  return <AgentEditor agent={agent} rules={rules || []} inboxes={inboxes || []} />
+  return <AgentEditor agent={agent} rules={rules || []} inboxes={inboxes || []} availableModels={availableModels} />
 }
