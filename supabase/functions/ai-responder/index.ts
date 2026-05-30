@@ -65,14 +65,15 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // 1. Buscar conversa e verificar handled_by
-    const { data: conv } = await supabase
+    // 1. Buscar conversa e verificar handled_by (query separada para evitar join problemático)
+    const { data: conv, error: convErr } = await supabase
       .from('chat_conversations')
-      .select('id, handled_by, contact:chat_contacts(id, wa_id, name)')
+      .select('id, handled_by, contact_id')
       .eq('id', conversationId)
       .single()
 
-    if (!conv) {
+    if (convErr || !conv) {
+      console.error('conv query error:', convErr)
       return new Response('Conversation not found', { status: 404 })
     }
 
@@ -84,8 +85,14 @@ Deno.serve(async (req) => {
       })
     }
 
-    const contact     = conv.contact as any
-    const contactWaId = contact?.wa_id as string
+    // Buscar contato separadamente
+    const { data: contact } = await supabase
+      .from('chat_contacts')
+      .select('id, wa_id, name')
+      .eq('id', conv.contact_id)
+      .single()
+
+    const contactWaId = (contact?.wa_id as string) || ''
 
     // 2. Buscar histórico de mensagens (últimas 25)
     const { data: rawMessages } = await supabase
@@ -106,7 +113,7 @@ Deno.serve(async (req) => {
       .limit(10)
 
     // 4. Construir contexto do cliente
-    const customerName = contact?.name || 'Cliente'
+    const customerName = (contact?.name as string) || 'Cliente'
     let customerContext = `Nome: ${customerName}\nTelefone: +${contactWaId}\n`
 
     if (boletos && boletos.length > 0) {
@@ -174,6 +181,12 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Garantir que há pelo menos uma mensagem de usuário (OpenAI exige)
+    const hasUserMessage = openAiMessages.some((m) => m.role === 'user')
+    if (!hasUserMessage) {
+      openAiMessages.push({ role: 'user', content: 'Olá' })
+    }
+
     // 6. Chamar OpenAI
     const openAiResp = await fetch('https://api.openai.com/v1/chat/completions', {
       method:  'POST',
@@ -191,11 +204,12 @@ Deno.serve(async (req) => {
 
     if (!openAiResp.ok) {
       const errText = await openAiResp.text()
-      console.error('OpenAI error:', errText)
-      return new Response(JSON.stringify({ error: 'OpenAI error', detail: errText }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      })
+      console.error('OpenAI error:', openAiResp.status, errText)
+      // Não retornar 500 para não quebrar o fluxo — apenas logar
+      return new Response(
+        JSON.stringify({ ok: false, error: 'OpenAI error', status: openAiResp.status }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
     }
 
     const openAiData = await openAiResp.json()
