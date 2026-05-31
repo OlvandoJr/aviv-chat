@@ -8,6 +8,10 @@ const supabase = createClient(
 const OPENAI_API_KEY  = Deno.env.get('OPENAI_API_KEY')!
 const WA_ACCESS_TOKEN = Deno.env.get('WHATSAPP_ACCESS_TOKEN')!
 
+const SIENGE_BASE = 'https://api.sienge.com.br/avivconstrutora/public/api/v1'
+const siengeAuth  = () =>
+  `Basic ${btoa(`${Deno.env.get('SIENGE_USER')}:${Deno.env.get('SIENGE_PASSWORD')}`)}`
+
 // ── Empreendimentos cadastrados (referência para validação) ───────────────────
 const EMPREENDIMENTOS = `
 - LOTEAMENTO POR DO SOL SPE LTDA – CNPJ 57.214.290/0001-93
@@ -75,7 +79,7 @@ Deno.serve(async (req) => {
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'document' && mimeType === 'application/pdf') {
-      // ── PDF: enviar para OpenAI → validar → acionar bot ──────────────────
+      // ── PDF: extrair → buscar boleto → validar → acionar bot ─────────────
       await analyzePdf(messageId, convId, contactWaId, mediaBuffer)
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
@@ -95,27 +99,151 @@ Deno.serve(async (req) => {
   }
 })
 
-// ── Buscar boleto Sienge em aberto do cliente ─────────────────────────────────
-async function getSiengeBoleto(waId: string) {
-  const { data } = await supabase
-    .from('sienge_boletos')
-    .select('id, receivable_bill_id, installment_id, customer_name, due_date, amount, parcela_descricao')
-    .eq('customer_phone', waId)
-    .not('status', 'in', '("pago","cancelado")')
-    .order('due_date', { ascending: true })
-    .limit(1)
-    .single()
-  return data
+// ─────────────────────────────────────────────────────────────────────────────
+// LOOKUP SIENGE — 3 estratégias em cascata:
+//   1. Telefone na base local
+//   2. CPF na base local
+//   3. CPF → API Sienge (GET /customers → GET /receivable-bills)
+// ─────────────────────────────────────────────────────────────────────────────
+const BOLETO_SELECT =
+  'id, receivable_bill_id, installment_id, customer_name, customer_cpf, due_date, amount, parcela_descricao'
+
+async function getSiengeBoleto(waId: string, cpfCnpj?: string): Promise<any | null> {
+  const baseQuery = () =>
+    supabase
+      .from('sienge_boletos')
+      .select(BOLETO_SELECT)
+      .not('status', 'in', '("pago","cancelado")')
+      .order('due_date', { ascending: true })
+      .limit(1)
+
+  // 1. Por telefone
+  const { data: byPhone } = await baseQuery().eq('customer_phone', waId).maybeSingle()
+  if (byPhone) {
+    console.log('Boleto found by phone:', byPhone.parcela_descricao)
+    return byPhone
+  }
+
+  if (!cpfCnpj) return null
+
+  const cpfDigits = cpfCnpj.replace(/\D/g, '')
+  if (cpfDigits.length < 11) return null
+
+  // 2. Por CPF na base local
+  const { data: byCpf } = await baseQuery().eq('customer_cpf', cpfDigits).maybeSingle()
+  if (byCpf) {
+    console.log('Boleto found by CPF (local):', byCpf.parcela_descricao)
+    // Atualizar telefone na base para próximas consultas por telefone
+    if (byCpf.id) {
+      await supabase.from('sienge_boletos')
+        .update({ customer_phone: waId })
+        .eq('id', byCpf.id)
+        .catch(() => {})
+    }
+    return byCpf
+  }
+
+  // 3. Por CPF via API Sienge
+  console.log('Boleto not in local DB, trying Sienge API by CPF:', cpfDigits)
+  return await fetchBoletoFromSiengeAPI(cpfDigits, waId)
+}
+
+// ── Buscar cliente na API Sienge por CPF e retornar boleto em aberto ──────────
+async function fetchBoletoFromSiengeAPI(cpfDigits: string, waId: string): Promise<any | null> {
+  try {
+    const auth = siengeAuth()
+
+    // GET /v1/customers?cpf=XXXXXXXXXXX
+    const custResp = await fetch(
+      `${SIENGE_BASE}/customers?cpf=${cpfDigits}&onlyActive=false&limit=5`,
+      { headers: { Authorization: auth } }
+    )
+    if (!custResp.ok) {
+      console.warn('Sienge customers API error:', custResp.status)
+      return null
+    }
+    const custData = await custResp.json()
+    const customer = custData.results?.[0]
+    if (!customer) {
+      console.log('No Sienge customer found for CPF:', cpfDigits)
+      return null
+    }
+    console.log('Found Sienge customer:', customer.id, customer.name)
+
+    // GET /v1/accounts-receivable/receivable-bills?customerId=N&paidOff=false
+    const billsResp = await fetch(
+      `${SIENGE_BASE}/accounts-receivable/receivable-bills?customerId=${customer.id}&paidOff=false&limit=20`,
+      { headers: { Authorization: auth } }
+    )
+    if (!billsResp.ok) {
+      console.warn('Sienge receivable-bills API error:', billsResp.status)
+      return null
+    }
+    const billsData  = await billsResp.json()
+    const bills: any[] = billsData.results || []
+    if (bills.length === 0) {
+      console.log('No open bills found for customer:', customer.id)
+      return null
+    }
+
+    // Percorrer títulos e encontrar a primeira parcela em aberto
+    for (const bill of bills) {
+      const instResp = await fetch(
+        `${SIENGE_BASE}/accounts-receivable/receivable-bills/${bill.receivableBillId}/installments`,
+        { headers: { Authorization: auth } }
+      )
+      if (!instResp.ok) continue
+      const instData = await instResp.json()
+      const openInst = (instData.results || []).find((i: any) => Number(i.balanceDue || 0) > 0)
+      if (!openInst) continue
+
+      // Salvar/atualizar na base local (upsert pelo constraint unique receivable_bill_id+installment_id)
+      const boletoPayload = {
+        receivable_bill_id: bill.receivableBillId,
+        installment_id:     openInst.installmentId,
+        customer_id:        customer.id,
+        customer_name:      customer.name,
+        customer_phone:     waId,
+        customer_cpf:       cpfDigits,
+        due_date:           openInst.dueDate,
+        amount:             openInst.balanceDue,
+        parcela_descricao:  `Parcela ${openInst.installmentId}`,
+        status:             'em_aberto',
+        updated_at:         new Date().toISOString(),
+      }
+
+      const { data: upserted } = await supabase
+        .from('sienge_boletos')
+        .upsert(boletoPayload, { onConflict: 'receivable_bill_id,installment_id' })
+        .select(BOLETO_SELECT)
+        .maybeSingle()
+
+      if (upserted) {
+        console.log('Boleto upserted from Sienge API:', upserted.parcela_descricao)
+        return upserted
+      }
+
+      // Fallback: retornar objeto in-memory se o upsert falhar
+      return { ...boletoPayload, id: null }
+    }
+
+    console.log('No open installments found for customer:', customer.id)
+    return null
+  } catch (err) {
+    console.error('fetchBoletoFromSiengeAPI error:', err)
+    return null
+  }
 }
 
 // ── Formatar contexto Sienge para injeção no prompt ───────────────────────────
 function buildSiengeContext(boleto: any): string {
-  if (!boleto) return 'DADOS NA BASE: Nenhum boleto encontrado para este número de telefone.'
+  if (!boleto) return 'DADOS NA BASE: Nenhum boleto encontrado para este cliente.'
   const dueDate = new Date(boleto.due_date).toLocaleDateString('pt-BR')
   const amount  = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(boleto.amount)
   return [
     'DADOS DO BOLETO NA BASE (Sienge):',
     `- Pagador: ${boleto.customer_name || 'N/A'}`,
+    `- CPF/CNPJ cadastrado: ${boleto.customer_cpf || 'N/A'}`,
     `- Parcela: ${boleto.parcela_descricao || 'N/A'}`,
     `- Valor esperado: ${amount}`,
     `- Vencimento: ${dueDate}`,
@@ -126,8 +254,8 @@ function buildSiengeContext(boleto: any): string {
 async function checkSiengePayment(boleto: any): Promise<'pago' | 'pendente'> {
   try {
     const resp = await fetch(
-      `https://api.sienge.com.br/avivconstrutora/public/api/v1/accounts-receivable/receivable-bills/${boleto.receivable_bill_id}/installments`,
-      { headers: { Authorization: `Basic ${btoa(`${Deno.env.get('SIENGE_USER')}:${Deno.env.get('SIENGE_PASSWORD')}`)}` } }
+      `${SIENGE_BASE}/accounts-receivable/receivable-bills/${boleto.receivable_bill_id}/installments`,
+      { headers: { Authorization: siengeAuth() } }
     )
     if (!resp.ok) return 'pendente'
     const data = await resp.json()
@@ -141,26 +269,36 @@ async function checkSiengePayment(boleto: any): Promise<'pago' | 'pendente'> {
 }
 
 // ── Atualizar boleto e registrar comprovante ──────────────────────────────────
-async function updateBoletoDB(boleto: any, siengeStatus: 'pago' | 'pendente', messageId: string, waId: string, tipo: 'image' | 'document') {
-  await supabase.from('sienge_comprovantes').insert({
-    boleto_id:           boleto.id,
-    customer_phone:      waId,
-    whatsapp_message_id: messageId,
-    tipo,
-    media_id:            messageId,
-    status:              siengeStatus === 'pago' ? 'confirmado' : 'pendente',
-  }).catch(() => {})
+async function updateBoletoDB(
+  boleto:       any,
+  siengeStatus: 'pago' | 'pendente',
+  messageId:    string,
+  waId:         string,
+  tipo:         'image' | 'document',
+) {
+  // Só insere na tabela de comprovantes e atualiza o boleto se tiver ID local
+  if (boleto.id) {
+    await supabase.from('sienge_comprovantes').insert({
+      boleto_id:           boleto.id,
+      customer_phone:      waId,
+      whatsapp_message_id: messageId,
+      tipo,
+      media_id:            messageId,
+      status:              siengeStatus === 'pago' ? 'confirmado' : 'pendente',
+    }).catch(() => {})
 
-  await supabase.from('sienge_boletos').update({
-    status:     siengeStatus === 'pago' ? 'pago' : 'comprovante_recebido',
-    updated_at: new Date().toISOString(),
-    ...(siengeStatus === 'pago' ? { paid_at: new Date().toISOString() } : {}),
-  }).eq('id', boleto.id)
+    await supabase.from('sienge_boletos').update({
+      status:     siengeStatus === 'pago' ? 'pago' : 'comprovante_recebido',
+      updated_at: new Date().toISOString(),
+      ...(siengeStatus === 'pago' ? { paid_at: new Date().toISOString() } : {}),
+    }).eq('id', boleto.id)
+  } else {
+    console.warn('updateBoletoDB: boleto has no local ID, skipping DB update')
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IMAGEM: Passo 1 (extração) + Passo 2 (validação com veredicto)
-// Espelha os nós "Analyze image1" e "Message a model 1" do n8n
+// IMAGEM: Passo 1 (extração JSON) + Passo 2 (validação com veredicto)
 // ─────────────────────────────────────────────────────────────────────────────
 async function analyzeImage(
   messageId: string,
@@ -168,7 +306,7 @@ async function analyzeImage(
   waId:      string,
   imageUrl:  string,
 ) {
-  // ── Passo 1: extrair campos brutos da imagem (= "Analyze image1") ─────────
+  // ── Passo 1: extrair campos brutos da imagem ──────────────────────────────
   console.log('Image step 1: extracting fields from', imageUrl)
   const extractResp = await fetch('https://api.openai.com/v1/chat/completions', {
     method:  'POST',
@@ -203,7 +341,7 @@ async function analyzeImage(
     console.error('Image extraction failed:', extractResp.status, await extractResp.text())
   }
 
-  // Não é comprovante: salvar e sair sem análise de boleto
+  // Não é comprovante — salvar e sair
   if (extractedData.nao_comprovante) {
     await supabase.from('chat_messages').update({
       ai_analysis: { nao_comprovante: true, validated_at: new Date().toISOString() },
@@ -211,16 +349,16 @@ async function analyzeImage(
     return
   }
 
-  // ── Buscar boleto Sienge + verificar pagamento ────────────────────────────
-  const boleto = await getSiengeBoleto(waId)
+  // ── Buscar boleto com CPF extraído como fallback ───────────────────────────
+  const boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
   let siengeStatus: 'pago' | 'pendente' | null = null
   if (boleto) {
     siengeStatus = await checkSiengePayment(boleto)
     await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'image')
   }
 
-  // ── Passo 2: validação completa com veredicto (= "Message a model 1") ─────
-  const siengeCtx      = buildSiengeContext(boleto)
+  // ── Passo 2: validação completa com veredicto ─────────────────────────────
+  const siengeCtx        = buildSiengeContext(boleto)
   const extractedSummary = `Dados extraídos da imagem:\n${Object.entries(extractedData).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
 
   const validationPrompt = `# Papel
@@ -274,7 +412,6 @@ Comprovante com [100% válido / 80% válido / 50% válido / negado]. [Motivo pri
     console.error('Image validation failed:', verdictResp.status, await verdictResp.text())
   }
 
-  // ── Salvar análise completa ───────────────────────────────────────────────
   await supabase.from('chat_messages').update({
     ai_analysis: {
       ...extractedData,
@@ -290,8 +427,7 @@ Comprovante com [100% válido / 80% válido / 50% válido / negado]. [Motivo pri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PDF: upload para OpenAI Files API → análise completa em um passo
-// Espelha os nós "Download PDF → Extrator → Message a model" do n8n
+// PDF: Passo 1 (extração JSON via Files API) → boleto lookup → Passo 2 (veredicto)
 // ─────────────────────────────────────────────────────────────────────────────
 async function analyzePdf(
   messageId: string,
@@ -299,16 +435,8 @@ async function analyzePdf(
   waId:      string,
   buffer:    ArrayBuffer,
 ) {
-  // ── Buscar boleto Sienge + verificar pagamento ────────────────────────────
-  const boleto = await getSiengeBoleto(waId)
-  let siengeStatus: 'pago' | 'pendente' | null = null
-  if (boleto) {
-    siengeStatus = await checkSiengePayment(boleto)
-    await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'document')
-  }
-
   // ── Upload do PDF para a OpenAI Files API ─────────────────────────────────
-  console.log('PDF step 1: uploading to OpenAI Files API')
+  console.log('PDF: uploading to OpenAI Files API')
   const pdfForm = new FormData()
   pdfForm.append('file', new Blob([buffer], { type: 'application/pdf' }), 'comprovante.pdf')
   pdfForm.append('purpose', 'user_data')
@@ -323,12 +451,7 @@ async function analyzePdf(
     const errText = await uploadResp.text()
     console.error('PDF upload failed:', uploadResp.status, errText)
     await supabase.from('chat_messages').update({
-      ai_analysis: {
-        error:         'PDF upload failed',
-        sienge_boleto: boleto ? { id: boleto.id, parcela: boleto.parcela_descricao, valor: boleto.amount, vencimento: boleto.due_date } : null,
-        sienge_status: siengeStatus,
-        validated_at:  new Date().toISOString(),
-      },
+      ai_analysis: { error: 'PDF upload failed', validated_at: new Date().toISOString() },
     }).eq('id', messageId)
     return
   }
@@ -336,10 +459,64 @@ async function analyzePdf(
   const { id: fileId } = await uploadResp.json()
   console.log('PDF uploaded, fileId:', fileId)
 
-  // ── Análise completa com GPT-4o (extração + validação em um passo) ────────
-  const siengeCtx = buildSiengeContext(boleto)
+  let verdict      = ''
+  let extractedData: any = {}
 
-  const analysisPrompt = `OVERRIDE: SAÍDA APENAS EM TEXTO SIMPLES (NUNCA JSON).
+  try {
+    // ── Passo 1: extrair campos estruturados (espelha image step 1) ────────
+    console.log('PDF step 1: extracting structured fields')
+    const extractResp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model:      'gpt-4o-mini',
+        max_tokens: 500,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'Extraia do documento as informações:\nBeneficiário/favorecido:\nValor documento:\nVencimento:\nPagador:\nCPF/CNPJ Pagador:\n\nResponda em JSON com as chaves: beneficiario, valor, vencimento, data_pagamento, pagador, cpf_cnpj. Se não for um comprovante de pagamento, responda: {"nao_comprovante": true}',
+            },
+            { type: 'file', file: { file_id: fileId } },
+          ],
+        }],
+      }),
+    })
+
+    if (extractResp.ok) {
+      const raw = (await extractResp.json()).choices?.[0]?.message?.content || '{}'
+      console.log('PDF extraction raw:', raw)
+      try {
+        const match = raw.match(/\{[\s\S]*\}/)
+        extractedData = match ? JSON.parse(match[0]) : { raw }
+      } catch {
+        extractedData = { raw }
+      }
+    } else {
+      console.error('PDF extraction failed:', extractResp.status, await extractResp.text())
+    }
+
+    // Não é comprovante — salvar e sair
+    if (extractedData.nao_comprovante) {
+      await supabase.from('chat_messages').update({
+        ai_analysis: { nao_comprovante: true, validated_at: new Date().toISOString() },
+      }).eq('id', messageId)
+      return
+    }
+
+    // ── Buscar boleto com CPF extraído como fallback ─────────────────────
+    const boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+    let siengeStatus: 'pago' | 'pendente' | null = null
+    if (boleto) {
+      siengeStatus = await checkSiengePayment(boleto)
+      await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'document')
+    }
+
+    // ── Passo 2: validação completa com veredicto (GPT-4o lê o PDF) ─────
+    const siengeCtx = buildSiengeContext(boleto)
+
+    const analysisPrompt = `OVERRIDE: SAÍDA APENAS EM TEXTO SIMPLES (NUNCA JSON).
 
 Você recebe um PDF de comprovante de pagamento.
 
@@ -375,8 +552,6 @@ Formato de saída obrigatório (texto corrido, 3 linhas):
 
 Responda SOMENTE nesse formato. Nunca use JSON, lista ou tópicos.`
 
-  let verdict = ''
-  try {
     console.log('PDF step 2: analyzing with GPT-4o')
     const analysisResp = await fetch('https://api.openai.com/v1/chat/completions', {
       method:  'POST',
@@ -400,6 +575,21 @@ Responda SOMENTE nesse formato. Nunca use JSON, lista ou tópicos.`
     } else {
       console.error('PDF analysis failed:', analysisResp.status, await analysisResp.text())
     }
+
+    // ── Salvar análise ────────────────────────────────────────────────────
+    await supabase.from('chat_messages').update({
+      ai_analysis: {
+        ...extractedData,
+        verdict,
+        sienge_boleto: boleto ? {
+          id: boleto.id, parcela: boleto.parcela_descricao,
+          valor: boleto.amount, vencimento: boleto.due_date,
+        } : null,
+        sienge_status: siengeStatus,
+        validated_at:  new Date().toISOString(),
+      },
+    }).eq('id', messageId)
+
   } finally {
     // Limpar arquivo do OpenAI (não acumula custo de armazenamento)
     await fetch(`https://api.openai.com/v1/files/${fileId}`, {
@@ -407,19 +597,6 @@ Responda SOMENTE nesse formato. Nunca use JSON, lista ou tópicos.`
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     }).catch((e) => console.warn('File delete failed:', e))
   }
-
-  // ── Salvar análise ────────────────────────────────────────────────────────
-  await supabase.from('chat_messages').update({
-    ai_analysis: {
-      verdict,
-      sienge_boleto: boleto ? {
-        id: boleto.id, parcela: boleto.parcela_descricao,
-        valor: boleto.amount, vencimento: boleto.due_date,
-      } : null,
-      sienge_status: siengeStatus,
-      validated_at:  new Date().toISOString(),
-    },
-  }).eq('id', messageId)
 }
 
 // ── Transcrição de áudio com Whisper ──────────────────────────────────────────
