@@ -128,6 +128,48 @@ export interface AgentRule {
   created_at: string
 }
 
+// ── API Configs ───────────────────────────────────────────────────────────────
+
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+export type AuthType   = 'none' | 'basic' | 'bearer' | 'api_key' | 'custom_header'
+export type BodyType   = 'none' | 'json' | 'form_data' | 'urlencoded'
+
+export interface KVItem {
+  id:      string
+  key:     string
+  value:   string
+  enabled: boolean
+}
+
+export interface ResponseMappingItem {
+  id:            string
+  variable_name: string
+  json_path:     string
+  description:   string
+  example?:      string
+}
+
+export interface ApiConfig {
+  id:               string
+  name:             string
+  description:      string | null
+  method:           HttpMethod
+  url:              string
+  auth_type:        AuthType
+  auth_config:      Record<string, string>
+  credential_id:    string | null
+  headers:          KVItem[]
+  query_params:     KVItem[]
+  body_type:        BodyType
+  body_template:    string | null
+  response_mapping: ResponseMappingItem[]
+  is_active:        boolean
+  last_tested_at:   string | null
+  last_test_status: string | null
+  created_at:       string
+  updated_at:       string
+}
+
 export interface SiengeBoleto {
   id:                  string
   receivable_bill_id:  number
