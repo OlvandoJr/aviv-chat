@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import Sidebar from '@/components/conversations/Sidebar'
 
 export default async function ApisLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -8,11 +9,18 @@ export default async function ApisLayout({ children }: { children: React.ReactNo
 
   const { data: attendant } = await supabase
     .from('chat_attendants')
-    .select('role')
-    .eq('user_id', user.id)
+    .select('id, name, email, role, avatar_url, is_active, created_at')
+    .eq('id', user.id)
     .single()
 
   if (attendant?.role !== 'admin') redirect('/conversations')
 
-  return <>{children}</>
+  return (
+    <div className="flex h-screen overflow-hidden bg-white">
+      <Sidebar attendant={attendant} />
+      <main className="flex-1 overflow-auto bg-gray-50">
+        {children}
+      </main>
+    </div>
+  )
 }
