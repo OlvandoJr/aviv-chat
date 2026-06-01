@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Check, CheckCheck, Mic, FileText, Image as ImageIcon, ChevronDown } from 'lucide-react'
+import { Check, CheckCheck, Mic, FileText, Image as ImageIcon, ChevronDown, Bell, UserRound } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { formatTime, formatCurrency, formatDate, getInitials, cn } from '@/lib/utils'
@@ -107,6 +107,35 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
             </button>
           </div>
         </div>
+
+        {/* Alerta: aguardando atendente humano */}
+        {conv.handled_by === 'pending_human' && (
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-50 border-b border-amber-200">
+            <Bell className="w-4 h-4 text-amber-600 shrink-0 animate-bounce" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-amber-800">Cliente aguardando atendimento humano</p>
+              <p className="text-[11px] text-amber-600 truncate">
+                O Agente IA sinalizou que esta conversa precisa de um atendente.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                const supabase = createClient()
+                supabase
+                  .from('chat_conversations')
+                  .update({ handled_by: 'human' })
+                  .eq('id', conv.id)
+                  .select('*, contact:chat_contacts(*), assignee:chat_attendants(id,name,avatar_url)')
+                  .single()
+                  .then(({ data }) => { if (data) setConv(data as any) })
+              }}
+              className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold transition-colors"
+            >
+              <UserRound className="w-3.5 h-3.5" />
+              Assumir
+            </button>
+          </div>
+        )}
 
         {/* Status da conversa */}
         {conv.status !== 'open' && (

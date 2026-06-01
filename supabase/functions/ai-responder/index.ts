@@ -15,8 +15,28 @@ const siengeAuth  = () =>
 
 // ── Prompt de fallback ─────────────────────────────────────────────────────────
 const FALLBACK_SYSTEM_PROMPT = `Você é um assistente virtual de atendimento ao cliente.
-Seja educado, empático e profissional. Responda em português brasileiro.
-Quando o cliente solicitar falar com um atendente humano, responda apenas: ESCALAR_HUMANO: solicitou atendimento humano`
+Seja educado, empático e profissional. Responda em português brasileiro.`
+
+// ── Sufixo de escalação — sempre injetado ao final do system prompt ────────────
+// Garante que QUALQUER agente (customizado ou fallback) saiba quando escalar.
+const ESCALATION_SUFFIX = `
+
+--- REGRAS DE ESCALAÇÃO PARA ATENDENTE HUMANO ---
+Use EXATAMENTE o token ESCALAR_HUMANO: <motivo> como sua resposta COMPLETA (sem mais nada) nos seguintes casos:
+1. O cliente pede explicitamente falar com um humano, atendente ou responsável.
+2. A dúvida envolve cláusulas contratuais, jurídico, distrato ou situação específica do contrato.
+3. O cliente demonstra confusão ou insatisfação mesmo após 2 ou mais tentativas de explicação.
+4. A pergunta exige acesso a dados que você não possui (ex.: saldo atualizado, negociação, parcelamento especial).
+5. O cliente está visivelmente frustrado, com reclamação grave ou ameaça de ação legal.
+6. Você não tem certeza suficiente para responder com segurança.
+
+Exemplos de uso correto:
+- ESCALAR_HUMANO: cliente pergunta sobre cláusula de rescisão contratual
+- ESCALAR_HUMANO: cliente solicita negociação especial de boleto vencido
+- ESCALAR_HUMANO: cliente frustrado após múltiplas explicações
+- ESCALAR_HUMANO: solicitou falar com atendente
+
+Se nenhuma dessas condições se aplica, responda normalmente. NUNCA use ESCALAR_HUMANO: em respostas de rotina.`
 
 // ── Handler principal ──────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
@@ -94,7 +114,7 @@ Deno.serve(async (req) => {
       agent = data
     }
 
-    const systemPrompt       = agent?.system_prompt        || FALLBACK_SYSTEM_PROMPT
+    const systemPrompt       = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT) + ESCALATION_SUFFIX
     const model              = agent?.model                || 'gpt-4o-mini'
     const temperature        = Number(agent?.temperature   ?? 0.6)
     const maxTokens          = agent?.max_tokens           || 600
