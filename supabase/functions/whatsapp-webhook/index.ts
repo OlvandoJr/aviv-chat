@@ -89,6 +89,20 @@ async function processMessage(msg: any, value: any, inboxId: string) {
   const msgId     = msg.id
   const timestamp = new Date(parseInt(msg.timestamp) * 1000).toISOString()
 
+  // ── Deduplicação: ignorar se a mensagem já foi processada ─────────────
+  // WhatsApp reenvia o webhook diversas vezes — a checagem por wa_message_id
+  // impede criação de conversas/mensagens duplicadas e múltiplas respostas do bot.
+  const { data: existingMsg } = await supabase
+    .from('chat_messages')
+    .select('id')
+    .eq('wa_message_id', msgId)
+    .maybeSingle()
+
+  if (existingMsg) {
+    console.log(`[dedup] mensagem ${msgId} já processada, ignorando webhook duplicado`)
+    return
+  }
+
   // Upsert contato
   const contactName = value.contacts?.[0]?.profile?.name || waId
   const { data: contact, error: contactErr } = await supabase
@@ -110,7 +124,7 @@ async function processMessage(msg: any, value: any, inboxId: string) {
     .not('status', 'eq', 'archived')
     .order('created_at', { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   if (!conversation) {
     const { data: newConv } = await supabase

@@ -36,14 +36,37 @@ export default async function ConversationPage({ params }: Props) {
     .eq('is_active', true)
     .order('name')
 
-  // Buscar boleto Sienge do cliente
   const contact = conversation.contact as any
-  const { data: boletos } = await supabase
-    .from('sienge_boletos')
-    .select('id, parcela_descricao, due_date, amount, status')
-    .eq('customer_phone', contact?.wa_id || '')
-    .order('due_date', { ascending: false })
-    .limit(5)
+  const waId    = contact?.wa_id || ''
+
+  // Buscar dados em paralelo: boletos Sienge, boletos SGL, atributos capturados
+  const [
+    { data: boletos },
+    { data: sglBoletos },
+    { data: contactAttributes },
+  ] = await Promise.all([
+    supabase
+      .from('sienge_boletos')
+      .select('id, parcela_descricao, due_date, amount, status')
+      .eq('customer_phone', waId)
+      .order('due_date', { ascending: false })
+      .limit(5),
+    supabase
+      .from('mensagens_cobranca')
+      .select(
+        'id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, ' +
+        'unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, ' +
+        'contasrecebervalor, linkboleto, status, created_at'
+      )
+      .eq('phone', waId)
+      .order('created_at', { ascending: false })
+      .limit(5),
+    supabase
+      .from('chat_contact_attributes')
+      .select('*')
+      .eq('contact_id', contact?.id || '')
+      .order('captured_at', { ascending: false }),
+  ])
 
   return (
     <>
@@ -52,6 +75,8 @@ export default async function ConversationPage({ params }: Props) {
         conversation={conversation as any}
         attendants={attendants || []}
         siengeBoletos={boletos || []}
+        sglBoletos={(sglBoletos || []) as any}
+        contactAttributes={contactAttributes || []}
       />
     </>
   )

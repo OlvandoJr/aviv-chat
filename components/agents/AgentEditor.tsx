@@ -5,20 +5,34 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import {
   ArrowLeft, Save, Bot, Cpu, MessageSquare, Database,
-  AlertTriangle, GitBranch, Star, Trash2, Plus, X
+  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Agent, AgentModel, AgentRule, AgentRuleType, Inbox } from '@/lib/types'
+import type {
+  Agent, AgentModel, AgentRule, AgentRuleType, Inbox,
+  ContactAttributeDef, AttributeFieldType, AttributeAction,
+} from '@/lib/types'
 
 interface Props {
   agent:           Agent | null
   rules:           AgentRule[]
   inboxes:         Inbox[]
   availableModels: string[]
+  attrDefs:        ContactAttributeDef[]
+}
+
+interface AttrDefDraft {
+  id?:           string
+  name:          string
+  key:           string
+  field_type:    AttributeFieldType
+  action:        AttributeAction
+  capture_regex: string
+  sort_order:    number
 }
 
 
-export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels }: Props) {
+export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs }: Props) {
   const router  = useRouter()
   const supabase = createClient()
   const isNew   = !agent
@@ -58,6 +72,19 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   )
   const [newRuleType,         setNewRuleType]        = useState<AgentRuleType>('tag')
   const [newRuleValue,        setNewRuleValue]       = useState('')
+
+  // Campos a capturar (contact attribute definitions)
+  const [attrDefs,            setAttrDefs]           = useState<AttrDefDraft[]>(
+    initialAttrDefs.map(d => ({
+      id:            d.id,
+      name:          d.name,
+      key:           d.key,
+      field_type:    d.field_type,
+      action:        d.action,
+      capture_regex: d.capture_regex || '',
+      sort_order:    d.sort_order,
+    }))
+  )
 
   const [loading,             setLoading]            = useState(false)
   const [error,               setError]              = useState('')
@@ -162,6 +189,23 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
     const allRules = [...inboxRules, ...otherRules]
     if (allRules.length > 0) {
       await supabase.from('chat_agent_rules').insert(allRules)
+    }
+
+    // Salvar campos a capturar (apagar e reinserir)
+    await supabase.from('chat_contact_attribute_defs').delete().eq('agent_id', agentId!)
+    const validDefs = attrDefs.filter(d => d.name.trim())
+    if (validDefs.length > 0) {
+      await supabase.from('chat_contact_attribute_defs').insert(
+        validDefs.map((d, i) => ({
+          agent_id:      agentId,
+          name:          d.name.trim(),
+          key:           (d.key.trim() || d.name.toLowerCase().replace(/[^a-z0-9]/g, '_')),
+          field_type:    d.field_type,
+          action:        d.action,
+          capture_regex: d.capture_regex.trim() || null,
+          sort_order:    i,
+        }))
+      )
     }
 
     setLoading(false)
@@ -419,6 +463,104 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
               />
             </div>
           </div>
+        </Section>
+
+        {/* ── CAMPOS A CAPTURAR ── */}
+        <Section icon={<Tags className="w-4 h-4" />} title="Campos a Capturar">
+          <p className="text-xs text-gray-500 -mt-1 mb-3">
+            Configure quais dados o agente deve detectar e salvar automaticamente durante as conversas
+            (ex: CPF, e-mail, número de contrato). Os valores capturados ficam visíveis no painel do contato.
+          </p>
+
+          {attrDefs.length > 0 && (
+            <div className="space-y-3 mb-4">
+              {attrDefs.map((def, i) => (
+                <div key={i} className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-2 items-start p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                  {/* Nome */}
+                  <div className="space-y-1 col-span-5">
+                    <input
+                      value={def.name}
+                      onChange={(e) => setAttrDefs(attrDefs.map((d, j) => j === i ? { ...d, name: e.target.value } : d))}
+                      placeholder="Rótulo (ex: CPF do Cliente)"
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  {/* Chave slug */}
+                  <div className="col-span-2">
+                    <label className="text-[10px] text-gray-400 mb-0.5 block">Chave (slug)</label>
+                    <input
+                      value={def.key}
+                      onChange={(e) => setAttrDefs(attrDefs.map((d, j) => j === i ? { ...d, key: e.target.value.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') } : d))}
+                      placeholder="ex: cpf"
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  {/* Tipo */}
+                  <div className="col-span-2">
+                    <label className="text-[10px] text-gray-400 mb-0.5 block">Tipo de campo</label>
+                    <select
+                      value={def.field_type}
+                      onChange={(e) => setAttrDefs(attrDefs.map((d, j) => j === i ? { ...d, field_type: e.target.value as AttributeFieldType } : d))}
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      <option value="cpf_cnpj">CPF / CNPJ</option>
+                      <option value="email">E-mail</option>
+                      <option value="phone">Telefone</option>
+                      <option value="number">Número</option>
+                      <option value="text">Texto livre</option>
+                    </select>
+                  </div>
+                  {/* Ação */}
+                  <div className="col-span-2">
+                    <label className="text-[10px] text-gray-400 mb-0.5 block">Ação ao capturar</label>
+                    <select
+                      value={def.action}
+                      onChange={(e) => setAttrDefs(attrDefs.map((d, j) => j === i ? { ...d, action: e.target.value as AttributeAction } : d))}
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      <option value="save">Salvar apenas</option>
+                      <option value="save_and_lookup_sienge">Salvar + buscar no Sienge</option>
+                    </select>
+                  </div>
+                  {/* Regex personalizado + delete */}
+                  <div className="col-span-4">
+                    <label className="text-[10px] text-gray-400 mb-0.5 block">Regex personalizado (opcional)</label>
+                    <input
+                      value={def.capture_regex}
+                      onChange={(e) => setAttrDefs(attrDefs.map((d, j) => j === i ? { ...d, capture_regex: e.target.value } : d))}
+                      placeholder="Deixe em branco para usar o padrão do tipo"
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div className="col-span-1 flex items-end justify-end pb-0.5">
+                    <button
+                      onClick={() => setAttrDefs(attrDefs.filter((_, j) => j !== i))}
+                      className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={() => setAttrDefs([...attrDefs, {
+              name: '', key: '', field_type: 'text', action: 'save', capture_regex: '', sort_order: attrDefs.length,
+            }])}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Adicionar campo
+          </button>
+
+          {attrDefs.some(d => d.field_type === 'cpf_cnpj' && d.action === 'save_and_lookup_sienge') && (
+            <div className="mt-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-700">
+              💡 Quando o cliente enviar um CPF/CNPJ, o sistema vai automaticamente buscar os boletos dele no Sienge
+              e injetar no contexto do bot.
+            </div>
+          )}
         </Section>
 
         {/* ── ESCALAÇÃO ── */}

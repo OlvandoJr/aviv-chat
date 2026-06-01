@@ -10,7 +10,8 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { formatTime, getInitials, cn } from '@/lib/utils'
 import type { Conversation } from '@/lib/types'
 
-type StatusFilter = 'open' | 'resolved' | 'archived'
+type StatusFilter    = 'open' | 'resolved' | 'archived'
+type AttendanceFilter = 'all' | 'bot' | 'human'
 
 export default function ConversationList() {
   const router   = useRouter()
@@ -20,6 +21,7 @@ export default function ConversationList() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [search,        setSearch]        = useState('')
   const [status,        setStatus]        = useState<StatusFilter>('open')
+  const [attendance,    setAttendance]    = useState<AttendanceFilter>('all')
   const [loading,       setLoading]       = useState(true)
 
   const activeId = pathname.split('/conversations/')[1] || null
@@ -36,6 +38,12 @@ export default function ConversationList() {
       .order('last_message_at', { ascending: false })
       .limit(50)
 
+    if (attendance === 'bot') {
+      query = query.eq('handled_by', 'bot')
+    } else if (attendance === 'human') {
+      query = query.in('handled_by', ['human', 'pending_human'])
+    }
+
     if (search.trim()) {
       query = query.ilike('contact.name', `%${search}%`)
     }
@@ -43,7 +51,7 @@ export default function ConversationList() {
     const { data } = await query
     setConversations((data as Conversation[]) || [])
     setLoading(false)
-  }, [status, search])
+  }, [status, attendance, search])
 
   useEffect(() => {
     fetchConversations()
@@ -95,6 +103,33 @@ export default function ConversationList() {
             </button>
           ))}
         </div>
+
+        {/* Filtro de atendimento */}
+        <div className="flex gap-1 mt-2">
+          <span className="text-[10px] text-gray-400 self-center mr-1 shrink-0">Atendimento:</span>
+          {([
+            { value: 'all',   label: 'Todos'      },
+            { value: 'human', label: 'Humano'     },
+            { value: 'bot',   label: 'Agente IA'  },
+          ] as { value: AttendanceFilter; label: string }[]).map(({ value, label }) => (
+            <button
+              key={value}
+              onClick={() => setAttendance(value)}
+              className={cn(
+                'flex-1 py-1 text-[11px] rounded-md font-medium transition-colors',
+                attendance === value
+                  ? value === 'human'
+                    ? 'bg-blue-600 text-white'
+                    : value === 'bot'
+                    ? 'bg-violet-600 text-white'
+                    : 'bg-gray-600 text-white'
+                  : 'text-gray-500 hover:bg-gray-100'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Lista */}
@@ -113,7 +148,9 @@ export default function ConversationList() {
           </div>
         ) : conversations.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-400">
-            Nenhuma conversa {status === 'open' ? 'aberta' : status === 'resolved' ? 'resolvida' : 'arquivada'}
+            Nenhuma conversa{' '}
+            {status === 'open' ? 'aberta' : status === 'resolved' ? 'resolvida' : 'arquivada'}
+            {attendance === 'human' ? ' com atendimento humano' : attendance === 'bot' ? ' com Agente IA' : ''}
           </div>
         ) : (
           conversations.map((conv) => (

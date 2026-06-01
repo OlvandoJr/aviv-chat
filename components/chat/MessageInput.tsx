@@ -28,22 +28,28 @@ export default function MessageInput({ conversationId, disabled }: Props) {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) { setSending(false); return }
 
-    const resp = await fetch(
-      `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/send-message`,
-      {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ conversationId, text: content }),
-      }
-    )
+    try {
+      const resp = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/send-message`,
+        {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ conversationId, text: content }),
+        }
+      )
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      console.error('Erro ao enviar:', err)
-      setText(content) // restaura o texto em caso de erro
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        console.error('Erro ao enviar mensagem:', resp.status, err)
+        setText(content) // restaura o texto em caso de erro HTTP
+      }
+    } catch (networkErr) {
+      // CORS, timeout ou falha de rede — restaura o texto para o usuário não perder o que digitou
+      console.error('Erro de rede ao enviar:', networkErr)
+      setText(content)
     }
 
     setSending(false)

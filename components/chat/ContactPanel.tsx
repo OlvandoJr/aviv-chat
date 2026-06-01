@@ -1,19 +1,21 @@
 'use client'
 
-import { X, Phone, Calendar, DollarSign, AlertCircle, CheckCircle } from 'lucide-react'
+import { X, Phone, Calendar, DollarSign, AlertCircle, CheckCircle, Tags, ExternalLink, Building2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { formatCurrency, formatDate, getInitials } from '@/lib/utils'
-import type { Contact, Conversation, SiengeBoleto } from '@/lib/types'
+import type { Contact, Conversation, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
-  contact:       Contact | undefined
-  conversation:  Conversation
-  siengeBoletos: Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
-  onClose:       () => void
+  contact:           Contact | undefined
+  conversation:      Conversation
+  siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
+  sglBoletos:        SglBoleto[]
+  contactAttributes: ContactAttribute[]
+  onClose:           () => void
 }
 
-export default function ContactPanel({ contact, conversation, siengeBoletos, onClose }: Props) {
+export default function ContactPanel({ contact, conversation, siengeBoletos, sglBoletos, contactAttributes, onClose }: Props) {
   const name = contact?.name || contact?.wa_id || 'Desconhecido'
 
   return (
@@ -58,6 +60,27 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, onC
           </div>
         </section>
 
+        {/* Campos Capturados */}
+        {contactAttributes.length > 0 && (
+          <section>
+            <div className="flex items-center gap-1.5 mb-3">
+              <Tags className="w-3.5 h-3.5 text-gray-400" />
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                Campos Capturados
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              {contactAttributes.map((attr) => (
+                <InfoRow
+                  key={attr.id}
+                  label={attr.attribute_label || attr.attribute_key}
+                  value={formatAttrValue(attr.attribute_value, attr.attribute_key)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Boletos Sienge */}
         {siengeBoletos.length > 0 && (
           <section>
@@ -72,12 +95,32 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, onC
           </section>
         )}
 
-        {siengeBoletos.length === 0 && (
+        {siengeBoletos.length === 0 && sglBoletos.length === 0 && (
           <section>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-              Boletos Sienge
+              Boletos
             </p>
             <p className="text-xs text-gray-400">Nenhum boleto encontrado para este número.</p>
+          </section>
+        )}
+
+        {/* Boletos SGL (mensagens_cobranca) */}
+        {sglBoletos.length > 0 && (
+          <section>
+            <div className="flex items-center gap-1.5 mb-3">
+              <Building2 className="w-3.5 h-3.5 text-orange-400" />
+              <p className="text-xs font-semibold text-orange-600 uppercase tracking-wide">
+                Boletos SGL
+              </p>
+              <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-500 border border-orange-200 rounded-full ml-auto">
+                Migrando para Sienge
+              </span>
+            </div>
+            <div className="space-y-2">
+              {sglBoletos.map((boleto) => (
+                <SglBoletoCard key={boleto.id} boleto={boleto} />
+              ))}
+            </div>
           </section>
         )}
       </div>
@@ -88,10 +131,99 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, onC
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-2 text-xs">
-      <span className="text-gray-400">{label}</span>
+      <span className="text-gray-400 shrink-0">{label}</span>
       <span className="text-gray-700 font-medium text-right">{value}</span>
     </div>
   )
+}
+
+function SglBoletoCard({ boleto }: { boleto: SglBoleto }) {
+  const amount  = parseSglAmount(boleto.contasrecebervalor)
+  const dueDate = boleto.contasrecebervencimento
+    ? new Date(boleto.contasrecebervencimento).toLocaleDateString('pt-BR')
+    : '—'
+  const isOverdue = boleto.contasrecebervencimento
+    ? new Date(boleto.contasrecebervencimento) < new Date()
+    : false
+
+  const statusLabel =
+    boleto.status === 'pago'               ? { text: 'Pago',          color: 'default' as const } :
+    boleto.status === 'comprovante_recebido' ? { text: 'Comprovante',   color: 'info' as const    } :
+    isOverdue                               ? { text: 'Vencido',       color: 'destructive' as const } :
+                                              { text: 'Em aberto',     color: 'warning' as const }
+
+  const parcela = [
+    boleto.contasreceberparcela,
+    [boleto.unidadequadraandar, boleto.unidadeloteapartamento].filter(Boolean).join(' / '),
+  ].filter(Boolean).join(' — ')
+
+  return (
+    <div className="rounded-xl border border-orange-100 p-3 bg-orange-50/50 space-y-2">
+      {/* Empreendimento */}
+      {boleto.unidadeempreendimento && (
+        <p className="text-[10px] font-medium text-orange-700 uppercase tracking-wide truncate">
+          {boleto.unidadeempreendimento}
+        </p>
+      )}
+
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-medium text-gray-800 leading-tight">
+          {parcela || 'Parcela'}
+        </p>
+        <Badge variant={statusLabel.color} className="text-[9px] px-1.5 h-4 shrink-0">
+          {statusLabel.text}
+        </Badge>
+      </div>
+
+      <div className="flex justify-between text-xs">
+        <div className="flex items-center gap-1 text-gray-500">
+          <Calendar className="w-3 h-3" />
+          <span>{dueDate}</span>
+        </div>
+        {amount > 0 && (
+          <div className="flex items-center gap-1 font-semibold text-gray-800">
+            <DollarSign className="w-3 h-3 text-gray-400" />
+            <span>{formatCurrency(amount)}</span>
+          </div>
+        )}
+      </div>
+
+      {boleto.linkboleto && (
+        <a
+          href={boleto.linkboleto}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1 text-[11px] text-orange-600 hover:text-orange-800 hover:underline font-medium"
+        >
+          <ExternalLink className="w-3 h-3" />
+          Ver / baixar boleto
+        </a>
+      )}
+    </div>
+  )
+}
+
+function parseSglAmount(value: string | null): number {
+  if (!value) return 0
+  return parseFloat(value.replace(/\./g, '').replace(',', '.')) || 0
+}
+
+function formatAttrValue(value: string, key: string): string {
+  // Format CPF: 00000000000 → 000.000.000-00
+  if (/cpf/i.test(key) && /^\d{11}$/.test(value)) {
+    return value.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
+  }
+  // Format CNPJ: 00000000000000 → 00.000.000/0001-00
+  if (/cnpj|cpf/i.test(key) && /^\d{14}$/.test(value)) {
+    return value.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5')
+  }
+  // Format phone: 5511999999999 → +55 (11) 99999-9999
+  if (/phone|tel|fone/i.test(key) && /^\d{10,13}$/.test(value)) {
+    const d = value.replace(/\D/g, '')
+    if (d.length === 13) return `+${d.slice(0,2)} (${d.slice(2,4)}) ${d.slice(4,9)}-${d.slice(9)}`
+    if (d.length === 11) return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`
+  }
+  return value
 }
 
 function BoletoCard({

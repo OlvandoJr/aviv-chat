@@ -9,15 +9,17 @@ import { formatTime, formatCurrency, formatDate, getInitials, cn } from '@/lib/u
 import MessageInput from './MessageInput'
 import ContactPanel from './ContactPanel'
 import ConversationActions from './ConversationActions'
-import type { Conversation, Message, Attendant, SiengeBoleto } from '@/lib/types'
+import type { Conversation, Message, Attendant, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
-  conversation:  Conversation
-  attendants:    Pick<Attendant, 'id' | 'name' | 'avatar_url'>[]
-  siengeBoletos: Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
+  conversation:      Conversation
+  attendants:        Pick<Attendant, 'id' | 'name' | 'avatar_url'>[]
+  siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
+  sglBoletos:        SglBoleto[]
+  contactAttributes: ContactAttribute[]
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos }: Props) {
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes }: Props) {
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -149,6 +151,8 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos }: 
           contact={contact}
           conversation={conv}
           siengeBoletos={siengeBoletos}
+          sglBoletos={sglBoletos}
+          contactAttributes={contactAttributes}
           onClose={() => setPanelOpen(false)}
         />
       )}

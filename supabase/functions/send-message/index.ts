@@ -5,32 +5,48 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 )
 
+// ── CORS — necessário porque esta função é chamada diretamente do browser ─────
+const corsHeaders = {
+  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
 Deno.serve(async (req) => {
-  if (req.method !== 'POST') {
-    return new Response('Method Not Allowed', { status: 405 })
+  // Preflight CORS — o browser manda OPTIONS antes de qualquer POST cross-origin
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
   }
 
-  // Verificar autenticação do atendente
+  if (req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405, headers: corsHeaders })
+  }
+
+  // ── Autenticação do atendente ─────────────────────────────────────────────
   const authHeader = req.headers.get('Authorization')
   if (!authHeader) {
-    return new Response('Unauthorized', { status: 401 })
+    return json({ error: 'Unauthorized' }, 401)
   }
 
   const token = authHeader.replace('Bearer ', '')
   const { data: { user }, error: authError } = await supabase.auth.getUser(token)
   if (authError || !user) {
-    return new Response('Unauthorized', { status: 401 })
+    return json({ error: 'Unauthorized' }, 401)
   }
 
   const { conversationId, text } = await req.json()
   if (!conversationId || !text?.trim()) {
-    return new Response(JSON.stringify({ error: 'conversationId e text são obrigatórios' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return json({ error: 'conversationId e text são obrigatórios' }, 400)
   }
 
-  // Buscar conversa + contato + inbox
+  // ── Buscar conversa + contato + inbox ─────────────────────────────────────
   const { data: conv, error: convErr } = await supabase
     .from('chat_conversations')
     .select(`
@@ -42,17 +58,23 @@ Deno.serve(async (req) => {
     .single()
 
   if (convErr || !conv) {
-    return new Response(JSON.stringify({ error: 'Conversa não encontrada' }), {
-      status: 404,
-      headers: { 'Content-Type': 'application/json' },
-    })
+    return json({ error: 'Conversa não encontrada' }, 404)
   }
 
   const contact = conv.contact as any
   const inbox   = conv.inbox   as any
 
-  // Enviar mensagem pela Meta API
-  const metaResponse = await fetch(
+  if (!inbox?.phone_number_id || !inbox?.access_token) {
+    console.error('Inbox sem credenciais para conversa', conversationId)
+    return json({ error: 'Inbox sem credenciais configuradas' }, 422)
+  }
+
+  if (!contact?.wa_id) {
+    return json({ error: 'Contato sem WhatsApp ID' }, 422)
+  }
+
+  // ── Enviar pela Meta API ───────────────────────────────────────────────────
+  const metaResp = await fetch(
     `https://graph.facebook.com/v20.0/${inbox.phone_number_id}/messages`,
     {
       method:  'POST',
@@ -70,28 +92,25 @@ Deno.serve(async (req) => {
     }
   )
 
-  if (!metaResponse.ok) {
-    const err = await metaResponse.text()
-    console.error('Meta API error:', err)
-    return new Response(JSON.stringify({ error: 'Erro ao enviar mensagem', detail: err }), {
-      status: 502,
-      headers: { 'Content-Type': 'application/json' },
-    })
+  if (!metaResp.ok) {
+    const err = await metaResp.text()
+    console.error('Meta API error:', metaResp.status, err)
+    return json({ error: 'Erro ao enviar mensagem pelo WhatsApp', detail: err }, 502)
   }
 
-  const metaData = await metaResponse.json()
-  const waMessageId = metaData.messages?.[0]?.id
+  const metaData   = await metaResp.json()
+  const waMessageId = metaData.messages?.[0]?.id || null
 
-  // Buscar atendente
+  // ── Buscar id do atendente (se cadastrado) ────────────────────────────────
   const { data: attendant } = await supabase
     .from('chat_attendants')
     .select('id')
     .eq('id', user.id)
-    .single()
+    .maybeSingle()
 
-  // Salvar mensagem no banco
+  // ── Salvar mensagem ───────────────────────────────────────────────────────
   const now = new Date().toISOString()
-  const { data: msg } = await supabase
+  const { data: msg, error: msgErr } = await supabase
     .from('chat_messages')
     .insert({
       conversation_id: conversationId,
@@ -105,18 +124,17 @@ Deno.serve(async (req) => {
     .select('id, created_at')
     .single()
 
-  // Atualizar conversa
+  if (msgErr) console.error('Insert message error:', JSON.stringify(msgErr))
+
+  // ── Atualizar conversa ────────────────────────────────────────────────────
   await supabase
     .from('chat_conversations')
     .update({
       last_message_at:      now,
-      last_message_preview: text,
+      last_message_preview: text.substring(0, 120),
       unread_count:         0,
     })
     .eq('id', conversationId)
 
-  return new Response(JSON.stringify({ ok: true, message: msg }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
+  return json({ ok: true, message: msg, waMessageId })
 })

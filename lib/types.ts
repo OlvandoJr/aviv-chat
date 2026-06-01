@@ -128,6 +128,33 @@ export interface AgentRule {
   created_at: string
 }
 
+// ── Contact Attributes ────────────────────────────────────────────────────────
+
+export type AttributeFieldType = 'cpf_cnpj' | 'email' | 'phone' | 'text' | 'number'
+export type AttributeAction    = 'save' | 'save_and_lookup_sienge'
+
+export interface ContactAttributeDef {
+  id:            string
+  agent_id:      string
+  name:          string
+  key:           string
+  field_type:    AttributeFieldType
+  action:        AttributeAction
+  capture_regex: string | null
+  sort_order:    number
+  created_at:    string
+}
+
+export interface ContactAttribute {
+  id:                          string
+  contact_id:                  string
+  attribute_key:               string
+  attribute_value:             string
+  attribute_label:             string | null
+  captured_at:                 string
+  captured_in_conversation_id: string | null
+}
+
 // ── API Configs ───────────────────────────────────────────────────────────────
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -168,6 +195,21 @@ export interface ApiConfig {
   last_test_status: string | null
   created_at:       string
   updated_at:       string
+}
+
+// SGL (mensagens_cobranca) — sem API, apenas leitura da tabela n8n
+export interface SglBoleto {
+  id:                    number
+  pessoanomecompleto:    string | null
+  unidadeempreendimento: string | null
+  unidadequadraandar:    string | null
+  unidadeloteapartamento: string | null
+  contasreceberparcela:  string | null
+  contasrecebervencimento: string | null   // date as string
+  contasrecebervalor:    string | null     // "575,74" — texto BR
+  linkboleto:            string | null
+  status:                string | null
+  created_at:            string | null
 }
 
 export interface SiengeBoleto {
