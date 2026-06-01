@@ -215,6 +215,7 @@ async function processMessage(msg: any, value: any, inboxId: string) {
         msgType,
         convId:      conversation.id,
         contactWaId: waId,
+        inboxId:     inboxId,
       },
     })
     // O ai-responder será invocado pelo process-media após análise concluída

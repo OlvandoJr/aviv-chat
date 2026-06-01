@@ -5,8 +5,8 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 )
 
-const OPENAI_API_KEY  = Deno.env.get('OPENAI_API_KEY')!
-const WA_ACCESS_TOKEN = Deno.env.get('WHATSAPP_ACCESS_TOKEN')!
+const OPENAI_API_KEY      = Deno.env.get('OPENAI_API_KEY')!
+const WA_ACCESS_TOKEN_ENV = Deno.env.get('WHATSAPP_ACCESS_TOKEN') || ''
 
 const SIENGE_BASE = 'https://api.sienge.com.br/avivconstrutora/public/api/v1'
 const siengeAuth  = () =>
@@ -31,7 +31,18 @@ Deno.serve(async (req) => {
     return new Response('Method Not Allowed', { status: 405 })
   }
 
-  const { messageId, waMediaId, mimeType, msgType, convId, contactWaId } = await req.json()
+  const { messageId, waMediaId, mimeType, msgType, convId, contactWaId, inboxId } = await req.json()
+
+  // Resolver token correto: inbox-specific > env global
+  let WA_ACCESS_TOKEN = WA_ACCESS_TOKEN_ENV
+  if (inboxId) {
+    const { data: inbox } = await supabase
+      .from('chat_inboxes')
+      .select('access_token')
+      .eq('id', inboxId)
+      .single()
+    if (inbox?.access_token) WA_ACCESS_TOKEN = inbox.access_token
+  }
 
   try {
     // 1. Obter URL de download da Meta
@@ -39,7 +50,7 @@ Deno.serve(async (req) => {
       `https://graph.facebook.com/v20.0/${waMediaId}`,
       { headers: { Authorization: `Bearer ${WA_ACCESS_TOKEN}` } }
     )
-    if (!metaUrlResp.ok) throw new Error('Falha ao obter URL da mídia')
+    if (!metaUrlResp.ok) throw new Error(`Falha ao obter URL da mídia: ${metaUrlResp.status}`)
     const { url: mediaUrl } = await metaUrlResp.json()
 
     // 2. Baixar a mídia
@@ -70,7 +81,12 @@ Deno.serve(async (req) => {
     // 5. Processar por tipo
     if (msgType === 'audio') {
       // ── Áudio: transcrever e acionar bot ──────────────────────────────────
-      await transcribeAudio(messageId, mediaBuffer, mimeType)
+      // O try/catch garante que o bot responde mesmo se o Whisper falhar
+      try {
+        await transcribeAudio(messageId, mediaBuffer, mimeType)
+      } catch (transcriptionErr) {
+        console.error('Audio transcription error (continuing):', transcriptionErr)
+      }
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'image') {
@@ -601,9 +617,14 @@ Responda SOMENTE nesse formato. Nunca use JSON, lista ou tópicos.`
 
 // ── Transcrição de áudio com Whisper ──────────────────────────────────────────
 async function transcribeAudio(messageId: string, buffer: ArrayBuffer, mimeType: string) {
-  const ext      = getExtension(mimeType) || 'ogg'
+  // WhatsApp envia 'audio/ogg; codecs=opus' — normalizar removendo parâmetros extras
+  const baseMimeType = (mimeType || 'audio/ogg').split(';')[0].trim()
+  const ext          = getExtension(baseMimeType) || 'ogg'
+
+  console.log(`Whisper: mimeType="${mimeType}" → base="${baseMimeType}" ext="${ext}" size=${buffer.byteLength}`)
+
   const formData = new FormData()
-  formData.append('file', new Blob([buffer], { type: mimeType }), `audio.${ext}`)
+  formData.append('file', new Blob([buffer], { type: baseMimeType }), `audio.${ext}`)
   formData.append('model', 'whisper-1')
   formData.append('language', 'pt')
 
@@ -613,17 +634,21 @@ async function transcribeAudio(messageId: string, buffer: ArrayBuffer, mimeType:
     body:    formData,
   })
   if (!resp.ok) {
-    console.error('Whisper transcription failed:', resp.status)
+    const errBody = await resp.text()
+    console.error(`Whisper transcription failed: ${resp.status} — ${errBody}`)
     return
   }
 
   const { text } = await resp.json()
+  console.log(`Whisper OK: "${text?.substring(0, 80)}"`)
   await supabase.from('chat_messages').update({ metadata: { transcription: text } }).eq('id', messageId)
 }
 
 // ── Utilitário: extensão por MIME type ────────────────────────────────────────
 function getExtension(mimeType: string | null): string {
   if (!mimeType) return 'bin'
+  // Normalizar: remover parâmetros como "; codecs=opus"
+  const base = mimeType.split(';')[0].trim()
   const map: Record<string, string> = {
     'image/jpeg':       'jpg',
     'image/png':        'png',
@@ -631,8 +656,12 @@ function getExtension(mimeType: string | null): string {
     'audio/ogg':        'ogg',
     'audio/mpeg':       'mp3',
     'audio/mp4':        'mp4',
+    'audio/aac':        'aac',
+    'audio/wav':        'wav',
+    'audio/webm':       'webm',
     'application/pdf':  'pdf',
     'video/mp4':        'mp4',
+    'video/webm':       'webm',
   }
-  return map[mimeType] || mimeType.split('/')[1] || 'bin'
+  return map[base] || base.split('/')[1] || 'bin'
 }

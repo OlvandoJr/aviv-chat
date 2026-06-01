@@ -385,8 +385,11 @@ Deno.serve(async (req) => {
       const role = msg.direction === 'in' ? 'user' : 'assistant'
       let content = ''
 
-      if (msg.type === 'audio' && (msg.metadata as any)?.transcription) {
-        content = `[Áudio transcrito]: ${(msg.metadata as any).transcription}`
+      if (msg.type === 'audio') {
+        const transcription = (msg.metadata as any)?.transcription
+        content = transcription
+          ? `[Áudio transcrito]: ${transcription}`
+          : `[Cliente enviou um áudio — transcrição indisponível]`
       } else if ((msg.type === 'image' || msg.type === 'document') && (msg.ai_analysis as any)) {
         const analysis = msg.ai_analysis as any
         if (analysis.nao_comprovante) {
