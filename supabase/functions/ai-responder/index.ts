@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
       return new Response('Conversation not found', { status: 404 })
     }
 
-    if (conv.handled_by === 'human') {
+    if (conv.handled_by === 'human' || conv.handled_by === 'pending_human') {
       return new Response(JSON.stringify({ skipped: true, reason: 'human handling' }), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       })
@@ -442,8 +442,25 @@ Deno.serve(async (req) => {
     }
 
     // ── 9. Escalação ──────────────────────────────────────────────────────────
-    const shouldEscalate = botReply.startsWith('ESCALAR_HUMANO:')
-    let messageToSend    = botReply
+    // Detecta o token ESCALAR_HUMANO: em qualquer posição da resposta
+    // (o modelo às vezes adiciona prefácio antes do token)
+    // Também detecta frases de escalação que o agente pode usar sem o token
+    const ESCALATION_PHRASES = [
+      'ESCALAR_HUMANO:',
+      'nossos atendentes já vai falar',
+      'atendente já vai falar',
+      'vou encaminhar para um atendente',
+      'vou encaminhar seu caso',
+      'encaminhar para nossa equipe',
+      'um atendente entrará em contato',
+      'atendente irá te ajudar',
+    ]
+    const shouldEscalate = ESCALATION_PHRASES.some(p =>
+      botReply.toLowerCase().includes(p.toLowerCase())
+    )
+    let messageToSend = botReply.includes('ESCALAR_HUMANO:')
+      ? escalationMessage   // substitui o token pela mensagem amigável
+      : botReply            // mantém a resposta do agente (já contém frase de encaminhamento)
 
     if (shouldEscalate) {
       messageToSend = escalationMessage
