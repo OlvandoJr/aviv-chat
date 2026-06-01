@@ -114,7 +114,6 @@ Deno.serve(async (req) => {
       agent = data
     }
 
-    const systemPrompt       = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT) + ESCALATION_SUFFIX
     const model              = agent?.model                || 'gpt-4o-mini'
     const temperature        = Number(agent?.temperature   ?? 0.6)
     const maxTokens          = agent?.max_tokens           || 600
@@ -124,6 +123,16 @@ Deno.serve(async (req) => {
     const customContext      = agent?.custom_context       || ''
     const escalationMessage  = agent?.escalation_message   ||
       'Entendido! Vou encaminhar você para um de nossos atendentes agora mesmo. Por favor, aguarde um momento. 🙏'
+
+    // Contextos configurados pelo admin — injetados como regras extras no ESCALATION_SUFFIX
+    const agentContexts   = (agent?.escalation_contexts   as string | null) || ''
+    const agentBotPhrases = (agent?.escalation_bot_phrases as string[] | null) || []
+
+    const contextRules = agentContexts.trim()
+      ? '\n\nCONTEXTOS ADICIONAIS QUE DEVEM ESCALAR (configurados pelo administrador):\n' + agentContexts
+      : ''
+
+    const systemPrompt = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT) + ESCALATION_SUFFIX + contextRules
 
     console.log(`Using agent: ${agent?.name || 'fallback'} | model: ${model}`)
 
@@ -442,10 +451,8 @@ Deno.serve(async (req) => {
     }
 
     // ── 9. Escalação ──────────────────────────────────────────────────────────
-    // Detecta o token ESCALAR_HUMANO: em qualquer posição da resposta
-    // (o modelo às vezes adiciona prefácio antes do token)
-    // Também detecta frases de escalação que o agente pode usar sem o token
-    const ESCALATION_PHRASES = [
+    // Frases padrão + frases configuradas pelo admin no agente (escalation_bot_phrases)
+    const DEFAULT_ESCALATION_PHRASES = [
       'ESCALAR_HUMANO:',
       'nossos atendentes já vai falar',
       'atendente já vai falar',
@@ -455,19 +462,22 @@ Deno.serve(async (req) => {
       'um atendente entrará em contato',
       'atendente irá te ajudar',
     ]
-    const shouldEscalate = ESCALATION_PHRASES.some(p =>
+    const allEscalationPhrases = [...DEFAULT_ESCALATION_PHRASES, ...agentBotPhrases]
+    const shouldEscalate = allEscalationPhrases.some(p =>
       botReply.toLowerCase().includes(p.toLowerCase())
     )
-    let messageToSend = botReply.includes('ESCALAR_HUMANO:')
-      ? escalationMessage   // substitui o token pela mensagem amigável
-      : botReply            // mantém a resposta do agente (já contém frase de encaminhamento)
+    // Usa o token formal → substitui pela mensagem amigável configurada
+    // Usa frase do agente  → mantém a resposta original (já é amigável)
+    const messageToSend = botReply.includes('ESCALAR_HUMANO:')
+      ? escalationMessage
+      : botReply
 
     if (shouldEscalate) {
-      messageToSend = escalationMessage
       await supabase
         .from('chat_conversations')
         .update({ handled_by: 'pending_human' })
         .eq('id', conversationId)
+      console.log(`Escalated conversation ${conversationId}`)
     }
 
     // ── 10. Enviar pelo WhatsApp ───────────────────────────────────────────────

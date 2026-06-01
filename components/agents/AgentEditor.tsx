@@ -57,9 +57,12 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   const [includeContactInfo,  setIncludeContactInfo] = useState(agent?.include_contact_info ?? true)
   const [customContext,       setCustomContext]       = useState(agent?.custom_context || '')
 
-  const [escalationKeywords,  setEscalationKeywords] = useState<string[]>(agent?.escalation_keywords || [])
-  const [escalationMessage,   setEscalationMessage]  = useState(agent?.escalation_message || '')
-  const [newKeyword,          setNewKeyword]         = useState('')
+  const [escalationKeywords,    setEscalationKeywords]   = useState<string[]>(agent?.escalation_keywords   || [])
+  const [escalationContexts,    setEscalationContexts]   = useState<string>((agent as any)?.escalation_contexts   || '')
+  const [escalationBotPhrases,  setEscalationBotPhrases] = useState<string[]>((agent as any)?.escalation_bot_phrases || [])
+  const [escalationMessage,     setEscalationMessage]    = useState(agent?.escalation_message || '')
+  const [newKeyword,            setNewKeyword]           = useState('')
+  const [newBotPhrase,          setNewBotPhrase]         = useState('')
 
   // Regras de inbox separadas (checkboxes) das regras genéricas (tag/keyword)
   const [selectedInboxIds,    setSelectedInboxIds]   = useState<string[]>(
@@ -93,10 +96,16 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   // ── Helpers ────────────────────────────────────────────────────────────────
   function addKeyword() {
     const kw = newKeyword.trim().toLowerCase()
-    if (kw && !escalationKeywords.includes(kw)) {
+    if (kw && !escalationKeywords.includes(kw))
       setEscalationKeywords([...escalationKeywords, kw])
-    }
     setNewKeyword('')
+  }
+
+  function addBotPhrase() {
+    const p = newBotPhrase.trim()
+    if (p && !escalationBotPhrases.includes(p))
+      setEscalationBotPhrases([...escalationBotPhrases, p])
+    setNewBotPhrase('')
   }
 
   function addRule() {
@@ -128,8 +137,10 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       include_boletos:      includeBoletos,
       include_contact_info: includeContactInfo,
       custom_context:       customContext.trim() || null,
-      escalation_keywords:  escalationKeywords,
-      escalation_message:   escalationMessage.trim() || null,
+      escalation_keywords:    escalationKeywords,
+      escalation_contexts:    escalationContexts.trim()    || null,
+      escalation_bot_phrases: escalationBotPhrases,
+      escalation_message:     escalationMessage.trim()     || null,
       updated_at:           new Date().toISOString(),
     }
 
@@ -565,56 +576,121 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
 
         {/* ── ESCALAÇÃO ── */}
         <Section icon={<AlertTriangle className="w-4 h-4" />} title="Escalação para Atendente Humano">
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">
-                Palavras-chave de escalação automática
-              </label>
-              <p className="text-[11px] text-gray-400 mb-2">
-                Se o cliente usar essas palavras, o sistema escala independente da IA
-              </p>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {escalationKeywords.map((kw) => (
-                  <span
-                    key={kw}
-                    className="flex items-center gap-1 px-2 py-0.5 bg-red-50 text-red-700 text-xs rounded-full border border-red-200"
-                  >
-                    {kw}
-                    <button
-                      onClick={() => setEscalationKeywords(escalationKeywords.filter(k => k !== kw))}
-                      className="hover:text-red-900"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  value={newKeyword}
-                  onChange={(e) => setNewKeyword(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addKeyword())}
-                  placeholder="Digite e pressione Enter"
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-                <button
-                  onClick={addKeyword}
-                  className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm transition-colors"
+          <p className="text-xs text-gray-500 -mt-1">
+            Configure quando o bot deve parar de responder e sinalizar que um humano precisa assumir.
+          </p>
+
+          {/* 1 — Palavras-chave do cliente */}
+          <div className="pt-1">
+            <label className="text-xs font-medium text-gray-700 mb-0.5 block">
+              Se o cliente disser estas palavras
+            </label>
+            <p className="text-[11px] text-gray-400 mb-2">
+              Qualquer mensagem do cliente que contenha essas palavras dispara a escalação automaticamente, independente da IA.
+            </p>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {escalationKeywords.map((kw) => (
+                <span
+                  key={kw}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-red-50 text-red-700 text-xs rounded-full border border-red-200"
                 >
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
+                  {kw}
+                  <button onClick={() => setEscalationKeywords(escalationKeywords.filter(k => k !== kw))} className="hover:text-red-900">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+              {escalationKeywords.length === 0 && (
+                <span className="text-[11px] text-gray-400 italic">Nenhuma palavra-chave definida</span>
+              )}
             </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Mensagem ao escalar</label>
-              <textarea
-                value={escalationMessage}
-                onChange={(e) => setEscalationMessage(e.target.value)}
-                placeholder='Ex: "Entendido! Vou encaminhar você para um atendente agora mesmo. Aguarde um momento. 🙏"'
-                rows={2}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+            <div className="flex gap-2">
+              <input
+                value={newKeyword}
+                onChange={(e) => setNewKeyword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addKeyword())}
+                placeholder="Ex: rescisão, cancelar contrato, processarei..."
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
+              <button onClick={addKeyword} className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm transition-colors">
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
+          </div>
+
+          <div className="border-t border-gray-100 pt-3" />
+
+          {/* 2 — Contexto da conversa */}
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-0.5 block">
+              Se a conversa tiver este contexto
+            </label>
+            <p className="text-[11px] text-gray-400 mb-2">
+              Descreva as situações em que o bot deve escalar — o texto é injetado como regras no prompt. Seja específico.
+            </p>
+            <textarea
+              value={escalationContexts}
+              onChange={(e) => setEscalationContexts(e.target.value)}
+              placeholder={`Ex:\n- Cliente perguntando sobre descumprimento de contrato ou o que foi prometido na venda\n- Cliente reclamando de cobranças que não reconhece ou valores que subiram sem aviso\n- Cliente pedindo negociação, carência ou renegociação de parcelas\n- Cliente demonstrando frustração após a segunda resposta do bot`}
+              rows={5}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y font-mono"
+            />
+          </div>
+
+          <div className="border-t border-gray-100 pt-3" />
+
+          {/* 3 — Frases do bot */}
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-0.5 block">
+              Se o bot disser estas frases
+            </label>
+            <p className="text-[11px] text-gray-400 mb-2">
+              Se a resposta gerada pelo bot <em>contiver</em> qualquer uma dessas frases, a conversa é marcada como aguardando atendente.
+              Útil para detectar quando o bot promete encaminhamento sem usar o token formal.
+            </p>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {escalationBotPhrases.map((p) => (
+                <span
+                  key={p}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-700 text-xs rounded-full border border-amber-200"
+                >
+                  {p}
+                  <button onClick={() => setEscalationBotPhrases(escalationBotPhrases.filter(x => x !== p))} className="hover:text-amber-900">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+              {escalationBotPhrases.length === 0 && (
+                <span className="text-[11px] text-gray-400 italic">Nenhuma frase definida</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={newBotPhrase}
+                onChange={(e) => setNewBotPhrase(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addBotPhrase())}
+                placeholder="Ex: um atendente já vai falar com você..."
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <button onClick={addBotPhrase} className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm transition-colors">
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="border-t border-gray-100 pt-3" />
+
+          {/* Mensagem ao escalar */}
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-0.5 block">Mensagem enviada ao cliente ao escalar</label>
+            <p className="text-[11px] text-gray-400 mb-2">Enviada no lugar da resposta quando o token <code className="bg-gray-100 px-1 rounded">ESCALAR_HUMANO:</code> é detectado.</p>
+            <textarea
+              value={escalationMessage}
+              onChange={(e) => setEscalationMessage(e.target.value)}
+              placeholder='Ex: "Entendido! Vou encaminhar você para um atendente agora mesmo. Aguarde um momento. 🙏"'
+              rows={2}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+            />
           </div>
         </Section>
 
