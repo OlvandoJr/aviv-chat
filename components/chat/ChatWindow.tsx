@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Check, CheckCheck, Mic, FileText, Image as ImageIcon, ChevronDown, Bell, UserRound } from 'lucide-react'
+import { Check, CheckCheck, Mic, FileText, Image as ImageIcon, ChevronDown, Bell, UserRound, UserCheck } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { formatTime, formatCurrency, formatDate, getInitials, cn } from '@/lib/utils'
@@ -27,6 +27,20 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
   const [loading,     setLoading]     = useState(true)
   const [panelOpen,   setPanelOpen]   = useState(false)
   const [conv,        setConv]        = useState(conversation)
+  const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
+
+  // Get the logged-in attendant's ID for auto-assign
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session?.user?.id) return
+      supabase
+        .from('chat_attendants')
+        .select('id')
+        .eq('id', session.user.id)
+        .maybeSingle()
+        .then(({ data }) => { if (data) setCurrentAttendantId(data.id) })
+    })
+  }, [])
 
   const contact = conv.contact
   const name    = contact?.name || contact?.wa_id || 'Desconhecido'
@@ -120,10 +134,11 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
             </div>
             <button
               onClick={() => {
-                const supabase = createClient()
+                const patch: Record<string, unknown> = { handled_by: 'human' }
+                if (currentAttendantId) patch.assignee_id = currentAttendantId
                 supabase
                   .from('chat_conversations')
-                  .update({ handled_by: 'human' })
+                  .update(patch)
                   .eq('id', conv.id)
                   .select('*, contact:chat_contacts(*), assignee:chat_attendants(id,name,avatar_url)')
                   .single()
@@ -131,7 +146,7 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
               }}
               className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold transition-colors"
             >
-              <UserRound className="w-3.5 h-3.5" />
+              <UserCheck className="w-3.5 h-3.5" />
               Assumir
             </button>
           </div>

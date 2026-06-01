@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { CheckCircle, ArchiveIcon, RotateCcw, UserCheck, ChevronDown, Bot, UserRound } from 'lucide-react'
@@ -14,10 +14,36 @@ interface Props {
 }
 
 export default function ConversationActions({ conversation, attendants, onUpdate }: Props) {
-  const supabase = createClient()
-  const router   = useRouter()
-  const [loading, setLoading] = useState(false)
-  const [showAssign, setShowAssign] = useState(false)
+  const supabase   = createClient()
+  const router     = useRouter()
+  const assignRef  = useRef<HTMLDivElement>(null)
+
+  const [loading,         setLoading]         = useState(false)
+  const [showAssign,      setShowAssign]       = useState(false)
+  const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
+
+  // Descobrir o attendant_id do usuário logado
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session?.user?.id) return
+      supabase
+        .from('chat_attendants')
+        .select('id')
+        .eq('id', session.user.id)
+        .maybeSingle()
+        .then(({ data }) => { if (data) setCurrentAttendantId(data.id) })
+    })
+  }, [])
+
+  // Fechar dropdown ao clicar fora
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (assignRef.current && !assignRef.current.contains(e.target as Node))
+        setShowAssign(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
 
   async function updateStatus(status: 'open' | 'resolved' | 'archived') {
     setLoading(true)
@@ -48,9 +74,14 @@ export default function ConversationActions({ conversation, attendants, onUpdate
 
   async function updateHandledBy(handledBy: HandledBy) {
     setLoading(true)
+    const patch: Record<string, unknown> = { handled_by: handledBy }
+    // Ao assumir como humano, atribuir automaticamente ao atendente logado
+    if (handledBy === 'human' && currentAttendantId) {
+      patch.assignee_id = currentAttendantId
+    }
     const { data } = await supabase
       .from('chat_conversations')
-      .update({ handled_by: handledBy })
+      .update(patch)
       .eq('id', conversation.id)
       .select('*, contact:chat_contacts(*), assignee:chat_attendants(id,name,avatar_url)')
       .single()
@@ -95,11 +126,16 @@ export default function ConversationActions({ conversation, attendants, onUpdate
       )}
 
       {/* Atribuir */}
-      <div className="relative">
+      <div className="relative" ref={assignRef}>
         <button
           onClick={() => setShowAssign(!showAssign)}
-          className="flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors text-gray-600"
-          title="Atribuir atendente"
+          className={cn(
+            'flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg border transition-colors',
+            conversation.assignee
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              : 'border-gray-200 hover:bg-gray-50 text-gray-600'
+          )}
+          title={conversation.assignee ? `Atribuído a ${conversation.assignee.name} — clique para reatribuir` : 'Atribuir atendente'}
         >
           <UserCheck className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">
@@ -126,6 +162,9 @@ export default function ConversationActions({ conversation, attendants, onUpdate
                 )}
               >
                 {a.name}
+                {conversation.assignee_id === a.id && (
+                  <span className="ml-1 text-[10px]">✓</span>
+                )}
               </button>
             ))}
           </div>
