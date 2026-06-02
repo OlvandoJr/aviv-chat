@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { MessageSquare, Settings, LogOut, Users, Bot, Inbox, Plug } from 'lucide-react'
+import { MessageSquare, Settings, LogOut, Users, Bot, Inbox, Plug, Puzzle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { getInitials } from '@/lib/utils'
@@ -57,6 +57,12 @@ export default function Sidebar({ attendant }: SidebarProps) {
               icon={<Plug className="w-5 h-5" />}
               label="APIs"
               active={pathname.startsWith('/apis')}
+            />
+            <NavItem
+              href="/integrations"
+              icon={<Puzzle className="w-5 h-5" />}
+              label="Integrações"
+              active={pathname.startsWith('/integrations')}
             />
             <NavItem
               href="/settings/attendants"

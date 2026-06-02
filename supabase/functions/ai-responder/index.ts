@@ -136,6 +136,54 @@ Deno.serve(async (req) => {
 
     console.log(`Using agent: ${agent?.name || 'fallback'} | model: ${model}`)
 
+    // ── 2b. Buscar ferramentas ativas do agente ───────────────────────────────
+    let agentTools: any[] = []
+    if (agent?.id) {
+      const { data: tools } = await supabase
+        .from('chat_agent_tools')
+        .select('*, api_connection:chat_api_connections(*)')
+        .eq('agent_id', agent.id)
+        .eq('is_active', true)
+        .order('sort_order')
+      agentTools = tools || []
+    }
+
+    // Construir array de tools para OpenAI
+    const openAiTools: any[] = []
+    for (const tool of agentTools) {
+      if (tool.tool_type === 'payment_scheduler') {
+        openAiTools.push({
+          type: 'function',
+          function: {
+            name: 'calcular_datas_pagamento',
+            description: tool.description || 'Calcula as próximas datas úteis disponíveis para o cliente agendar o pagamento do boleto. Use quando o cliente quiser pagar em outra data.',
+            parameters: { type: 'object', properties: {} },
+          },
+        })
+        openAiTools.push({
+          type: 'function',
+          function: {
+            name: 'confirmar_agendamento',
+            description: 'Confirma e registra o agendamento do pagamento para a data escolhida pelo cliente. Use depois que o cliente escolher uma das datas oferecidas.',
+            parameters: {
+              type: 'object',
+              required: ['data_escolhida'],
+              properties: {
+                data_escolhida: {
+                  type: 'string',
+                  description: 'Data escolhida pelo cliente no formato DD/MM/YYYY',
+                },
+                observacoes: {
+                  type: 'string',
+                  description: 'Observações adicionais do cliente sobre o agendamento',
+                },
+              },
+            },
+          },
+        })
+      }
+    }
+
     // ── 3. Buscar contato ─────────────────────────────────────────────────────
     const { data: contact } = await supabase
       .from('chat_contacts').select('id, wa_id, name')
@@ -425,16 +473,22 @@ Deno.serve(async (req) => {
       console.error('CRITICAL: OPENAI_API_KEY vazio!')
       botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
     } else {
-      console.log(`OpenAI → model=${model} tokens=${maxTokens} msgs=${openAiMessages.length} legacy=${legacyMessages.length} boleto_src=${boletoSource || 'none'}`)
+      console.log(`OpenAI → model=${model} tokens=${maxTokens} msgs=${openAiMessages.length} legacy=${legacyMessages.length} boleto_src=${boletoSource || 'none'} tools=${openAiTools.length}`)
+
+      const openAiBody: any = {
+        model,
+        max_completion_tokens: maxTokens,
+        temperature,
+        messages: openAiMessages,
+      }
+      if (openAiTools.length > 0) {
+        openAiBody.tools = openAiTools
+      }
+
       const openAiResp = await fetch('https://api.openai.com/v1/chat/completions', {
         method:  'POST',
         headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          max_completion_tokens: maxTokens,
-          temperature,
-          messages: openAiMessages,
-        }),
+        body: JSON.stringify(openAiBody),
       })
 
       if (!openAiResp.ok) {
@@ -443,12 +497,70 @@ Deno.serve(async (req) => {
         botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
       } else {
         const openAiData = await openAiResp.json()
-        botReply = (openAiData.choices?.[0]?.message?.content || '').trim()
-        if (!botReply) {
-          console.error('OpenAI retornou conteúdo vazio')
-          botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
+        const choice = openAiData.choices?.[0]
+
+        // ── Tool calling ────────────────────────────────────────────────────
+        if (choice?.finish_reason === 'tool_calls' && choice.message?.tool_calls?.length > 0) {
+          const toolCall = choice.message.tool_calls[0]
+          const toolName = toolCall.function.name
+          const toolArgs = JSON.parse(toolCall.function.arguments || '{}')
+          console.log(`Tool call: ${toolName}`, toolArgs)
+
+          let toolResult = ''
+
+          if (toolName === 'calcular_datas_pagamento') {
+            const { d3, d5, d10 } = calcularDatasDisponiveis()
+            toolResult = JSON.stringify({
+              datas: [
+                { label: formatarDataBR(d3),  iso: d3.toISOString().split('T')[0]  },
+                { label: formatarDataBR(d5),  iso: d5.toISOString().split('T')[0]  },
+                { label: formatarDataBR(d10), iso: d10.toISOString().split('T')[0] },
+              ],
+            })
+          } else if (toolName === 'confirmar_agendamento') {
+            const paymentTool = agentTools.find((t: any) => t.tool_type === 'payment_scheduler')
+            toolResult = await handleConfirmarAgendamento(toolArgs, conv, contact, boletos, paymentTool)
+          }
+
+          // Segunda chamada ao OpenAI com o resultado da ferramenta
+          const messagesWithTool = [
+            ...openAiMessages,
+            choice.message,                          // mensagem com tool_calls
+            {
+              role:         'tool',
+              tool_call_id: toolCall.id,
+              content:      toolResult,
+            },
+          ]
+
+          const finalResp = await fetch('https://api.openai.com/v1/chat/completions', {
+            method:  'POST',
+            headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model,
+              max_completion_tokens: maxTokens,
+              temperature,
+              messages: messagesWithTool,
+            }),
+          })
+
+          if (finalResp.ok) {
+            const finalData = await finalResp.json()
+            botReply = (finalData.choices?.[0]?.message?.content || '').trim()
+            console.log(`OpenAI tool-result OK — resposta: ${botReply.substring(0, 80)}...`)
+          } else {
+            console.error('OpenAI second call error:', finalResp.status, await finalResp.text())
+            botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
+          }
         } else {
-          console.log(`OpenAI OK — resposta: ${botReply.substring(0, 80)}...`)
+          // Resposta normal (sem tool call)
+          botReply = (choice?.message?.content || '').trim()
+          if (!botReply) {
+            console.error('OpenAI retornou conteúdo vazio')
+            botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
+          } else {
+            console.log(`OpenAI OK — resposta: ${botReply.substring(0, 80)}...`)
+          }
         }
       }
     }
@@ -595,6 +707,224 @@ function normalizeAttrValue(value: string, fieldType: string): string {
     return value.replace(/\D/g, '')
   }
   return value.trim()
+}
+
+// ── Dias úteis (business days) ────────────────────────────────────────────────
+function isDiaUtil(date: Date): boolean {
+  return date.getDay() !== 0 && date.getDay() !== 6
+}
+
+function adicionarDiasUteis(data: Date, diasUteis: number): Date {
+  const d = new Date(data)
+  let count = 0
+  while (count < diasUteis) {
+    d.setDate(d.getDate() + 1)
+    if (isDiaUtil(d)) count++
+  }
+  return d
+}
+
+function formatarDataBR(data: Date): string {
+  return data.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+}
+
+function calcularDatasDisponiveis(): { d3: Date; d5: Date; d10: Date } {
+  const hoje = new Date()
+  return {
+    d3:  adicionarDiasUteis(hoje, 3),
+    d5:  adicionarDiasUteis(hoje, 5),
+    d10: adicionarDiasUteis(hoje, 10),
+  }
+}
+
+// ── Confirmar agendamento de pagamento ────────────────────────────────────────
+async function handleConfirmarAgendamento(
+  args: { data_escolhida: string; observacoes?: string },
+  conv: any,
+  contact: any,
+  boletos: any[],
+  tool: any
+): Promise<string> {
+  try {
+    // Parse DD/MM/YYYY → YYYY-MM-DD
+    const parts = args.data_escolhida.split('/')
+    if (parts.length !== 3) {
+      return JSON.stringify({ success: false, error: 'Formato de data inválido. Use DD/MM/YYYY.' })
+    }
+    const [dd, mm, yyyy] = parts.map(Number)
+    if (!dd || !mm || !yyyy) {
+      return JSON.stringify({ success: false, error: 'Data inválida.' })
+    }
+    const scheduledDate = `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
+
+    const boleto = boletos[0] || null
+
+    // 1. Salvar em chat_scheduled_payments
+    const { data: payment, error: payErr } = await supabase
+      .from('chat_scheduled_payments')
+      .insert({
+        conversation_id: conv.id,
+        contact_id:      conv.contact_id,
+        contact_name:    contact?.name   || null,
+        contact_wa_id:   contact?.wa_id  || null,
+        scheduled_date:  scheduledDate,
+        boleto_parcela:  boleto?.parcela_descricao || null,
+        boleto_valor:    boleto?.amount  || null,
+        notes:           args.observacoes || null,
+      })
+      .select('id')
+      .single()
+
+    if (payErr || !payment) {
+      console.error('Error saving scheduled payment:', payErr)
+      return JSON.stringify({ success: false, error: 'Erro ao salvar agendamento.' })
+    }
+
+    // 2. Criar evento no Google Calendar (se api_connection configurada)
+    let googleEventUrl: string | null = null
+    const conn = tool?.api_connection
+    if (conn?.provider === 'google_calendar' && conn.is_active) {
+      const calendarId     = conn.config?.calendar_id
+      const serviceAccount = conn.credentials
+      if (calendarId && serviceAccount?.private_key) {
+        const eventId = await criarEventoCalendario(serviceAccount, calendarId, {
+          summary:     `Pagamento agendado — ${contact?.name || 'Cliente'}`,
+          description: boleto
+            ? `Parcela: ${boleto.parcela_descricao}\nValor: R$ ${Number(boleto.amount).toFixed(2)}\nCliente: ${contact?.name} (${contact?.wa_id})`
+            : `Pagamento agendado via WhatsApp\nCliente: ${contact?.name || 'Desconhecido'} (${contact?.wa_id})`,
+          startDate:   scheduledDate,
+        })
+        if (eventId) {
+          googleEventUrl = `https://calendar.google.com/calendar/event?eid=${eventId}`
+          await supabase
+            .from('chat_scheduled_payments')
+            .update({ google_event_id: eventId })
+            .eq('id', payment.id)
+        }
+      }
+    }
+
+    // 3. Marcar conversa com payment_scheduled_id
+    await supabase
+      .from('chat_conversations')
+      .update({ payment_scheduled_id: payment.id })
+      .eq('id', conv.id)
+
+    return JSON.stringify({
+      success:          true,
+      payment_id:       payment.id,
+      scheduled_date:   args.data_escolhida,
+      google_event_url: googleEventUrl,
+    })
+  } catch (err) {
+    console.error('handleConfirmarAgendamento error:', err)
+    return JSON.stringify({ success: false, error: String(err) })
+  }
+}
+
+// ── Google Calendar — Service Account ────────────────────────────────────────
+async function getGoogleAccessToken(serviceAccount: any): Promise<string | null> {
+  try {
+    const now = Math.floor(Date.now() / 1000)
+
+    const encodeB64url = (s: string) =>
+      btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+
+    const header64  = encodeB64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
+    const payload64 = encodeB64url(JSON.stringify({
+      iss:   serviceAccount.client_email,
+      scope: 'https://www.googleapis.com/auth/calendar',
+      aud:   'https://oauth2.googleapis.com/token',
+      exp:   now + 3600,
+      iat:   now,
+    }))
+
+    const signingInput = `${header64}.${payload64}`
+
+    // Import RSA private key
+    const pemBody = serviceAccount.private_key
+      .replace('-----BEGIN PRIVATE KEY-----', '')
+      .replace('-----END PRIVATE KEY-----', '')
+      .replace(/\s/g, '')
+    const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0))
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'pkcs8',
+      binaryDer,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['sign']
+    )
+
+    const signature = await crypto.subtle.sign(
+      'RSASSA-PKCS1-v1_5',
+      cryptoKey,
+      new TextEncoder().encode(signingInput)
+    )
+
+    const sig64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+
+    const jwt = `${signingInput}.${sig64}`
+
+    // Trocar JWT por access_token
+    const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
+    })
+
+    if (!tokenResp.ok) {
+      console.error('Google token error:', tokenResp.status, await tokenResp.text())
+      return null
+    }
+
+    const tokenData = await tokenResp.json()
+    return tokenData.access_token || null
+  } catch (err) {
+    console.error('getGoogleAccessToken error:', err)
+    return null
+  }
+}
+
+async function criarEventoCalendario(
+  serviceAccount: any,
+  calendarId: string,
+  evento: { summary: string; description: string; startDate: string }
+): Promise<string | null> {
+  try {
+    const accessToken = await getGoogleAccessToken(serviceAccount)
+    if (!accessToken) return null
+
+    const resp = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+      {
+        method:  'POST',
+        headers: {
+          Authorization:  `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          summary:     evento.summary,
+          description: evento.description,
+          start: { date: evento.startDate },   // evento de dia inteiro
+          end:   { date: evento.startDate },
+        }),
+      }
+    )
+
+    if (!resp.ok) {
+      console.error('Google Calendar create event error:', resp.status, await resp.text())
+      return null
+    }
+
+    const data = await resp.json()
+    console.log(`Google Calendar event created: ${data.id}`)
+    return data.id || null
+  } catch (err) {
+    console.error('criarEventoCalendario error:', err)
+    return null
+  }
 }
 
 // ── Buscar boleto via API Sienge por CPF ──────────────────────────────────────

@@ -5,13 +5,15 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import {
   ArrowLeft, Save, Bot, Cpu, MessageSquare, Database,
-  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags
+  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags, Wrench,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type {
   Agent, AgentModel, AgentRule, AgentRuleType, Inbox,
   ContactAttributeDef, AttributeFieldType, AttributeAction,
+  AgentTool, ApiConnection,
 } from '@/lib/types'
+import ToolEditor from './ToolEditor'
 
 interface Props {
   agent:           Agent | null
@@ -19,6 +21,8 @@ interface Props {
   inboxes:         Inbox[]
   availableModels: string[]
   attrDefs:        ContactAttributeDef[]
+  tools:           AgentTool[]
+  apiConnections:  ApiConnection[]
 }
 
 interface AttrDefDraft {
@@ -32,7 +36,7 @@ interface AttrDefDraft {
 }
 
 
-export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs }: Props) {
+export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections }: Props) {
   const router  = useRouter()
   const supabase = createClient()
   const isNew   = !agent
@@ -88,6 +92,11 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       sort_order:    d.sort_order,
     }))
   )
+
+  // Ferramentas do agente (CRUD independente — salvas diretamente no ToolEditor)
+  const [tools,               setTools]              = useState<AgentTool[]>(initialTools)
+  const [toolEditorOpen,      setToolEditorOpen]     = useState(false)
+  const [editingTool,         setEditingTool]        = useState<AgentTool | null>(null)
 
   const [loading,             setLoading]            = useState(false)
   const [error,               setError]              = useState('')
@@ -816,6 +825,62 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
           </div>
         </Section>
 
+        {/* ── FERRAMENTAS ── */}
+        {!isNew && (
+          <Section icon={<Wrench className="w-4 h-4" />} title="Ferramentas">
+            <p className="text-xs text-gray-400">
+              Ferramentas ampliam o AI com ações reais — o modelo decide quando acioná-las com base na conversa.
+            </p>
+
+            {tools.length > 0 && (
+              <div className="space-y-2 mt-1">
+                {tools.map(t => (
+                  <div
+                    key={t.id}
+                    className="flex items-center justify-between p-3 rounded-xl border border-gray-100 hover:border-gray-200 bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={cn(
+                        'w-1.5 h-1.5 rounded-full shrink-0',
+                        t.is_active ? 'bg-emerald-400' : 'bg-gray-300'
+                      )} />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-800 truncate">{t.name}</div>
+                        <div className="text-[11px] text-gray-400 truncate">
+                          {t.tool_type === 'payment_scheduler' ? '📅 Agendador de Pagamentos' : '🔗 Webhook'}
+                          {t.api_connection && (
+                            <span className="ml-1 text-emerald-600">· {t.api_connection.name}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setEditingTool(t); setToolEditorOpen(true) }}
+                      className="shrink-0 px-2 py-1 text-xs text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded-lg transition-colors ml-2"
+                    >
+                      Editar
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => { setEditingTool(null); setToolEditorOpen(true) }}
+              className="flex items-center gap-1.5 mt-1 px-3 py-1.5 text-xs rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Adicionar ferramenta
+            </button>
+          </Section>
+        )}
+
+        {isNew && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-700">
+            💡 Salve o agente primeiro para poder adicionar ferramentas.
+          </div>
+        )}
+
       </div>
 
       {/* Footer salvar */}
@@ -834,6 +899,27 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
           {loading ? 'Salvando...' : saved ? 'Salvo com sucesso ✓' : 'Salvar Agente'}
         </button>
       </div>
+      {/* ToolEditor modal */}
+      {toolEditorOpen && agent && (
+        <ToolEditor
+          agentId={agent.id}
+          tool={editingTool}
+          apiConnections={apiConnections}
+          onSaved={(saved) => {
+            setTools(prev => {
+              const idx = prev.findIndex(t => t.id === saved.id)
+              if (idx >= 0) {
+                const next = [...prev]
+                next[idx] = saved
+                return next
+              }
+              return [...prev, saved]
+            })
+          }}
+          onDeleted={(toolId) => setTools(prev => prev.filter(t => t.id !== toolId))}
+          onClose={() => { setToolEditorOpen(false); setEditingTool(null) }}
+        />
+      )}
     </div>
   )
 }

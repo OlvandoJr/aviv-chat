@@ -197,7 +197,56 @@ export interface ApiConfig {
   updated_at:       string
 }
 
-// SGL (mensagens_cobranca) — sem API, apenas leitura da tabela n8n
+// ── Agent Tools & Integrations ────────────────────────────────────────────────
+
+export type ToolType = 'payment_scheduler' | 'webhook'
+
+export interface AgentTool {
+  id:                string
+  agent_id:          string
+  name:              string
+  description:       string
+  tool_type:         ToolType
+  config:            Record<string, any>
+  api_connection_id: string | null
+  is_active:         boolean
+  sort_order:        number
+  created_at:        string
+  // join
+  api_connection?:   ApiConnection | null
+}
+
+export type ConnectionProvider = 'google_calendar' | 'smtp' | 'webhook'
+
+export interface ApiConnection {
+  id:          string
+  name:        string
+  provider:    ConnectionProvider
+  credentials: Record<string, any>   // service account JSON, etc.
+  config:      Record<string, any>   // calendar_id, etc.
+  is_active:   boolean
+  created_at:  string
+  updated_at:  string
+}
+
+export interface ScheduledPayment {
+  id:                       string
+  conversation_id:          string | null
+  contact_id:               string | null
+  contact_name:             string | null
+  contact_wa_id:            string | null
+  scheduled_date:           string   // YYYY-MM-DD
+  boleto_parcela:           string | null
+  boleto_valor:             number | null
+  google_event_id:          string | null
+  status:                   string
+  reminder_day_before_sent: boolean
+  reminder_1h_before_sent:  boolean
+  notes:                    string | null
+  created_at:               string
+}
+
+// ── SGL (mensagens_cobranca) — sem API, apenas leitura da tabela n8n
 export interface SglBoleto {
   id:                    number
   pessoanomecompleto:    string | null
