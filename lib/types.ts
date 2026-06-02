@@ -51,7 +51,7 @@ export interface Conversation {
   assignee?:            Attendant | null
 }
 
-export type MessageType      = 'text' | 'image' | 'audio' | 'document' | 'button' | 'template'
+export type MessageType      = 'text' | 'image' | 'audio' | 'voice' | 'document' | 'video' | 'sticker' | 'button' | 'template' | 'reaction' | 'location' | 'contacts' | 'unknown'
 export type MessageDirection = 'in' | 'out'
 export type MessageStatus    = 'sent' | 'delivered' | 'read' | 'failed'
 

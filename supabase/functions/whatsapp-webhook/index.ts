@@ -140,6 +140,12 @@ async function processMessage(msg: any, value: any, inboxId: string) {
   }
   if (!conversation) return
 
+  // ── Reações: atualizar metadados da mensagem original, sem criar nova mensagem ─
+  if (msgType === 'reaction') {
+    await handleReaction(msg)
+    return
+  }
+
   // Extrair conteúdo da mensagem
   let content: string | null = null
   let mediaId: string | null = null
@@ -159,6 +165,19 @@ async function processMessage(msg: any, value: any, inboxId: string) {
       mediaId  = msg.audio?.id || null
       mimeType = msg.audio?.mime_type || null
       break
+    case 'voice':
+      mediaId  = msg.voice?.id || null
+      mimeType = msg.voice?.mime_type || null
+      break
+    case 'sticker':
+      mediaId  = msg.sticker?.id || null
+      mimeType = msg.sticker?.mime_type || 'image/webp'
+      break
+    case 'video':
+      mediaId  = msg.video?.id || null
+      mimeType = msg.video?.mime_type || null
+      content  = msg.video?.caption || null
+      break
     case 'document':
       mediaId   = msg.document?.id || null
       mimeType  = msg.document?.mime_type || null
@@ -168,6 +187,25 @@ async function processMessage(msg: any, value: any, inboxId: string) {
     case 'button':
       content = msg.button?.text || null
       break
+    case 'location': {
+      const lat     = msg.location?.latitude
+      const lng     = msg.location?.longitude
+      const locAddr = msg.location?.address || ''
+      const locName = msg.location?.name   || ''
+      content = [
+        locName  ? `📍 ${locName}` : '📍 Localização',
+        locAddr  || null,
+        `https://maps.google.com/?q=${lat},${lng}`,
+      ].filter(Boolean).join('\n')
+      break
+    }
+    case 'contacts': {
+      const names = (msg.contacts || [])
+        .map((c: any) => c.name?.formatted_name || '')
+        .filter(Boolean)
+      content = names.length ? `Contato: ${names.join(', ')}` : 'Contato'
+      break
+    }
     default:
       content = JSON.stringify(msg[msgType] || {})
   }
@@ -219,8 +257,8 @@ async function processMessage(msg: any, value: any, inboxId: string) {
       },
     })
     // O ai-responder será invocado pelo process-media após análise concluída
-  } else if (message && (msgType === 'text' || msgType === 'button')) {
-    // Para mensagens de texto, invocar o bot diretamente
+  } else if (message && (msgType === 'text' || msgType === 'button' || msgType === 'location' || msgType === 'contacts')) {
+    // Para mensagens de texto/localização/contatos, invocar o bot diretamente
     await supabase.functions.invoke('ai-responder', {
       body: {
         conversationId: conversation.id,
@@ -228,4 +266,30 @@ async function processMessage(msg: any, value: any, inboxId: string) {
       },
     })
   }
+}
+
+// ── Tratamento de reações ────────────────────────────────────────────────────
+async function handleReaction(msg: any) {
+  const waMessageId = msg.reaction?.message_id
+  const emoji       = msg.reaction?.emoji   // vazio = reação removida
+  const fromWaId    = msg.from
+  if (!waMessageId) return
+
+  const { data: targetMsg } = await supabase
+    .from('chat_messages')
+    .select('id, metadata')
+    .eq('wa_message_id', waMessageId)
+    .maybeSingle()
+
+  if (!targetMsg) return
+
+  // Remove reação anterior deste remetente; adiciona a nova (se houver emoji)
+  const existing: { wa_id: string; emoji: string }[] = (targetMsg.metadata?.reactions as any[]) || []
+  const filtered = existing.filter((r) => r.wa_id !== fromWaId)
+  if (emoji) filtered.push({ wa_id: fromWaId, emoji })
+
+  await supabase
+    .from('chat_messages')
+    .update({ metadata: { ...(targetMsg.metadata || {}), reactions: filtered } })
+    .eq('id', targetMsg.id)
 }

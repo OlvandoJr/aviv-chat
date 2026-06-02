@@ -2,13 +2,18 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Check, CheckCheck, Mic, FileText, Image as ImageIcon, ChevronDown, Bell, UserRound, UserCheck } from 'lucide-react'
+import {
+  Check, CheckCheck, Mic, FileText, Image as ImageIcon,
+  ChevronDown, Bell, UserCheck,
+  Play, Pause, Download, MapPin, Video as VideoIcon,
+} from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { formatTime, formatCurrency, formatDate, getInitials, cn } from '@/lib/utils'
+import { formatTime, formatCurrency, getInitials, cn } from '@/lib/utils'
 import MessageInput from './MessageInput'
 import ContactPanel from './ContactPanel'
 import ConversationActions from './ConversationActions'
+import ImageLightbox from './ImageLightbox'
 import type { Conversation, Message, Attendant, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
@@ -29,7 +34,6 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
   const [conv,        setConv]        = useState(conversation)
   const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
 
-  // Get the logged-in attendant's ID for auto-assign
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session?.user?.id) return
@@ -81,10 +85,12 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
     return () => { supabase.removeChannel(channel) }
   }, [fetchMessages, conv.id])
 
-  // Scroll ao fundo quando chegam mensagens
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Filtrar reações (são metadados de outra mensagem, não bolhas separadas)
+  const visibleMessages = messages.filter(m => m.type !== 'reaction')
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -168,16 +174,16 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
             <div className="flex items-center justify-center h-full">
               <p className="text-sm text-gray-400">Carregando mensagens...</p>
             </div>
-          ) : messages.length === 0 ? (
+          ) : visibleMessages.length === 0 ? (
             <div className="flex items-center justify-center h-full">
               <p className="text-sm text-gray-400">Nenhuma mensagem ainda</p>
             </div>
           ) : (
-            messages.map((msg, i) => (
+            visibleMessages.map((msg, i) => (
               <MessageBubble
                 key={msg.id}
                 message={msg}
-                showAvatar={i === 0 || messages[i - 1]?.direction !== msg.direction}
+                showAvatar={i === 0 || visibleMessages[i - 1].direction !== msg.direction}
                 contactName={name}
               />
             ))
@@ -204,6 +210,8 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
   )
 }
 
+// ── MessageBubble ─────────────────────────────────────────────────────────────
+
 function MessageBubble({
   message: msg,
   showAvatar,
@@ -213,122 +221,334 @@ function MessageBubble({
   showAvatar:  boolean
   contactName: string
 }) {
-  const isIn  = msg.direction === 'in'
-  const isOut = msg.direction === 'out'
+  const isIn      = msg.direction === 'in'
+  const isOut     = msg.direction === 'out'
+  const isSticker = msg.type === 'sticker'
+  const reactions: { wa_id: string; emoji: string }[] = (msg.metadata?.reactions as any[]) || []
 
   return (
-    <div className={cn('flex items-end gap-2', isOut && 'flex-row-reverse')}>
-      {/* Avatar (só mostra no lado esquerdo para mensagens recebidas) */}
-      {isIn && showAvatar ? (
-        <Avatar className="w-6 h-6 shrink-0 mb-1">
-          <AvatarFallback className="text-[9px]">{getInitials(contactName)}</AvatarFallback>
-        </Avatar>
-      ) : isIn ? (
-        <div className="w-6 shrink-0" />
-      ) : null}
+    <div className={cn('flex flex-col', isOut && 'items-end')}>
+      <div className={cn('flex items-end gap-2', isOut && 'flex-row-reverse')}>
+        {/* Avatar (só lado esquerdo para mensagens recebidas) */}
+        {isIn && showAvatar ? (
+          <Avatar className="w-6 h-6 shrink-0 mb-1">
+            <AvatarFallback className="text-[9px]">{getInitials(contactName)}</AvatarFallback>
+          </Avatar>
+        ) : isIn ? (
+          <div className="w-6 shrink-0" />
+        ) : null}
 
-      {/* Balão */}
-      <div
-        className={cn(
-          'max-w-xs md:max-w-md lg:max-w-lg rounded-2xl px-3 py-2 shadow-sm',
-          isIn
-            ? 'bg-white rounded-bl-sm'
-            : 'bg-emerald-600 text-white rounded-br-sm'
-        )}
-      >
-        <MessageContent message={msg} isOut={isOut} />
+        {/* Balão */}
+        <div
+          className={cn(
+            'max-w-xs md:max-w-md lg:max-w-lg',
+            isSticker
+              ? 'p-1'   // figurinha: sem fundo
+              : cn(
+                  'rounded-2xl px-3 py-2 shadow-sm',
+                  isIn ? 'bg-white rounded-bl-sm' : 'bg-emerald-600 text-white rounded-br-sm'
+                )
+          )}
+        >
+          <MessageContent message={msg} isOut={isOut} />
 
-        {/* Análise de comprovante */}
-        {msg.ai_analysis && (
-          <AiAnalysisCard analysis={msg.ai_analysis} />
-        )}
+          {/* Análise de comprovante */}
+          {msg.ai_analysis && !isSticker && (
+            <AiAnalysisCard analysis={msg.ai_analysis} />
+          )}
 
-        {/* Transcrição de áudio */}
-        {msg.metadata?.transcription && (
-          <p className={cn('text-xs mt-1 italic', isOut ? 'text-emerald-100' : 'text-gray-400')}>
-            🎙 {msg.metadata.transcription}
-          </p>
-        )}
+          {/* Transcrição de áudio */}
+          {msg.metadata?.transcription && !isSticker && (
+            <p className={cn('text-xs mt-1 italic', isOut ? 'text-emerald-100' : 'text-gray-400')}>
+              🎙 {msg.metadata.transcription}
+            </p>
+          )}
 
-        {/* Footer: hora + status */}
-        <div className={cn('flex items-center justify-end gap-1 mt-1', isIn && 'justify-start')}>
-          <span className={cn('text-[10px]', isOut ? 'text-emerald-100' : 'text-gray-400')}>
-            {formatTime(msg.created_at)}
-          </span>
-          {isOut && <MessageStatus status={msg.wa_status} />}
+          {/* Footer: hora + status */}
+          {!isSticker && (
+            <div className={cn('flex items-center justify-end gap-1 mt-1', isIn && 'justify-start')}>
+              <span className={cn('text-[10px]', isOut ? 'text-emerald-100' : 'text-gray-400')}>
+                {formatTime(msg.created_at)}
+              </span>
+              {isOut && <MsgStatus status={msg.wa_status} />}
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Reações de emoji abaixo do balão */}
+      {reactions.length > 0 && (
+        <div className={cn('flex flex-wrap gap-0.5 mt-0.5', isIn ? 'ml-8' : 'mr-0')}>
+          {reactions.map((r, i) => (
+            <span
+              key={i}
+              className="bg-white text-sm rounded-full px-1.5 py-0.5 shadow-sm border border-gray-100 leading-tight"
+              title={`Reação de ${r.wa_id}`}
+            >
+              {r.emoji}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
+// ── MessageContent ────────────────────────────────────────────────────────────
+
 function MessageContent({ message: msg, isOut }: { message: Message; isOut: boolean }) {
-  switch (msg.type) {
-    case 'text':
-    case 'button':
-      return (
-        <p className={cn('text-sm whitespace-pre-wrap', isOut ? 'text-white' : 'text-gray-900')}>
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+
+  return (
+    <>
+      {lightboxSrc && <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />}
+
+      {msg.type === 'text' || msg.type === 'button' || msg.type === 'template' ? (
+        <p className={cn('text-sm whitespace-pre-wrap break-words', isOut ? 'text-white' : 'text-gray-900')}>
           {msg.content}
         </p>
-      )
-    case 'image':
-      return (
+
+      ) : msg.type === 'image' ? (
         <div>
           {msg.media_url ? (
             <img
               src={msg.media_url}
               alt="Imagem"
-              className="rounded-lg max-w-full max-h-64 object-cover"
+              className="rounded-lg max-w-full max-h-64 object-cover cursor-zoom-in"
+              onClick={() => setLightboxSrc(msg.media_url!)}
             />
           ) : (
-            <div className="flex items-center gap-2 py-1">
+            <div className={cn('flex items-center gap-2 py-1 text-sm', isOut ? 'text-emerald-100' : 'text-gray-400')}>
               <ImageIcon className="w-4 h-4" />
-              <span className="text-sm">Imagem</span>
+              <span>Imagem</span>
             </div>
           )}
           {msg.content && (
             <p className={cn('text-sm mt-1', isOut ? 'text-white' : 'text-gray-900')}>{msg.content}</p>
           )}
         </div>
-      )
-    case 'audio':
-      return (
-        <div className="flex items-center gap-2 py-1">
-          <Mic className="w-4 h-4 shrink-0" />
+
+      ) : msg.type === 'sticker' ? (
+        <div>
           {msg.media_url ? (
-            <audio controls src={msg.media_url} className="h-8 max-w-[200px]" />
+            <img
+              src={msg.media_url}
+              alt="Figurinha"
+              className="w-28 h-28 object-contain cursor-zoom-in"
+              onClick={() => setLightboxSrc(msg.media_url!)}
+            />
           ) : (
-            <span className="text-sm">Áudio</span>
+            <span className="text-3xl">🖼</span>
           )}
         </div>
-      )
-    case 'document':
-      return (
-        <div className="flex items-center gap-2 py-1">
-          <FileText className="w-4 h-4 shrink-0" />
-          <div>
-            <p className="text-sm font-medium">{msg.media_filename || 'Documento'}</p>
-            {msg.media_url && (
-              <a
-                href={msg.media_url}
-                target="_blank"
-                rel="noreferrer"
-                className={cn('text-xs underline', isOut ? 'text-emerald-100' : 'text-emerald-600')}
-              >
-                Baixar
-              </a>
-            )}
-          </div>
+
+      ) : msg.type === 'video' ? (
+        <div>
+          {msg.media_url ? (
+            <video
+              src={msg.media_url}
+              controls
+              className="rounded-lg max-w-full max-h-64"
+              preload="metadata"
+            />
+          ) : (
+            <div className={cn('flex items-center gap-2 py-1 text-sm', isOut ? 'text-emerald-100' : 'text-gray-400')}>
+              <VideoIcon className="w-4 h-4" />
+              <span>Vídeo</span>
+            </div>
+          )}
+          {msg.content && (
+            <p className={cn('text-sm mt-1', isOut ? 'text-white' : 'text-gray-900')}>{msg.content}</p>
+          )}
         </div>
-      )
-    default:
-      return <p className="text-sm text-gray-400 italic">[{msg.type}]</p>
-  }
+
+      ) : msg.type === 'audio' || msg.type === 'voice' ? (
+        <div className="flex items-center gap-2 py-1 min-w-[180px]">
+          <Mic className="w-3.5 h-3.5 shrink-0 opacity-60" />
+          {msg.media_url ? (
+            <AudioPlayer src={msg.media_url} isOut={isOut} />
+          ) : (
+            <span className={cn('text-sm', isOut ? 'text-emerald-100' : 'text-gray-400')}>Áudio</span>
+          )}
+        </div>
+
+      ) : msg.type === 'document' ? (
+        <DocumentCard message={msg} isOut={isOut} />
+
+      ) : msg.type === 'location' ? (
+        <LocationCard content={msg.content} isOut={isOut} />
+
+      ) : msg.type === 'contacts' ? (
+        <p className={cn('text-sm', isOut ? 'text-white' : 'text-gray-900')}>
+          {msg.content || 'Contato'}
+        </p>
+
+      ) : (
+        <p className={cn('text-xs italic', isOut ? 'text-emerald-100' : 'text-gray-400')}>
+          [{msg.type}]
+        </p>
+      )}
+    </>
+  )
 }
 
+// ── AudioPlayer ───────────────────────────────────────────────────────────────
+
+function AudioPlayer({ src, isOut }: { src: string; isOut: boolean }) {
+  const audioRef             = useRef<HTMLAudioElement>(null)
+  const [playing,  setPlaying]  = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [curTime,  setCurTime]  = useState(0)
+
+  const fmt = (s: number) => {
+    if (!s || !isFinite(s)) return '0:00'
+    const m   = Math.floor(s / 60)
+    const sec = Math.floor(s % 60)
+    return `${m}:${sec.toString().padStart(2, '0')}`
+  }
+
+  function toggle() {
+    const a = audioRef.current
+    if (!a) return
+    if (playing) a.pause()
+    else         a.play().catch(() => {})
+    setPlaying(p => !p)
+  }
+
+  function seek(e: React.MouseEvent<HTMLDivElement>) {
+    const a = audioRef.current
+    if (!a || !a.duration) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    a.currentTime = ((e.clientX - rect.left) / rect.width) * a.duration
+  }
+
+  return (
+    <div className="flex items-center gap-2 w-48">
+      <audio
+        ref={audioRef}
+        src={src}
+        onTimeUpdate={() => {
+          const a = audioRef.current!
+          setCurTime(a.currentTime)
+          setProgress((a.currentTime / (a.duration || 1)) * 100)
+        }}
+        onLoadedMetadata={() => setDuration(audioRef.current!.duration)}
+        onEnded={() => { setPlaying(false); setProgress(0); setCurTime(0) }}
+        className="hidden"
+        preload="metadata"
+      />
+      <button
+        onClick={toggle}
+        className={cn(
+          'w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-colors',
+          isOut
+            ? 'bg-white/20 hover:bg-white/30 text-white'
+            : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-700'
+        )}
+      >
+        {playing
+          ? <Pause className="w-3.5 h-3.5" />
+          : <Play  className="w-3.5 h-3.5 ml-0.5" />
+        }
+      </button>
+      <div className="flex-1 min-w-0">
+        <div
+          className={cn('h-1.5 rounded-full cursor-pointer mb-1', isOut ? 'bg-white/25' : 'bg-gray-200')}
+          onClick={seek}
+        >
+          <div
+            className={cn('h-full rounded-full transition-all', isOut ? 'bg-white' : 'bg-emerald-500')}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <span className={cn('text-[10px]', isOut ? 'text-emerald-100' : 'text-gray-400')}>
+          {fmt(curTime > 0 ? curTime : duration)}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// ── DocumentCard ──────────────────────────────────────────────────────────────
+
+function DocumentCard({ message: msg, isOut }: { message: Message; isOut: boolean }) {
+  const ext = msg.media_filename?.split('.').pop()?.toUpperCase() || 'DOC'
+
+  return (
+    <div className={cn(
+      'flex items-center gap-3 rounded-xl p-2 min-w-[200px]',
+      isOut ? 'bg-white/10' : 'bg-gray-50 border border-gray-100'
+    )}>
+      <div className={cn(
+        'w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0',
+        isOut ? 'bg-white/20' : 'bg-emerald-100'
+      )}>
+        <FileText className={cn('w-4 h-4', isOut ? 'text-white' : 'text-emerald-600')} />
+        <span className={cn('text-[8px] font-bold mt-0.5', isOut ? 'text-white/80' : 'text-emerald-500')}>
+          {ext}
+        </span>
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className={cn('text-sm font-medium truncate', isOut ? 'text-white' : 'text-gray-900')}>
+          {msg.media_filename || 'Documento'}
+        </p>
+        <p className={cn('text-[11px]', isOut ? 'text-emerald-100' : 'text-gray-400')}>
+          {msg.media_mime_type || 'Arquivo'}
+        </p>
+      </div>
+      {msg.media_url && (
+        <a
+          href={msg.media_url}
+          target="_blank"
+          rel="noreferrer"
+          download={msg.media_filename || true}
+          title="Baixar"
+          className={cn('shrink-0', isOut ? 'text-white/70 hover:text-white' : 'text-gray-400 hover:text-gray-600')}
+        >
+          <Download className="w-4 h-4" />
+        </a>
+      )}
+    </div>
+  )
+}
+
+// ── LocationCard ──────────────────────────────────────────────────────────────
+
+function LocationCard({ content, isOut }: { content: string | null; isOut: boolean }) {
+  if (!content) return <p className={cn('text-sm', isOut ? 'text-white' : 'text-gray-900')}>📍 Localização</p>
+
+  const lines   = content.split('\n')
+  const mapLink = lines.find(l => l.includes('maps.google.com'))
+  const textLines = lines.filter(l => !l.includes('maps.google.com'))
+
+  return (
+    <div>
+      {textLines.map((line, i) => (
+        <p key={i} className={cn('text-sm', isOut ? 'text-white' : 'text-gray-900')}>{line}</p>
+      ))}
+      {mapLink && (
+        <a
+          href={mapLink}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            'inline-flex items-center gap-1 text-xs mt-1 underline underline-offset-2',
+            isOut ? 'text-emerald-100 hover:text-white' : 'text-emerald-600 hover:text-emerald-700'
+          )}
+        >
+          <MapPin className="w-3 h-3" />
+          Ver no mapa
+        </a>
+      )}
+    </div>
+  )
+}
+
+// ── AiAnalysisCard ────────────────────────────────────────────────────────────
+
 function AiAnalysisCard({ analysis }: { analysis: any }) {
-  const isSiengePaid    = analysis.sienge_status === 'pago'
-  const isSiengePending = analysis.sienge_status === 'pendente'
+  const isSiengePaid = analysis.sienge_status === 'pago'
 
   return (
     <div className="mt-2 bg-white/90 rounded-lg p-2.5 border border-gray-100 space-y-1.5">
@@ -345,22 +565,12 @@ function AiAnalysisCard({ analysis }: { analysis: any }) {
           </Badge>
         )}
       </div>
-      {analysis.beneficiario && (
-        <AnalysisRow label="Beneficiário" value={analysis.beneficiario} />
-      )}
-      {analysis.valor && (
-        <AnalysisRow label="Valor" value={analysis.valor} />
-      )}
-      {analysis.vencimento && (
-        <AnalysisRow label="Vencimento" value={analysis.vencimento} />
-      )}
-      {analysis.data_pagamento && (
-        <AnalysisRow label="Pago em" value={analysis.data_pagamento} />
-      )}
-      {analysis.pagador && (
-        <AnalysisRow label="Pagador" value={analysis.pagador} />
-      )}
-      {analysis.sienge_boleto && (
+      {analysis.beneficiario   && <AnalysisRow label="Beneficiário" value={analysis.beneficiario} />}
+      {analysis.valor          && <AnalysisRow label="Valor"        value={analysis.valor} />}
+      {analysis.vencimento     && <AnalysisRow label="Vencimento"   value={analysis.vencimento} />}
+      {analysis.data_pagamento && <AnalysisRow label="Pago em"      value={analysis.data_pagamento} />}
+      {analysis.pagador        && <AnalysisRow label="Pagador"      value={analysis.pagador} />}
+      {analysis.sienge_boleto  && (
         <AnalysisRow
           label="Parcela Sienge"
           value={`${analysis.sienge_boleto.parcela} — ${formatCurrency(analysis.sienge_boleto.valor)}`}
@@ -379,7 +589,7 @@ function AnalysisRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-function MessageStatus({ status }: { status: string }) {
+function MsgStatus({ status }: { status: string }) {
   if (status === 'read')      return <CheckCheck className="w-3 h-3 text-blue-300" />
   if (status === 'delivered') return <CheckCheck className="w-3 h-3 text-emerald-100" />
   if (status === 'failed')    return <span className="text-[10px] text-red-300">!</span>
