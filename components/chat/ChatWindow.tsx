@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import {
   Check, CheckCheck, Mic, FileText, Image as ImageIcon,
-  ChevronDown, Bell, UserCheck,
+  ChevronDown, Bell, UserCheck, UserRound,
   Play, Pause, Download, MapPin, Video as VideoIcon,
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -179,14 +179,26 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
               <p className="text-sm text-gray-400">Nenhuma mensagem ainda</p>
             </div>
           ) : (
-            visibleMessages.map((msg, i) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                showAvatar={i === 0 || visibleMessages[i - 1].direction !== msg.direction}
-                contactName={name}
-              />
-            ))
+            visibleMessages.map((msg, i) => {
+              const prev = visibleMessages[i - 1]
+              // Mostrar remetente quando muda de direção OU quando muda quem enviou (bot→humano, atendente X→Y)
+              const showSender =
+                msg.direction === 'out' && (
+                  !prev ||
+                  prev.direction !== 'out' ||
+                  prev.attendant_id !== msg.attendant_id ||
+                  (prev.metadata as any)?.agent_id !== (msg.metadata as any)?.agent_id
+                )
+              return (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  showAvatar={!prev || prev.direction !== msg.direction}
+                  showSender={showSender}
+                  contactName={name}
+                />
+              )
+            })
           )}
           <div ref={bottomRef} />
         </div>
@@ -215,10 +227,12 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
 function MessageBubble({
   message: msg,
   showAvatar,
+  showSender,
   contactName,
 }: {
   message:     Message
   showAvatar:  boolean
+  showSender:  boolean
   contactName: string
 }) {
   const isIn      = msg.direction === 'in'
@@ -226,8 +240,35 @@ function MessageBubble({
   const isSticker = msg.type === 'sticker'
   const reactions: { wa_id: string; emoji: string }[] = (msg.metadata?.reactions as any[]) || []
 
+  // ── Remetente para mensagens enviadas ──────────────────────────────────────
+  const meta       = msg.metadata as Record<string, any> | null
+  const isBotMsg   = meta?.sent_by === 'bot'
+  const agentName  = meta?.agent_name  as string | null
+  const agentEmoji = meta?.agent_emoji as string | null
+  const senderLabel = isBotMsg
+    ? (agentName || 'Agente IA')
+    : (msg.attendant as any)?.name || 'Atendente'
+
   return (
     <div className={cn('flex flex-col', isOut && 'items-end')}>
+      {/* Nome do remetente — só para mensagens enviadas, apenas na primeira da sequência */}
+      {showSender && isOut && (
+        <div className={cn('flex items-center gap-1 mb-0.5 mr-1', isBotMsg ? 'text-violet-500' : 'text-emerald-600')}>
+          {isBotMsg ? (
+            <>
+              <span className="text-sm leading-none">{agentEmoji || '🤖'}</span>
+              <span className="text-[11px] font-medium">{senderLabel}</span>
+              <span className="text-[10px] bg-violet-100 text-violet-600 rounded px-1 py-0 font-semibold">IA</span>
+            </>
+          ) : (
+            <>
+              <UserRound className="w-3 h-3" />
+              <span className="text-[11px] font-medium">{senderLabel}</span>
+            </>
+          )}
+        </div>
+      )}
+
       <div className={cn('flex items-end gap-2', isOut && 'flex-row-reverse')}>
         {/* Avatar (só lado esquerdo para mensagens recebidas) */}
         {isIn && showAvatar ? (

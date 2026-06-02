@@ -733,7 +733,7 @@ Deno.serve(async (req) => {
       direction:       'out',
       type:            'text',
       content:         messageToSend,
-      metadata:        { sent_by: 'bot', agent_id: agent?.id || null },
+      metadata:        { sent_by: 'bot', agent_id: agent?.id || null, agent_name: agent?.name || null, agent_emoji: agent?.avatar_emoji || null },
     })
     if (insertErr) console.error('Insert message error:', JSON.stringify(insertErr))
 
