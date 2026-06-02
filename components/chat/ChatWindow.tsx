@@ -69,8 +69,14 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `conversation_id=eq.${conv.id}` },
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new as Message])
+        async (payload) => {
+          // payload.new é a linha bruta (sem joins) — rebuscar com attendant para mostrar o nome correto
+          const { data: fullMsg } = await supabase
+            .from('chat_messages')
+            .select('*, attendant:chat_attendants(id, name)')
+            .eq('id', (payload.new as any).id)
+            .maybeSingle()
+          setMessages((prev) => [...prev, (fullMsg || payload.new) as Message])
         }
       )
       .on(
