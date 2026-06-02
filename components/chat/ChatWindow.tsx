@@ -182,13 +182,7 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
             visibleMessages.map((msg, i) => {
               const prev = visibleMessages[i - 1]
               // Mostrar remetente quando muda de direção OU quando muda quem enviou (bot→humano, atendente X→Y)
-              const showSender =
-                msg.direction === 'out' && (
-                  !prev ||
-                  prev.direction !== 'out' ||
-                  prev.attendant_id !== msg.attendant_id ||
-                  (prev.metadata as any)?.agent_id !== (msg.metadata as any)?.agent_id
-                )
+              const showSender = msg.direction === 'out'
               return (
                 <MessageBubble
                   key={msg.id}
