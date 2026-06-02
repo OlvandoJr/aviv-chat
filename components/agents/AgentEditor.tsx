@@ -5,13 +5,13 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import {
   ArrowLeft, Save, Bot, Cpu, MessageSquare, Database,
-  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags, Wrench,
+  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags, Wrench, RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type {
   Agent, AgentModel, AgentRule, AgentRuleType, Inbox,
   ContactAttributeDef, AttributeFieldType, AttributeAction,
-  AgentTool, ApiConnection,
+  AgentTool, ApiConnection, ConversationUpdateDef, UpdateFieldType,
 } from '@/lib/types'
 import ToolEditor from './ToolEditor'
 
@@ -23,6 +23,7 @@ interface Props {
   attrDefs:        ContactAttributeDef[]
   tools:           AgentTool[]
   apiConnections:  ApiConnection[]
+  updateDefs:      ConversationUpdateDef[]
 }
 
 interface AttrDefDraft {
@@ -35,8 +36,21 @@ interface AttrDefDraft {
   sort_order:    number
 }
 
+interface UpdateDefDraft {
+  id?:         string
+  name:        string
+  key:         string
+  field_type:  UpdateFieldType
+  options:     string
+  description: string
+  sort_order:  number
+  // estado interno
+  _creating?:  boolean   // true enquanto o RPC de criação da coluna está rodando
+  _error?:     string
+}
 
-export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections }: Props) {
+
+export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections, updateDefs: initialUpdateDefs }: Props) {
   const router  = useRouter()
   const supabase = createClient()
   const isNew   = !agent
@@ -97,6 +111,19 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   const [tools,               setTools]              = useState<AgentTool[]>(initialTools)
   const [toolEditorOpen,      setToolEditorOpen]     = useState(false)
   const [editingTool,         setEditingTool]        = useState<AgentTool | null>(null)
+
+  // Campos de Atualização de Conversa
+  const [updateDefs,          setUpdateDefs]         = useState<UpdateDefDraft[]>(
+    initialUpdateDefs.map(d => ({
+      id:          d.id,
+      name:        d.name,
+      key:         d.key,
+      field_type:  d.field_type,
+      options:     d.options.join('\n'),
+      description: d.description,
+      sort_order:  d.sort_order,
+    }))
+  )
 
   const [loading,             setLoading]            = useState(false)
   const [error,               setError]              = useState('')
@@ -224,6 +251,32 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
           action:        d.action,
           capture_regex: d.capture_regex.trim() || null,
           sort_order:    i,
+        }))
+      )
+    }
+
+    // Salvar campos de atualização (apagar e reinserir + garantir coluna no banco)
+    await supabase.from('chat_conversation_update_defs').delete().eq('agent_id', agentId!)
+    const validUpdateDefs = updateDefs.filter(d => d.name.trim() && d.key.trim())
+    if (validUpdateDefs.length > 0) {
+      // 1. Criar colunas cf_<key> para cada campo (idempotente via IF NOT EXISTS)
+      await Promise.all(
+        validUpdateDefs.map(d =>
+          supabase.rpc('create_conversation_field', { p_key: d.key.trim(), p_type: d.field_type })
+        )
+      )
+      // 2. Persistir as definições
+      await supabase.from('chat_conversation_update_defs').insert(
+        validUpdateDefs.map((d, i) => ({
+          agent_id:    agentId,
+          name:        d.name.trim(),
+          key:         d.key.trim(),
+          field_type:  d.field_type,
+          options:     d.field_type === 'select'
+                         ? d.options.split('\n').map(o => o.trim()).filter(Boolean)
+                         : [],
+          description: d.description.trim(),
+          sort_order:  i,
         }))
       )
     }
@@ -880,6 +933,118 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
             💡 Salve o agente primeiro para poder adicionar ferramentas.
           </div>
         )}
+
+        {/* ── CAMPOS DE ATUALIZAÇÃO ── */}
+        <Section icon={<RefreshCw className="w-4 h-4" />} title="Campos de Atualização da Conversa">
+          <p className="text-xs text-gray-500 -mt-1 mb-3">
+            Configure quais dados o agente pode gravar diretamente na conversa durante o atendimento.
+            Cada campo cria automaticamente uma coluna <code className="bg-gray-100 px-1 rounded">cf_*</code> no banco ao salvar.
+          </p>
+
+          {updateDefs.length > 0 && (
+            <div className="space-y-3 mb-4">
+              {updateDefs.map((def, i) => (
+                <div key={i} className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
+                  <div className="grid grid-cols-[1fr_1fr] gap-2">
+                    {/* Nome */}
+                    <div>
+                      <label className="text-[10px] text-gray-400 mb-0.5 block">Rótulo</label>
+                      <input
+                        value={def.name}
+                        onChange={(e) => setUpdateDefs(updateDefs.map((d, j) => j === i ? { ...d, name: e.target.value } : d))}
+                        placeholder="Ex: Status de Pagamento"
+                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                    {/* Chave */}
+                    <div>
+                      <label className="text-[10px] text-gray-400 mb-0.5 block">
+                        Chave → coluna <code className="bg-gray-100 px-0.5 rounded">cf_<span className="text-emerald-700">{def.key || '...'}</span></code>
+                      </label>
+                      <input
+                        value={def.key}
+                        onChange={(e) => setUpdateDefs(updateDefs.map((d, j) => j === i ? {
+                          ...d, key: e.target.value.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+                        } : d))}
+                        placeholder="ex: status_pagamento"
+                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-[1fr_1fr] gap-2">
+                    {/* Tipo */}
+                    <div>
+                      <label className="text-[10px] text-gray-400 mb-0.5 block">Tipo</label>
+                      <select
+                        value={def.field_type}
+                        onChange={(e) => setUpdateDefs(updateDefs.map((d, j) => j === i ? { ...d, field_type: e.target.value as UpdateFieldType } : d))}
+                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      >
+                        <option value="text">Texto livre</option>
+                        <option value="select">Seleção (lista)</option>
+                        <option value="number">Número</option>
+                        <option value="boolean">Sim / Não</option>
+                      </select>
+                    </div>
+                    {/* Opções (visível apenas para select) */}
+                    {def.field_type === 'select' ? (
+                      <div>
+                        <label className="text-[10px] text-gray-400 mb-0.5 block">Opções (uma por linha)</label>
+                        <textarea
+                          value={def.options}
+                          onChange={(e) => setUpdateDefs(updateDefs.map((d, j) => j === i ? { ...d, options: e.target.value } : d))}
+                          placeholder={"pendente\npago\ncancelado"}
+                          rows={3}
+                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+                        />
+                      </div>
+                    ) : (
+                      <div />
+                    )}
+                  </div>
+
+                  {/* Instrução para o AI */}
+                  <div>
+                    <label className="text-[10px] text-gray-400 mb-0.5 block">Instrução para o AI (quando atualizar e com qual valor)</label>
+                    <input
+                      value={def.description}
+                      onChange={(e) => setUpdateDefs(updateDefs.map((d, j) => j === i ? { ...d, description: e.target.value } : d))}
+                      placeholder='Ex: "Atualize para pendente quando o cliente mencionar pagamento atrasado"'
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  <div className="flex justify-end pt-0.5">
+                    <button
+                      onClick={() => setUpdateDefs(updateDefs.filter((_, j) => j !== i))}
+                      className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={() => setUpdateDefs([...updateDefs, {
+              name: '', key: '', field_type: 'text', options: '', description: '', sort_order: updateDefs.length,
+            }])}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Adicionar campo
+          </button>
+
+          {updateDefs.length > 0 && (
+            <div className="mt-3 p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-[11px] text-blue-700">
+              💡 As colunas são criadas automaticamente ao salvar o agente. O bot pode atualizar esses campos
+              usando a função <code className="bg-blue-100 px-1 rounded">atualizar_conversa</code> durante a conversa.
+            </div>
+          )}
+        </Section>
 
       </div>
 

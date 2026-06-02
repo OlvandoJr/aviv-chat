@@ -150,6 +150,17 @@ Deno.serve(async (req) => {
       agentTools = tools || []
     }
 
+    // ── 2c. Buscar campos de atualização configurados ─────────────────────────
+    let updateDefs: any[] = []
+    if (agent?.id) {
+      const { data: defs } = await supabase
+        .from('chat_conversation_update_defs')
+        .select('*')
+        .eq('agent_id', agent.id)
+        .order('sort_order')
+      updateDefs = defs || []
+    }
+
     // Construir array de tools para OpenAI
     const openAiTools: any[] = []
     for (const tool of agentTools) {
@@ -184,6 +195,42 @@ Deno.serve(async (req) => {
           },
         })
       }
+    }
+
+    // Adicionar atualizar_conversa se há campos de atualização configurados
+    if (updateDefs.length > 0) {
+      const properties: Record<string, any> = {}
+      for (const def of updateDefs) {
+        let prop: any = {
+          description: def.description || `Valor para o campo: ${def.name}`,
+        }
+        if (def.field_type === 'select' && def.options?.length > 0) {
+          prop.type = 'string'
+          prop.enum = def.options
+        } else if (def.field_type === 'number') {
+          prop.type = 'number'
+        } else if (def.field_type === 'boolean') {
+          prop.type = 'boolean'
+        } else {
+          prop.type = 'string'
+        }
+        properties[def.key] = prop
+      }
+
+      openAiTools.push({
+        type: 'function',
+        function: {
+          name: 'atualizar_conversa',
+          description:
+            'Atualiza os campos de status desta conversa no sistema interno. ' +
+            'Use para registrar silenciosamente informações importantes identificadas durante o atendimento. ' +
+            'Após chamar esta função, continue a conversa normalmente com sua resposta ao cliente.',
+          parameters: {
+            type: 'object',
+            properties,
+          },
+        },
+      })
     }
 
     // ── 3. Buscar contato ─────────────────────────────────────────────────────
@@ -408,6 +455,43 @@ Deno.serve(async (req) => {
       customerContext += `\nINFORMAÇÕES ADICIONAIS:\n${customContext}\n`
     }
 
+    // Campos de atualização configurados — buscar valores atuais da conversa
+    if (updateDefs.length > 0) {
+      const { data: fullConv } = await supabase
+        .from('chat_conversations')
+        .select('*')
+        .eq('id', conversationId)
+        .single()
+
+      const activeValues: string[] = []
+      if (fullConv) {
+        for (const def of updateDefs) {
+          const colName = `cf_${def.key}`
+          if (colName in fullConv && fullConv[colName] != null && fullConv[colName] !== '') {
+            activeValues.push(`- ${def.name}: ${fullConv[colName]}`)
+          }
+        }
+      }
+      if (activeValues.length > 0) {
+        customerContext += '\nCAMPOS DE STATUS DESTA CONVERSA:\n' + activeValues.join('\n') + '\n'
+      }
+
+      // Injetar instruções de atualização no contexto (quando usar cada campo)
+      const instrucoes = updateDefs
+        .filter((d: any) => d.description)
+        .map((d: any) => {
+          const opcoes = d.field_type === 'select' && d.options?.length
+            ? ` (opções: ${d.options.join(', ')})`
+            : ''
+          return `- ${d.name}${opcoes}: ${d.description}`
+        })
+      if (instrucoes.length > 0) {
+        customerContext +=
+          '\nREGRAS PARA atualizar_conversa — use a função quando identificar estes dados:\n' +
+          instrucoes.join('\n') + '\n'
+      }
+    }
+
     // ── 7. Montar mensagens para OpenAI ───────────────────────────────────────
     const openAiMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
       {
@@ -522,6 +606,8 @@ Deno.serve(async (req) => {
           } else if (toolName === 'confirmar_agendamento') {
             const paymentTool = agentTools.find((t: any) => t.tool_type === 'payment_scheduler')
             toolResult = await handleConfirmarAgendamento(toolArgs, conv, contact, boletos, paymentTool)
+          } else if (toolName === 'atualizar_conversa') {
+            toolResult = await handleAtualizarConversa(toolArgs, conversationId, updateDefs)
           }
 
           // Segunda chamada ao OpenAI com o resultado da ferramenta
@@ -942,6 +1028,48 @@ async function criarEventoCalendario(
   } catch (err) {
     console.error('criarEventoCalendario error:', err)
     return null
+  }
+}
+
+// ── Atualizar campos configuráveis da conversa ────────────────────────────────
+async function handleAtualizarConversa(
+  args:            Record<string, any>,
+  conversationId:  string,
+  updateDefs:      any[]
+): Promise<string> {
+  try {
+    const updates: Record<string, any> = {}
+
+    for (const [key, value] of Object.entries(args)) {
+      // Aceitar SOMENTE chaves registradas nas definições (previne injeção de colunas)
+      const def = updateDefs.find((d: any) => d.key === key)
+      if (!def) {
+        console.warn(`atualizar_conversa: campo "${key}" não está nas definições — ignorado`)
+        continue
+      }
+      updates[`cf_${key}`] = value
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return JSON.stringify({ success: false, error: 'Nenhum campo válido para atualizar.' })
+    }
+
+    const { error } = await supabase
+      .from('chat_conversations')
+      .update(updates)
+      .eq('id', conversationId)
+
+    if (error) {
+      console.error('handleAtualizarConversa error:', error)
+      return JSON.stringify({ success: false, error: error.message })
+    }
+
+    const updatedKeys = Object.keys(updates)
+    console.log(`atualizar_conversa: campos atualizados [${updatedKeys.join(', ')}] em conversa ${conversationId}`)
+    return JSON.stringify({ success: true, updated: updatedKeys })
+  } catch (err) {
+    console.error('handleAtualizarConversa error:', err)
+    return JSON.stringify({ success: false, error: String(err) })
   }
 }
 

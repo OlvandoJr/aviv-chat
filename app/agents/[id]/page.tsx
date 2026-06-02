@@ -31,17 +31,23 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         attrDefs={[]}
         tools={[]}
         apiConnections={apiConnections || []}
+        updateDefs={[]}
       />
     )
   }
 
-  const [{ data: agent }, { data: rules }, { data: attrDefs }, { data: tools }] = await Promise.all([
+  const [{ data: agent }, { data: rules }, { data: attrDefs }, { data: tools }, { data: updateDefs }] = await Promise.all([
     supabase.from('chat_agents').select('*').eq('id', id).single(),
     supabase.from('chat_agent_rules').select('*').eq('agent_id', id).order('priority'),
     supabase.from('chat_contact_attribute_defs').select('*').eq('agent_id', id).order('sort_order'),
     supabase
       .from('chat_agent_tools')
       .select('*, api_connection:chat_api_connections(*)')
+      .eq('agent_id', id)
+      .order('sort_order'),
+    supabase
+      .from('chat_conversation_update_defs')
+      .select('*')
       .eq('agent_id', id)
       .order('sort_order'),
   ])
@@ -57,6 +63,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       attrDefs={attrDefs || []}
       tools={tools || []}
       apiConnections={apiConnections || []}
+      updateDefs={updateDefs || []}
     />
   )
 }

@@ -246,6 +246,22 @@ export interface ScheduledPayment {
   created_at:               string
 }
 
+// ── Campos de Atualização de Conversa ────────────────────────────────────────
+
+export type UpdateFieldType = 'text' | 'select' | 'number' | 'boolean'
+
+export interface ConversationUpdateDef {
+  id:          string
+  agent_id:    string
+  name:        string
+  key:         string
+  field_type:  UpdateFieldType
+  options:     string[]
+  description: string
+  sort_order:  number
+  created_at:  string
+}
+
 // ── SGL (mensagens_cobranca) — sem API, apenas leitura da tabela n8n
 export interface SglBoleto {
   id:                    number
