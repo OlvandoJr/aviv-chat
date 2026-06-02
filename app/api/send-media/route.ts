@@ -16,6 +16,14 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // Buscar nome do atendente para prefixar a legenda enviada ao cliente
+    const { data: attendantRow } = await adminSupabase
+      .from('chat_attendants')
+      .select('name')
+      .eq('id', user.id)
+      .maybeSingle()
+    const senderName = attendantRow?.name as string | null
+
     // ── Payload ───────────────────────────────────────────────────────────
     const formData       = await req.formData()
     const file           = formData.get('file') as File | null
@@ -89,10 +97,15 @@ export async function POST(req: NextRequest) {
       type:              msgType,
     }
 
-    if      (msgType === 'image')    msgPayload.image    = { id: mediaId, ...(caption ? { caption } : {}) }
-    else if (msgType === 'video')    msgPayload.video    = { id: mediaId, ...(caption ? { caption } : {}) }
+    // Caption com prefixo do nome do atendente (ex: "Olvando:\nLegenda aqui")
+    const captionForWA = caption
+      ? (senderName ? `${senderName}:\n${caption}` : caption)
+      : undefined
+
+    if      (msgType === 'image')    msgPayload.image    = { id: mediaId, ...(captionForWA ? { caption: captionForWA } : {}) }
+    else if (msgType === 'video')    msgPayload.video    = { id: mediaId, ...(captionForWA ? { caption: captionForWA } : {}) }
     else if (msgType === 'audio')    msgPayload.audio    = { id: mediaId }
-    else                             msgPayload.document = { id: mediaId, filename: safeName, ...(caption ? { caption } : {}) }
+    else                             msgPayload.document = { id: mediaId, filename: safeName, ...(captionForWA ? { caption: captionForWA } : {}) }
 
     const sendResp = await fetch(
       `https://graph.facebook.com/v20.0/${phone_number_id}/messages`,

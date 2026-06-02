@@ -73,6 +73,19 @@ Deno.serve(async (req) => {
     return json({ error: 'Contato sem WhatsApp ID' }, 422)
   }
 
+  // ── Buscar nome do atendente antes de enviar ─────────────────────────────
+  // (precisa antes do fetch para ter o nome no prefixo)
+  const { data: attendantPre } = await supabase
+    .from('chat_attendants')
+    .select('id, name')
+    .eq('id', user.id)
+    .maybeSingle()
+
+  // Texto que o cliente recebe: "Nome:\nmensagem"
+  const textToSend = attendantPre?.name
+    ? `${attendantPre.name}:\n${text}`
+    : text
+
   // ── Enviar pela Meta API ───────────────────────────────────────────────────
   const metaResp = await fetch(
     `https://graph.facebook.com/v20.0/${inbox.phone_number_id}/messages`,
@@ -87,7 +100,7 @@ Deno.serve(async (req) => {
         recipient_type:    'individual',
         to:                contact.wa_id,
         type:              'text',
-        text:              { body: text },
+        text:              { body: textToSend },
       }),
     }
   )
@@ -101,14 +114,7 @@ Deno.serve(async (req) => {
   const metaData   = await metaResp.json()
   const waMessageId = metaData.messages?.[0]?.id || null
 
-  // ── Buscar id do atendente (se cadastrado) ────────────────────────────────
-  const { data: attendant } = await supabase
-    .from('chat_attendants')
-    .select('id')
-    .eq('id', user.id)
-    .maybeSingle()
-
-  // ── Salvar mensagem ───────────────────────────────────────────────────────
+  // ── Salvar mensagem (texto original, sem prefixo — o badge já mostra o nome) ──
   const now = new Date().toISOString()
   const { data: msg, error: msgErr } = await supabase
     .from('chat_messages')
@@ -119,7 +125,7 @@ Deno.serve(async (req) => {
       type:            'text',
       content:         text,
       wa_status:       'sent',
-      attendant_id:    attendant?.id || null,
+      attendant_id:    attendantPre?.id || null,
     })
     .select('id, created_at')
     .single()
