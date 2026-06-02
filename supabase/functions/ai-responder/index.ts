@@ -36,7 +36,9 @@ Exemplos de uso correto:
 - ESCALAR_HUMANO: cliente frustrado após múltiplas explicações
 - ESCALAR_HUMANO: solicitou falar com atendente
 
-Se nenhuma dessas condições se aplica, responda normalmente. NUNCA use ESCALAR_HUMANO: em respostas de rotina.`
+Se nenhuma dessas condições se aplica, responda normalmente. NUNCA use ESCALAR_HUMANO: em respostas de rotina.
+
+REGRA CRÍTICA: NUNCA inclua tokens internos (como Atualiza_base_dados, UPDATE_DB, ou qualquer instrução no formato token { ... }) na sua resposta ao cliente. Esses tokens são processados internamente e JAMAIS devem aparecer na mensagem enviada ao cliente.`
 
 // ── Handler principal ──────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
@@ -581,11 +583,27 @@ Deno.serve(async (req) => {
     const shouldEscalate = allEscalationPhrases.some(p =>
       botReply.toLowerCase().includes(p.toLowerCase())
     )
+
+    // ── 9b. Remover tokens internos antes de enviar ao cliente ─────────────────
+    // Tokens como Atualiza_base_dados { ... } NUNCA devem chegar ao cliente.
+    // São instruções internas do system prompt e devem ser filtradas aqui.
+    function stripInternalTokens(text: string): string {
+      return text
+        // Remove tokens snake_case seguidos de { ... }
+        // Padrão: palavra_com_underscore { ... }
+        // Ex: Atualiza_base_dados { status: "encaminhado_financeiro", cw_status: "close" }
+        .replace(/\b[A-Za-z][a-zA-Z0-9]*(?:_[a-zA-Z][a-zA-Z0-9]*)+\s*\{[^}]*\}\s*/g, '')
+        .replace(/\n{3,}/g, '\n\n')   // colapsar múltiplas linhas vazias em excesso
+        .trim()
+    }
+
     // Usa o token formal → substitui pela mensagem amigável configurada
     // Usa frase do agente  → mantém a resposta original (já é amigável)
-    const messageToSend = botReply.includes('ESCALAR_HUMANO:')
+    // Em qualquer caso → filtra tokens internos que jamais devem ir ao cliente
+    const rawMessage = botReply.includes('ESCALAR_HUMANO:')
       ? escalationMessage
       : botReply
+    const messageToSend = stripInternalTokens(rawMessage)
 
     if (shouldEscalate) {
       await supabase
