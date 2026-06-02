@@ -44,38 +44,19 @@ export default function Sidebar({ attendant }: SidebarProps) {
           label="Calendário"
           active={pathname.startsWith('/calendar')}
         />
+        {/* Exclusivo Admin */}
         {attendant?.role === 'admin' && (
           <>
-            <NavItem
-              href="/inboxes"
-              icon={<Inbox className="w-5 h-5" />}
-              label="Caixas de Entrada"
-              active={pathname.startsWith('/inboxes')}
-            />
-            <NavItem
-              href="/agents"
-              icon={<Bot className="w-5 h-5" />}
-              label="Agentes"
-              active={pathname.startsWith('/agents')}
-            />
-            <NavItem
-              href="/apis"
-              icon={<Plug className="w-5 h-5" />}
-              label="APIs"
-              active={pathname.startsWith('/apis')}
-            />
-            <NavItem
-              href="/integrations"
-              icon={<Puzzle className="w-5 h-5" />}
-              label="Integrações"
-              active={pathname.startsWith('/integrations')}
-            />
-            <NavItem
-              href="/settings/attendants"
-              icon={<Users className="w-5 h-5" />}
-              label="Atendentes"
-              active={pathname.startsWith('/settings')}
-            />
+            <NavItem href="/inboxes"      icon={<Inbox  className="w-5 h-5" />} label="Caixas de Entrada" active={pathname.startsWith('/inboxes')} />
+            <NavItem href="/apis"         icon={<Plug   className="w-5 h-5" />} label="APIs"              active={pathname.startsWith('/apis')} />
+            <NavItem href="/integrations" icon={<Puzzle className="w-5 h-5" />} label="Integrações"       active={pathname.startsWith('/integrations')} />
+          </>
+        )}
+        {/* Admin + Gerente */}
+        {(attendant?.role === 'admin' || attendant?.role === 'manager') && (
+          <>
+            <NavItem href="/agents"             icon={<Bot   className="w-5 h-5" />} label="Agentes IA" active={pathname.startsWith('/agents')} />
+            <NavItem href="/settings/attendants" icon={<Users className="w-5 h-5" />} label="Usuários"   active={pathname.startsWith('/settings')} />
           </>
         )}
       </nav>

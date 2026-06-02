@@ -21,12 +21,23 @@ export interface Contact {
   updated_at:          string
 }
 
+export type AttendantRole   = 'admin' | 'manager' | 'agent'
+export type AttendantSector =
+  | 'Financeiro' | 'Contabilidade' | 'Fiscal'
+  | 'Comercial/Marketing' | 'Engenharia' | 'Arquitetura'
+
+export const ATTENDANT_SECTORS: AttendantSector[] = [
+  'Financeiro', 'Contabilidade', 'Fiscal',
+  'Comercial/Marketing', 'Engenharia', 'Arquitetura',
+]
+
 export interface Attendant {
   id:         string
   name:       string
   email:      string
   avatar_url: string | null
-  role:       'admin' | 'agent'
+  role:       AttendantRole
+  sector?:    string | null
   is_active:  boolean
   created_at: string
 }

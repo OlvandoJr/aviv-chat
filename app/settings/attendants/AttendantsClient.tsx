@@ -1,146 +1,183 @@
 'use client'
 
-import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { Plus, MoreVertical, UserCheck, UserX } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { getInitials, formatDate } from '@/lib/utils'
-import type { Attendant } from '@/lib/types'
+import { useState }                 from 'react'
+import { Plus, UserCheck, UserX, Pencil, X, Check } from 'lucide-react'
+import { Button }                   from '@/components/ui/button'
+import { Input }                    from '@/components/ui/input'
+import { Badge }                    from '@/components/ui/badge'
+import { Avatar, AvatarFallback }   from '@/components/ui/avatar'
+import { getInitials, formatDate }  from '@/lib/utils'
+import { ATTENDANT_SECTORS }        from '@/lib/types'
+import type { Attendant, AttendantRole } from '@/lib/types'
+
+const SECTORS = ATTENDANT_SECTORS
+
+const ROLE_LABELS: Record<AttendantRole, string> = {
+  admin:   'Administrador',
+  manager: 'Gerente',
+  agent:   'Atendente',
+}
+
+const ROLE_BADGE: Record<AttendantRole, string> = {
+  admin:   'bg-violet-100 text-violet-700',
+  manager: 'bg-blue-100  text-blue-700',
+  agent:   'bg-gray-100  text-gray-600',
+}
 
 interface Props {
   initialAttendants: Attendant[]
+  currentUserRole:   AttendantRole
 }
 
-export default function AttendantsClient({ initialAttendants }: Props) {
-  const supabase = createClient()
+type CreateForm = {
+  name: string; email: string; password: string
+  role: AttendantRole; sector: string
+}
 
+type EditForm = {
+  name: string; sector: string; role: AttendantRole; is_active: boolean
+}
+
+export default function AttendantsClient({ initialAttendants, currentUserRole }: Props) {
   const [attendants, setAttendants] = useState(initialAttendants)
   const [showForm,   setShowForm]   = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState<string | null>(null)
+  const [editingId,  setEditingId]  = useState<string | null>(null)
+  const [editForm,   setEditForm]   = useState<EditForm | null>(null)
 
-  const [form, setForm] = useState({
-    name:     '',
-    email:    '',
-    password: '',
-    role:     'agent' as 'admin' | 'agent',
+  const [form, setForm] = useState<CreateForm>({
+    name: '', email: '', password: '', role: 'agent', sector: '',
   })
 
+  // ── Criar ──────────────────────────────────────────────────────────────────
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError(null)
 
-    // Criar usuário via Supabase Auth Admin (requer API route)
-    const resp = await fetch('/api/attendants', {
-      method: 'POST',
+    const resp   = await fetch('/api/attendants', {
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(form),
     })
-
     const result = await resp.json()
 
     if (!resp.ok) {
-      setError(result.error || 'Erro ao criar atendente')
+      setError(result.error || 'Erro ao criar usuário')
       setLoading(false)
       return
     }
 
     setAttendants((prev) => [result.attendant, ...prev])
     setShowForm(false)
-    setForm({ name: '', email: '', password: '', role: 'agent' })
+    setForm({ name: '', email: '', password: '', role: 'agent', sector: '' })
     setLoading(false)
   }
 
-  async function toggleActive(attendant: Attendant) {
-    const { data } = await supabase
-      .from('chat_attendants')
-      .update({ is_active: !attendant.is_active })
-      .eq('id', attendant.id)
-      .select()
-      .single()
-
-    if (data) {
-      setAttendants((prev) => prev.map((a) => a.id === data.id ? { ...a, ...data } : a))
-    }
+  // ── Editar ─────────────────────────────────────────────────────────────────
+  function startEdit(a: Attendant) {
+    setEditingId(a.id)
+    setEditForm({ name: a.name || '', sector: a.sector || '', role: a.role, is_active: a.is_active })
   }
+
+  function cancelEdit() { setEditingId(null); setEditForm(null) }
+
+  async function saveEdit(a: Attendant) {
+    if (!editForm) return
+    setLoading(true)
+    setError(null)
+
+    const resp   = await fetch('/api/attendants', {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ id: a.id, ...editForm }),
+    })
+    const result = await resp.json()
+
+    if (!resp.ok) {
+      setError(result.error || 'Erro ao salvar')
+      setLoading(false)
+      return
+    }
+
+    setAttendants((prev) => prev.map((x) => x.id === result.attendant.id ? result.attendant : x))
+    cancelEdit()
+    setLoading(false)
+  }
+
+  async function toggleActive(a: Attendant) {
+    const resp   = await fetch('/api/attendants', {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ id: a.id, is_active: !a.is_active }),
+    })
+    const result = await resp.json()
+    if (resp.ok) setAttendants((prev) => prev.map((x) => x.id === result.attendant.id ? result.attendant : x))
+  }
+
+  // Roles disponíveis para criação conforme quem está logado
+  const creatableRoles: AttendantRole[] =
+    currentUserRole === 'admin' ? ['agent', 'manager', 'admin'] : ['agent']
 
   return (
     <div className="space-y-4">
       {/* Botão adicionar */}
       <div className="flex justify-end">
         <Button onClick={() => setShowForm(!showForm)} size="sm">
-          <Plus className="w-4 h-4" />
-          Novo atendente
+          <Plus className="w-4 h-4 mr-1" />
+          Novo usuário
         </Button>
       </div>
 
       {/* Formulário de criação */}
       {showForm && (
         <div className="bg-white rounded-2xl border border-gray-200 p-6">
-          <h2 className="text-sm font-semibold text-gray-900 mb-4">Criar atendente</h2>
+          <h2 className="text-sm font-semibold text-gray-900 mb-4">Criar usuário</h2>
           <form onSubmit={handleCreate} className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Nome</label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Nome completo"
-                  required
-                />
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Nome completo" required />
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
-                <Input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="email@empresa.com"
-                  required
-                />
+                <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="email@empresa.com" required />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Senha inicial</label>
-                <Input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  placeholder="Mínimo 6 caracteres"
-                  minLength={6}
-                  required
-                />
+                <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Mín. 6 caracteres" minLength={6} required />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Setor</label>
+                <select
+                  value={form.sector}
+                  onChange={(e) => setForm({ ...form, sector: e.target.value })}
+                  className="w-full h-9 rounded-md border border-gray-200 bg-transparent px-3 text-sm"
+                >
+                  <option value="">— Selecione —</option>
+                  {SECTORS.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Perfil</label>
                 <select
                   value={form.role}
-                  onChange={(e) => setForm({ ...form, role: e.target.value as 'admin' | 'agent' })}
+                  onChange={(e) => setForm({ ...form, role: e.target.value as AttendantRole })}
                   className="w-full h-9 rounded-md border border-gray-200 bg-transparent px-3 text-sm"
                 >
-                  <option value="agent">Atendente</option>
-                  <option value="admin">Administrador</option>
+                  {creatableRoles.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
                 </select>
               </div>
             </div>
-            {error && (
-              <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
-            )}
+            {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button type="submit" size="sm" disabled={loading}>
-                {loading ? 'Criando...' : 'Criar atendente'}
+                {loading ? 'Criando...' : 'Criar usuário'}
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setShowForm(false)}
-              >
+              <Button type="button" variant="outline" size="sm" onClick={() => { setShowForm(false); setError(null) }}>
                 Cancelar
               </Button>
             </div>
@@ -148,43 +185,101 @@ export default function AttendantsClient({ initialAttendants }: Props) {
         </div>
       )}
 
+      {/* Erro de edição */}
+      {error && !showForm && (
+        <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
+      )}
+
       {/* Lista */}
       <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
         {attendants.length === 0 ? (
-          <div className="p-8 text-center text-sm text-gray-400">
-            Nenhum atendente cadastrado ainda.
-          </div>
+          <div className="p-8 text-center text-sm text-gray-400">Nenhum usuário cadastrado ainda.</div>
         ) : (
           <div className="divide-y divide-gray-100">
-            {attendants.map((a) => (
-              <div key={a.id} className="flex items-center gap-4 px-4 py-3">
-                <Avatar className="w-9 h-9">
-                  <AvatarFallback>{getInitials(a.name)}</AvatarFallback>
-                </Avatar>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900">{a.name}</p>
-                  <p className="text-xs text-gray-400">{a.email}</p>
+            {attendants.map((a) =>
+              editingId === a.id && editForm ? (
+                /* ── Linha de edição inline ─────────────────────────────── */
+                <div key={a.id} className="px-4 py-3 bg-blue-50/40 space-y-3">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-medium text-gray-500 mb-1">Nome</label>
+                      <Input
+                        value={editForm.name}
+                        onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-gray-500 mb-1">Setor</label>
+                      <select
+                        value={editForm.sector}
+                        onChange={(e) => setEditForm({ ...editForm, sector: e.target.value })}
+                        className="w-full h-8 rounded-md border border-gray-200 bg-white px-2 text-sm"
+                      >
+                        <option value="">— Sem setor —</option>
+                        {SECTORS.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-medium text-gray-500 mb-1">Perfil</label>
+                      <select
+                        value={editForm.role}
+                        onChange={(e) => setEditForm({ ...editForm, role: e.target.value as AttendantRole })}
+                        disabled={currentUserRole === 'manager'}
+                        className="w-full h-8 rounded-md border border-gray-200 bg-white px-2 text-sm disabled:opacity-50"
+                      >
+                        {creatableRoles.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" disabled={loading} onClick={() => saveEdit(a)}>
+                      <Check className="w-3.5 h-3.5 mr-1" />
+                      {loading ? 'Salvando...' : 'Salvar'}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={cancelEdit}>
+                      <X className="w-3.5 h-3.5 mr-1" />
+                      Cancelar
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={a.role === 'admin' ? 'default' : 'secondary'} className="text-[10px]">
-                    {a.role === 'admin' ? 'Admin' : 'Atendente'}
-                  </Badge>
-                  <Badge
-                    variant={a.is_active ? 'default' : 'outline'}
-                    className="text-[10px]"
-                  >
-                    {a.is_active ? 'Ativo' : 'Inativo'}
-                  </Badge>
+              ) : (
+                /* ── Linha normal ───────────────────────────────────────── */
+                <div key={a.id} className="flex items-center gap-4 px-4 py-3">
+                  <Avatar className="w-9 h-9 shrink-0">
+                    <AvatarFallback>{getInitials(a.name)}</AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900">{a.name}</p>
+                    <p className="text-xs text-gray-400">{a.email}{a.sector ? ` · ${a.sector}` : ''}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${ROLE_BADGE[a.role]}`}>
+                      {ROLE_LABELS[a.role]}
+                    </span>
+                    <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${a.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>
+                      {a.is_active ? 'Ativo' : 'Inativo'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => startEdit(a)}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                      title="Editar"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => toggleActive(a)}
+                      className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                      title={a.is_active ? 'Desativar' : 'Ativar'}
+                    >
+                      {a.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
-                <button
-                  onClick={() => toggleActive(a)}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
-                  title={a.is_active ? 'Desativar' : 'Ativar'}
-                >
-                  {a.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                </button>
-              </div>
-            ))}
+              )
+            )}
           </div>
         )}
       </div>

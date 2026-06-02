@@ -13,8 +13,8 @@ export default async function SettingsLayout({ children }: { children: React.Rea
     .eq('id', user.id)
     .single()
 
-  // Apenas admins acessam configurações
-  if (attendant?.role !== 'admin') redirect('/conversations')
+  // Admin e Gerente acessam configurações de usuários
+  if (attendant?.role !== 'admin' && attendant?.role !== 'manager') redirect('/conversations')
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">
