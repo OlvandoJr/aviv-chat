@@ -61,13 +61,21 @@ Deno.serve(async (req) => {
         .single()
       if (!inbox) return
 
-      // Processar status updates (mensagens entregues/lidas)
+      // Processar status updates (mensagens entregues/lidas/falhas)
       const statuses = value.statuses || []
       for (const status of statuses) {
         await supabase
           .from('chat_messages')
           .update({ wa_status: status.status })
           .eq('wa_message_id', status.id)
+
+        // Detectar janela de 24h fechada (erro 131047 via webhook assíncrono)
+        if (status.status === 'failed') {
+          const errCode = status.errors?.[0]?.code
+          if (errCode === 131047 || errCode === '131047') {
+            await handleWindowClosed(status.id)
+          }
+        }
       }
 
       // Processar mensagens recebidas
@@ -292,4 +300,46 @@ async function handleReaction(msg: any) {
     .from('chat_messages')
     .update({ metadata: { ...(targetMsg.metadata || {}), reactions: filtered } })
     .eq('id', targetMsg.id)
+}
+
+// ── Janela de 24h fechada ─────────────────────────────────────────────────────
+// Chamada quando o webhook de status retorna failed + código 131047.
+// Insere uma mensagem de sistema na conversa para alertar o atendente.
+async function handleWindowClosed(waMessageId: string) {
+  // Buscar a mensagem que falhou para obter a conversa
+  const { data: failedMsg } = await supabase
+    .from('chat_messages')
+    .select('id, conversation_id, attendant_id')
+    .eq('wa_message_id', waMessageId)
+    .maybeSingle()
+
+  if (!failedMsg?.conversation_id) return
+
+  // Deduplicação: só inserir se não houver outro card de janela fechada
+  // criado nos últimos 10 minutos para esta conversa
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+  const { data: recent } = await supabase
+    .from('chat_messages')
+    .select('id')
+    .eq('conversation_id', failedMsg.conversation_id)
+    .eq('content', 'WINDOW_CLOSED')
+    .gte('created_at', tenMinAgo)
+    .maybeSingle()
+
+  if (recent) return   // já existe card recente — não duplicar
+
+  await supabase.from('chat_messages').insert({
+    conversation_id: failedMsg.conversation_id,
+    direction:       'out',
+    type:            'unknown',
+    content:         'WINDOW_CLOSED',
+    wa_status:       'failed',
+    attendant_id:    failedMsg.attendant_id,
+    metadata:        { system_type: 'window_closed' },
+  })
+
+  await supabase.from('chat_conversations').update({
+    last_message_at:      new Date().toISOString(),
+    last_message_preview: '⚠️ Janela de conversa fechada',
+  }).eq('id', failedMsg.conversation_id)
 }
