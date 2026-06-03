@@ -94,7 +94,24 @@ export async function GET(req: NextRequest) {
         const footerText  = footerComp?.text      ?? null
         const buttons     = buttonsComp?.buttons  ?? []
 
-        // Verificar se já existe no banco
+        // Dados completos vindos da Meta (sempre sobrescreve tudo)
+        const fullData = {
+          inbox_id:         inbox.id,
+          name:             mt.name,
+          category:         mt.category ?? 'UTILITY',
+          language:         mt.language ?? 'pt_BR',
+          status:           mt.status,
+          wa_id:            mt.id,
+          header_type:      headerType,
+          header_text:      headerText,
+          body_text:        bodyText,
+          footer_text:      footerText,
+          buttons,
+          body_var_count:   countVars(bodyText),
+          header_var_count: headerText ? countVars(headerText) : 0,
+          updated_at:       new Date().toISOString(),
+        }
+
         const { data: existing } = await admin
           .from('chat_wa_templates')
           .select('id')
@@ -103,28 +120,10 @@ export async function GET(req: NextRequest) {
           .maybeSingle()
 
         if (existing) {
-          // Atualizar status e wa_id
-          await admin.from('chat_wa_templates')
-            .update({ status: mt.status, wa_id: mt.id, updated_at: new Date().toISOString() })
-            .eq('id', existing.id)
+          await admin.from('chat_wa_templates').update(fullData).eq('id', existing.id)
           updated++
         } else {
-          // Importar template que existe na Meta mas não no banco
-          await admin.from('chat_wa_templates').insert({
-            inbox_id:         inbox.id,
-            name:             mt.name,
-            category:         mt.category   ?? 'UTILITY',
-            language:         mt.language   ?? 'pt_BR',
-            status:           mt.status,
-            wa_id:            mt.id,
-            header_type:      headerType,
-            header_text:      headerText,
-            body_text:        bodyText,
-            footer_text:      footerText,
-            buttons,
-            body_var_count:   countVars(bodyText),
-            header_var_count: headerText ? countVars(headerText) : 0,
-          })
+          await admin.from('chat_wa_templates').insert(fullData)
           imported++
         }
       }
