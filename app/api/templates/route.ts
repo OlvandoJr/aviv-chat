@@ -43,52 +43,97 @@ export async function GET(req: NextRequest) {
 
   if (!sync) return NextResponse.json({ templates: templates ?? [] })
 
-  // ── Sincronizar: buscar inboxes diretamente (não via join) ─────────────────
-  const allInboxIds = [...new Set((templates ?? []).map((t: any) => t.inbox_id).filter(Boolean))]
-  if (!allInboxIds.length) return NextResponse.json({ templates: templates ?? [], warning: 'Sem templates para sincronizar' })
-
+  // ── Sincronizar: buscar TODOS os inboxes com waba_id ──────────────────────
+  // (independente de já existirem templates no banco — permite importar da Meta)
   const { data: inboxRows } = await admin
     .from('chat_inboxes')
     .select('id, waba_id, access_token')
-    .in('id', allInboxIds)
+    .not('waba_id', 'is', null)
 
-  const validInboxes = (inboxRows ?? []).filter((i: any) => i.waba_id)
+  const validInboxes = (inboxRows ?? []).filter((i: any) => i.waba_id?.trim())
 
   if (!validInboxes.length) {
-    return NextResponse.json({ templates: templates ?? [], warning: 'Nenhum inbox com WABA ID. Configure em Caixas de Entrada.' })
+    return NextResponse.json({
+      templates: templates ?? [],
+      warning: 'Nenhum inbox com WABA ID configurado. Edite o inbox em Caixas de Entrada e adicione o WABA ID.',
+    })
   }
 
   const syncErrors: string[] = []
+  let imported = 0, updated = 0
 
   for (const inbox of validInboxes as any[]) {
     try {
       const metaResp = await fetch(
-        `https://graph.facebook.com/v20.0/${inbox.waba_id}/message_templates?fields=name,status,id&limit=200`,
+        `https://graph.facebook.com/v20.0/${inbox.waba_id}/message_templates` +
+        `?fields=name,status,id,category,language,components&limit=200`,
         { headers: { Authorization: `Bearer ${inbox.access_token}` } }
       )
 
       if (!metaResp.ok) {
-        const errText = await metaResp.text().catch(() => metaResp.status.toString())
-        syncErrors.push(`Inbox ${inbox.id}: ${errText}`)
+        const errText = await metaResp.text().catch(() => `HTTP ${metaResp.status}`)
+        syncErrors.push(errText)
         continue
       }
 
-      const metaJson = await metaResp.json()
-      const metaTemplates: { name: string; status: string; id: string }[] = metaJson.data ?? []
+      const metaJson   = await metaResp.json()
+      const metaList   = (metaJson.data ?? []) as any[]
 
-      for (const mt of metaTemplates) {
-        await admin
+      for (const mt of metaList) {
+        // Extrair componentes
+        const bodyComp    = mt.components?.find((c: any) => c.type === 'BODY')
+        const headerComp  = mt.components?.find((c: any) => c.type === 'HEADER')
+        const footerComp  = mt.components?.find((c: any) => c.type === 'FOOTER')
+        const buttonsComp = mt.components?.find((c: any) => c.type === 'BUTTONS')
+
+        if (!bodyComp?.text) continue   // template sem body — ignorar
+
+        const headerType  = headerComp?.format   ?? null
+        const headerText  = headerType === 'TEXT' ? (headerComp?.text ?? null) : null
+        const bodyText    = bodyComp.text
+        const footerText  = footerComp?.text      ?? null
+        const buttons     = buttonsComp?.buttons  ?? []
+
+        // Verificar se já existe no banco
+        const { data: existing } = await admin
           .from('chat_wa_templates')
-          .update({ status: mt.status, wa_id: mt.id, updated_at: new Date().toISOString() })
-          .eq('name', mt.name)
+          .select('id')
+          .eq('name',     mt.name)
           .eq('inbox_id', inbox.id)
+          .maybeSingle()
+
+        if (existing) {
+          // Atualizar status e wa_id
+          await admin.from('chat_wa_templates')
+            .update({ status: mt.status, wa_id: mt.id, updated_at: new Date().toISOString() })
+            .eq('id', existing.id)
+          updated++
+        } else {
+          // Importar template que existe na Meta mas não no banco
+          await admin.from('chat_wa_templates').insert({
+            inbox_id:         inbox.id,
+            name:             mt.name,
+            category:         mt.category   ?? 'UTILITY',
+            language:         mt.language   ?? 'pt_BR',
+            status:           mt.status,
+            wa_id:            mt.id,
+            header_type:      headerType,
+            header_text:      headerText,
+            body_text:        bodyText,
+            footer_text:      footerText,
+            buttons,
+            body_var_count:   countVars(bodyText),
+            header_var_count: headerText ? countVars(headerText) : 0,
+          })
+          imported++
+        }
       }
     } catch (err) {
       syncErrors.push(String(err))
     }
   }
 
-  // ── Re-fetch após sync (fallback: retornar dados originais se falhar) ───────
+  // ── Re-fetch após sync ────────────────────────────────────────────────────
   let refetchQuery = admin
     .from('chat_wa_templates')
     .select('*, inbox:chat_inboxes(id, name, waba_id)')
@@ -100,6 +145,8 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     templates: synced ?? templates ?? [],
+    imported,
+    updated,
     ...(syncErrors.length ? { syncErrors } : {}),
   })
 }

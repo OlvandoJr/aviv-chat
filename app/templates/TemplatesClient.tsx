@@ -115,11 +115,15 @@ export default function TemplatesClient({ initialTemplates, inboxes }: Props) {
       // Só atualiza se vier um array válido (nunca zera a lista em caso de erro)
       if (resp.ok && Array.isArray(result.templates)) {
         setTemplates(result.templates)
+        const msgs = []
+        if (result.imported > 0) msgs.push(`${result.imported} importado(s) da Meta`)
+        if (result.updated  > 0) msgs.push(`${result.updated} atualizado(s)`)
+        if (result.warning)       msgs.push(result.warning)
+        if (result.syncErrors?.length) msgs.push('Erro Meta: ' + result.syncErrors[0])
+        if (msgs.length) setError(msgs.join(' · '))   // exibe como info (não erro grave)
       } else if (!resp.ok) {
         setError(result.error || 'Erro ao sincronizar com a Meta')
       }
-      if (result.warning) setError(result.warning)
-      if (result.syncErrors?.length) setError('Sync parcial: ' + result.syncErrors[0])
     } catch (e) {
       setError('Erro de conexão ao sincronizar')
     }
