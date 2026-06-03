@@ -108,9 +108,21 @@ export default function TemplatesClient({ initialTemplates, inboxes }: Props) {
 
   async function handleSync() {
     setSyncing(true)
-    const resp = await fetch('/api/templates?sync=1')
-    const result = await resp.json()
-    if (resp.ok) setTemplates(result.templates)
+    setError(null)
+    try {
+      const resp   = await fetch('/api/templates?sync=1')
+      const result = await resp.json()
+      // Só atualiza se vier um array válido (nunca zera a lista em caso de erro)
+      if (resp.ok && Array.isArray(result.templates)) {
+        setTemplates(result.templates)
+      } else if (!resp.ok) {
+        setError(result.error || 'Erro ao sincronizar com a Meta')
+      }
+      if (result.warning) setError(result.warning)
+      if (result.syncErrors?.length) setError('Sync parcial: ' + result.syncErrors[0])
+    } catch (e) {
+      setError('Erro de conexão ao sincronizar')
+    }
     setSyncing(false)
   }
 
@@ -127,6 +139,15 @@ export default function TemplatesClient({ initialTemplates, inboxes }: Props) {
           {syncing ? 'Sincronizando...' : 'Sincronizar status'}
         </Button>
       </div>
+
+      {/* Mensagem de erro global (fora do form) */}
+      {error && !showForm && (
+        <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span className="flex-1">{error}</span>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600"><X className="w-3.5 h-3.5" /></button>
+        </div>
+      )}
 
       {/* Aviso sem waba_id */}
       {inboxes.every(i => !i.waba_id) && (

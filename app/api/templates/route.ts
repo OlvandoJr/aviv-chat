@@ -30,54 +30,78 @@ export async function GET(req: NextRequest) {
   const inboxId = searchParams.get('inboxId')
   const sync    = searchParams.get('sync') === '1'
 
-  let query = admin
+  // ── Buscar templates do banco ─────────────────────────────────────────────
+  let dbQuery = admin
     .from('chat_wa_templates')
-    .select('*, inbox:chat_inboxes(id, name, waba_id, access_token)')
+    .select('*, inbox:chat_inboxes(id, name, waba_id)')
     .order('created_at', { ascending: false })
 
-  if (inboxId) query = query.eq('inbox_id', inboxId) as any
+  if (inboxId) (dbQuery as any) = (dbQuery as any).eq('inbox_id', inboxId)
 
-  const { data: templates, error } = await query
+  const { data: templates, error } = await dbQuery
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // Sincronizar status com Meta se solicitado
-  if (sync && templates?.length) {
-    const inboxes = new Map<string, { waba_id: string; access_token: string }>()
-    for (const t of templates) {
-      const inbox = t.inbox as any
-      if (inbox?.waba_id && !inboxes.has(inbox.id)) {
-        inboxes.set(inbox.id, { waba_id: inbox.waba_id, access_token: inbox.access_token })
-      }
-    }
+  if (!sync) return NextResponse.json({ templates: templates ?? [] })
 
-    for (const [, { waba_id, access_token }] of inboxes) {
-      try {
-        const resp = await fetch(
-          `https://graph.facebook.com/v20.0/${waba_id}/message_templates?fields=name,status,id&limit=100`,
-          { headers: { Authorization: `Bearer ${access_token}` } }
-        )
-        if (!resp.ok) continue
-        const { data: metaTemplates } = await resp.json()
-        if (!metaTemplates) continue
+  // ── Sincronizar: buscar inboxes diretamente (não via join) ─────────────────
+  const allInboxIds = [...new Set((templates ?? []).map((t: any) => t.inbox_id).filter(Boolean))]
+  if (!allInboxIds.length) return NextResponse.json({ templates: templates ?? [], warning: 'Sem templates para sincronizar' })
 
-        for (const mt of metaTemplates) {
-          await admin
-            .from('chat_wa_templates')
-            .update({ status: mt.status, wa_id: mt.id, updated_at: new Date().toISOString() })
-            .eq('name', mt.name)
-        }
-      } catch { /* silently skip */ }
-    }
+  const { data: inboxRows } = await admin
+    .from('chat_inboxes')
+    .select('id, waba_id, access_token')
+    .in('id', allInboxIds)
 
-    // Re-fetch after sync
-    const { data: synced } = await admin
-      .from('chat_wa_templates')
-      .select('*, inbox:chat_inboxes(id, name, waba_id)')
-      .order('created_at', { ascending: false })
-    return NextResponse.json({ templates: synced || [] })
+  const validInboxes = (inboxRows ?? []).filter((i: any) => i.waba_id)
+
+  if (!validInboxes.length) {
+    return NextResponse.json({ templates: templates ?? [], warning: 'Nenhum inbox com WABA ID. Configure em Caixas de Entrada.' })
   }
 
-  return NextResponse.json({ templates: templates || [] })
+  const syncErrors: string[] = []
+
+  for (const inbox of validInboxes as any[]) {
+    try {
+      const metaResp = await fetch(
+        `https://graph.facebook.com/v20.0/${inbox.waba_id}/message_templates?fields=name,status,id&limit=200`,
+        { headers: { Authorization: `Bearer ${inbox.access_token}` } }
+      )
+
+      if (!metaResp.ok) {
+        const errText = await metaResp.text().catch(() => metaResp.status.toString())
+        syncErrors.push(`Inbox ${inbox.id}: ${errText}`)
+        continue
+      }
+
+      const metaJson = await metaResp.json()
+      const metaTemplates: { name: string; status: string; id: string }[] = metaJson.data ?? []
+
+      for (const mt of metaTemplates) {
+        await admin
+          .from('chat_wa_templates')
+          .update({ status: mt.status, wa_id: mt.id, updated_at: new Date().toISOString() })
+          .eq('name', mt.name)
+          .eq('inbox_id', inbox.id)
+      }
+    } catch (err) {
+      syncErrors.push(String(err))
+    }
+  }
+
+  // ── Re-fetch após sync (fallback: retornar dados originais se falhar) ───────
+  let refetchQuery = admin
+    .from('chat_wa_templates')
+    .select('*, inbox:chat_inboxes(id, name, waba_id)')
+    .order('created_at', { ascending: false })
+
+  if (inboxId) (refetchQuery as any) = (refetchQuery as any).eq('inbox_id', inboxId)
+
+  const { data: synced } = await refetchQuery
+
+  return NextResponse.json({
+    templates: synced ?? templates ?? [],
+    ...(syncErrors.length ? { syncErrors } : {}),
+  })
 }
 
 // ── POST — criar template e enviar para Meta ──────────────────────────────────
