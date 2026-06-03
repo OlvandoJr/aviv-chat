@@ -8,8 +8,42 @@ export interface Inbox {
   phone_number_id: string
   access_token:    string
   verify_token:    string
+  waba_id:         string | null
   is_active:       boolean
   created_at:      string
+}
+
+export type WaTemplateStatus   = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAUSED' | 'DISABLED'
+export type WaTemplateCategory = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION'
+export type WaTemplateHeaderType = 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT'
+
+export interface WaTemplateButton {
+  type:         'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER'
+  text:         string
+  url?:         string
+  phone_number?: string
+}
+
+export interface WaTemplate {
+  id:               string
+  inbox_id:         string
+  name:             string
+  category:         WaTemplateCategory
+  language:         string
+  status:           WaTemplateStatus
+  wa_id:            string | null
+  header_type:      WaTemplateHeaderType | null
+  header_text:      string | null
+  body_text:        string
+  footer_text:      string | null
+  buttons:          WaTemplateButton[]
+  body_var_count:   number
+  header_var_count: number
+  rejection_reason: string | null
+  created_at:       string
+  updated_at:       string
+  // join
+  inbox?:           Pick<Inbox, 'id' | 'name' | 'waba_id'>
 }
 
 export interface Contact {

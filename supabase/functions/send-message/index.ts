@@ -106,9 +106,30 @@ Deno.serve(async (req) => {
   )
 
   if (!metaResp.ok) {
-    const err = await metaResp.text()
-    console.error('Meta API error:', metaResp.status, err)
-    return json({ error: 'Erro ao enviar mensagem pelo WhatsApp', detail: err }, 502)
+    const errBody = await metaResp.json().catch(() => ({}))
+    const errCode = errBody?.error?.code
+
+    // ── Janela de 24h fechada (131047) ────────────────────────────────────
+    if (errCode === 131047) {
+      // Inserir mensagem de sistema na conversa para notificar o atendente
+      await supabase.from('chat_messages').insert({
+        conversation_id: conversationId,
+        direction:       'out',
+        type:            'unknown',
+        content:         'WINDOW_CLOSED',
+        wa_status:       'failed',
+        attendant_id:    attendantPre?.id || null,
+        metadata:        { system_type: 'window_closed' },
+      })
+      await supabase.from('chat_conversations').update({
+        last_message_at:      new Date().toISOString(),
+        last_message_preview: '⚠️ Janela de conversa fechada',
+      }).eq('id', conversationId)
+      return json({ ok: false, windowClosed: true }, 200)
+    }
+
+    console.error('Meta API error:', metaResp.status, errBody)
+    return json({ error: 'Erro ao enviar mensagem pelo WhatsApp', detail: errBody }, 502)
   }
 
   const metaData   = await metaResp.json()

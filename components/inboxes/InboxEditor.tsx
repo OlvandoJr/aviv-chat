@@ -20,6 +20,7 @@ export default function InboxEditor({ inbox }: Props) {
   const [description,   setDescription]   = useState(inbox?.description || '')
   const [phoneNumber,   setPhoneNumber]   = useState(inbox?.phone_number || '')
   const [phoneNumberId, setPhoneNumberId] = useState(inbox?.phone_number_id || '')
+  const [wabaId,        setWabaId]        = useState(inbox?.waba_id || '')
   const [accessToken,   setAccessToken]   = useState(inbox?.access_token || '')
   const [verifyToken,   setVerifyToken]   = useState(inbox?.verify_token || '')
   const [isActive,      setIsActive]      = useState(inbox?.is_active ?? true)
@@ -54,6 +55,7 @@ export default function InboxEditor({ inbox }: Props) {
       description:     description.trim() || null,
       phone_number:    phoneNumber.trim().replace(/\D/g, ''),
       phone_number_id: phoneNumberId.trim(),
+      waba_id:         wabaId.trim() || null,
       access_token:    accessToken.trim(),
       verify_token:    verifyToken.trim(),
       is_active:       isActive,
@@ -203,6 +205,18 @@ export default function InboxEditor({ inbox }: Props) {
               />
               <p className="text-[11px] text-gray-400 mt-1">
                 Encontrado no Meta Business Manager → WhatsApp → Configurações → Perfil do telefone → Identificação
+              </p>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">WABA ID <span className="text-gray-400">(necessário para templates)</span></label>
+              <input
+                value={wabaId}
+                onChange={(e) => setWabaId(e.target.value)}
+                placeholder="Ex: 4023700297885912"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <p className="text-[11px] text-gray-400 mt-1">
+                Meta Business Suite → Contas do WhatsApp → clique na conta → Identificação
               </p>
             </div>
           </div>

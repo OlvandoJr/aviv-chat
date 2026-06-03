@@ -6,6 +6,7 @@ import {
   Check, CheckCheck, Mic, FileText, Image as ImageIcon,
   ChevronDown, Bell, UserCheck, UserRound,
   Play, Pause, Download, MapPin, Video as VideoIcon,
+  AlertTriangle, LayoutTemplate,
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -14,6 +15,7 @@ import MessageInput from './MessageInput'
 import ContactPanel from './ContactPanel'
 import ConversationActions from './ConversationActions'
 import ImageLightbox from './ImageLightbox'
+import TemplateSelector from './TemplateSelector'
 import type { Conversation, Message, Attendant, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
@@ -33,6 +35,7 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
   const [panelOpen,   setPanelOpen]   = useState(false)
   const [conv,        setConv]        = useState(conversation)
   const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
+  const [templateOpen, setTemplateOpen] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -100,6 +103,13 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
 
   return (
     <div className="flex flex-1 overflow-hidden">
+      {/* Modal de seleção de template */}
+      {templateOpen && (
+        <TemplateSelector
+          conversationId={conv.id}
+          onClose={() => setTemplateOpen(false)}
+        />
+      )}
       {/* Área principal do chat */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
@@ -187,7 +197,15 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
           ) : (
             visibleMessages.map((msg, i) => {
               const prev = visibleMessages[i - 1]
-              // Mostrar remetente quando muda de direção OU quando muda quem enviou (bot→humano, atendente X→Y)
+              // Card especial: janela de conversa fechada
+              if ((msg.metadata as any)?.system_type === 'window_closed') {
+                return (
+                  <WindowClosedCard
+                    key={msg.id}
+                    onOpenTemplate={() => setTemplateOpen(true)}
+                  />
+                )
+              }
               const showSender = msg.direction === 'out'
               return (
                 <MessageBubble
@@ -204,7 +222,11 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
         </div>
 
         {/* Input de envio */}
-        <MessageInput conversationId={conv.id} disabled={conv.status !== 'open'} />
+        <MessageInput
+          conversationId={conv.id}
+          disabled={conv.status !== 'open'}
+          onOpenTemplates={() => setTemplateOpen(true)}
+        />
       </div>
 
       {/* Painel lateral de informações */}
@@ -635,4 +657,30 @@ function MsgStatus({ status }: { status: string }) {
   if (status === 'delivered') return <CheckCheck className="w-3 h-3 text-emerald-100" />
   if (status === 'failed')    return <span className="text-[10px] text-red-300">!</span>
   return <Check className="w-3 h-3 text-emerald-100" />
+}
+
+// ── WindowClosedCard ──────────────────────────────────────────────────────────
+
+function WindowClosedCard({ onOpenTemplate }: { onOpenTemplate: () => void }) {
+  return (
+    <div className="flex justify-center my-2">
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 max-w-sm w-full text-center shadow-sm">
+        <div className="flex items-center justify-center gap-2 mb-1">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+          <p className="text-xs font-semibold text-amber-800">Janela de conversa encerrada</p>
+        </div>
+        <p className="text-[11px] text-amber-600 mb-3">
+          Passaram-se mais de 24h desde a última mensagem do cliente.<br />
+          Somente templates podem ser enviados agora.
+        </p>
+        <button
+          onClick={onOpenTemplate}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold rounded-lg transition-colors"
+        >
+          <LayoutTemplate className="w-3.5 h-3.5" />
+          Enviar template
+        </button>
+      </div>
+    </div>
+  )
 }

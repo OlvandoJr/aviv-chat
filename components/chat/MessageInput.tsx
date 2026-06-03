@@ -2,15 +2,16 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Send, Paperclip, Mic, Square, X } from 'lucide-react'
+import { Send, Paperclip, Mic, Square, X, LayoutTemplate } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface Props {
-  conversationId: string
-  disabled?:      boolean
+  conversationId:  string
+  disabled?:       boolean
+  onOpenTemplates?: () => void
 }
 
-export default function MessageInput({ conversationId, disabled }: Props) {
+export default function MessageInput({ conversationId, disabled, onOpenTemplates }: Props) {
   const supabase     = createClient()
   const textareaRef  = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -313,6 +314,18 @@ export default function MessageInput({ conversationId, disabled }: Props) {
               title="Gravar mensagem de voz"
             >
               <Mic className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Botão de template — sempre visível */}
+          {onOpenTemplates && (
+            <button
+              onClick={onOpenTemplates}
+              disabled={sending}
+              className="w-8 h-8 rounded-full flex items-center justify-center text-gray-400 hover:text-violet-600 hover:bg-violet-50 transition-colors shrink-0"
+              title="Enviar template WhatsApp"
+            >
+              <LayoutTemplate className="w-4 h-4" />
             </button>
           )}
         </div>
