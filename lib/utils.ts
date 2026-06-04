@@ -23,6 +23,40 @@ export function formatTime(dateStr: string | null): string {
   }
 }
 
+// Sempre o horário HH:MM — usado dentro do balão da mensagem
+export function formatHour(dateStr: string | null): string {
+  if (!dateStr) return ''
+  return new Date(dateStr).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+// Separador de dia ao estilo WhatsApp: Hoje | Ontem | segunda-feira | 22 de maio
+export function formatDaySeparator(dateStr: string | null): string {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const now  = new Date()
+  const d0 = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const n0 = new Date(now.getFullYear(),  now.getMonth(),  now.getDate())
+  const days = Math.round((n0.getTime() - d0.getTime()) / 86400000)
+
+  if (days === 0) return 'Hoje'
+  if (days === 1) return 'Ontem'
+  if (days > 1 && days < 7) {
+    const wd = date.toLocaleDateString('pt-BR', { weekday: 'long' })
+    return wd.charAt(0).toUpperCase() + wd.slice(1)   // "Segunda-feira"
+  }
+  const sameYear = date.getFullYear() === now.getFullYear()
+  return date.toLocaleDateString('pt-BR', {
+    day: 'numeric', month: 'long', ...(sameYear ? {} : { year: 'numeric' }),
+  })
+}
+
+// Chave de dia (YYYY-M-D em horário local) para agrupar mensagens
+export function dayKey(dateStr: string | null): string {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+
 export function formatCurrency(value: number): string {
   return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }

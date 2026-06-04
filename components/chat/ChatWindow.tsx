@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { formatTime, formatCurrency, getInitials, cn } from '@/lib/utils'
+import { formatHour, formatDaySeparator, dayKey, formatCurrency, getInitials, cn } from '@/lib/utils'
 import MessageInput from './MessageInput'
 import ContactPanel from './ContactPanel'
 import ConversationActions from './ConversationActions'
@@ -197,24 +197,29 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
           ) : (
             visibleMessages.map((msg, i) => {
               const prev = visibleMessages[i - 1]
+              // Separador de dia (Hoje, Ontem, Segunda-feira, 22 de maio...)
+              const showDay = !prev || dayKey(prev.created_at) !== dayKey(msg.created_at)
+
               // Card especial: janela de conversa fechada
               if ((msg.metadata as any)?.system_type === 'window_closed') {
                 return (
-                  <WindowClosedCard
-                    key={msg.id}
-                    onOpenTemplate={() => setTemplateOpen(true)}
-                  />
+                  <div key={msg.id}>
+                    {showDay && <DaySeparator date={msg.created_at} />}
+                    <WindowClosedCard onOpenTemplate={() => setTemplateOpen(true)} />
+                  </div>
                 )
               }
               const showSender = msg.direction === 'out'
               return (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  showAvatar={!prev || prev.direction !== msg.direction}
-                  showSender={showSender}
-                  contactName={name}
-                />
+                <div key={msg.id}>
+                  {showDay && <DaySeparator date={msg.created_at} />}
+                  <MessageBubble
+                    message={msg}
+                    showAvatar={!prev || prev.direction !== msg.direction}
+                    showSender={showSender}
+                    contactName={name}
+                  />
+                </div>
               )
             })
           )}
@@ -331,7 +336,7 @@ function MessageBubble({
           {!isSticker && (
             <div className={cn('flex items-center justify-end gap-1 mt-1', isIn && 'justify-start')}>
               <span className={cn('text-[10px]', isOut ? 'text-emerald-100' : 'text-gray-400')}>
-                {formatTime(msg.created_at)}
+                {formatHour(msg.created_at)}
               </span>
               {isOut && <MsgStatus status={msg.wa_status} />}
             </div>
@@ -657,6 +662,18 @@ function MsgStatus({ status }: { status: string }) {
   if (status === 'delivered') return <CheckCheck className="w-3 h-3 text-emerald-100" />
   if (status === 'failed')    return <span className="text-[10px] text-red-300">!</span>
   return <Check className="w-3 h-3 text-emerald-100" />
+}
+
+// ── DaySeparator ──────────────────────────────────────────────────────────────
+
+function DaySeparator({ date }: { date: string }) {
+  return (
+    <div className="flex justify-center my-3">
+      <span className="px-3 py-1 rounded-lg bg-white/80 text-gray-500 text-[11px] font-medium shadow-sm uppercase tracking-wide">
+        {formatDaySeparator(date)}
+      </span>
+    </div>
+  )
 }
 
 // ── WindowClosedCard ──────────────────────────────────────────────────────────
