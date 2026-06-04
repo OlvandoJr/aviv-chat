@@ -12,6 +12,7 @@ import type {
   Agent, AgentModel, AgentRule, AgentRuleType, Inbox,
   ContactAttributeDef, AttributeFieldType, AttributeAction,
   AgentTool, ApiConnection, ConversationUpdateDef, UpdateFieldType,
+  Subagent, SubagentTrigger,
 } from '@/lib/types'
 import ToolEditor from './ToolEditor'
 
@@ -24,6 +25,20 @@ interface Props {
   tools:           AgentTool[]
   apiConnections:  ApiConnection[]
   updateDefs:      ConversationUpdateDef[]
+  subagents:       Subagent[]
+}
+
+interface SubagentDraft {
+  id?:               string
+  name:              string
+  trigger_type:      SubagentTrigger
+  extraction_prompt: string
+  extraction_model:  string
+  instructions:      string
+  output_format:     string
+  model:             string
+  is_active:         boolean
+  sort_order:        number
 }
 
 interface AttrDefDraft {
@@ -50,7 +65,7 @@ interface UpdateDefDraft {
 }
 
 
-export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections, updateDefs: initialUpdateDefs }: Props) {
+export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections, updateDefs: initialUpdateDefs, subagents: initialSubagents }: Props) {
   const router  = useRouter()
   const supabase = createClient()
   const isNew   = !agent
@@ -123,6 +138,22 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       options:     d.options.join('\n'),
       description: d.description,
       sort_order:  d.sort_order,
+    }))
+  )
+
+  // Subagentes
+  const [subagents, setSubagents] = useState<SubagentDraft[]>(
+    initialSubagents.map(s => ({
+      id:                s.id,
+      name:              s.name,
+      trigger_type:      s.trigger_type,
+      extraction_prompt: s.extraction_prompt || '',
+      extraction_model:  s.extraction_model,
+      instructions:      s.instructions,
+      output_format:     s.output_format,
+      model:             s.model,
+      is_active:         s.is_active,
+      sort_order:        s.sort_order,
     }))
   )
 
@@ -279,6 +310,26 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                          : [],
           description: d.description.trim(),
           sort_order:  i,
+        }))
+      )
+    }
+
+    // Salvar subagentes (apagar e reinserir)
+    await supabase.from('chat_subagents').delete().eq('agent_id', agentId!)
+    const validSubagents = subagents.filter(s => s.name.trim() && s.instructions.trim())
+    if (validSubagents.length > 0) {
+      await supabase.from('chat_subagents').insert(
+        validSubagents.map((s, i) => ({
+          agent_id:          agentId,
+          name:              s.name.trim(),
+          trigger_type:      s.trigger_type,
+          extraction_prompt: s.extraction_prompt.trim() || null,
+          extraction_model:  s.extraction_model.trim() || 'gpt-4o-mini',
+          instructions:      s.instructions,
+          output_format:     s.output_format,
+          model:             s.model.trim() || 'gpt-4o-mini',
+          is_active:         s.is_active,
+          sort_order:        i,
         }))
       )
     }
@@ -1066,6 +1117,138 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
               usando a função <code className="bg-blue-100 px-1 rounded">atualizar_conversa</code> durante a conversa.
             </div>
           )}
+        </Section>
+
+        {/* ── SUBAGENTES ── */}
+        <Section icon={<GitBranch className="w-4 h-4" />} title="Subagentes (análise de mídia)">
+          <p className="text-xs text-gray-500 -mt-1">
+            Subagentes especializados acionados por tipo de mídia. Cada um tem seu próprio gatilho,
+            instruções (critérios) e formato de saída. Use os placeholders{' '}
+            <code className="bg-gray-100 px-1 rounded">{'{{dados_extraidos}}'}</code>,{' '}
+            <code className="bg-gray-100 px-1 rounded">{'{{contexto_sienge}}'}</code>,{' '}
+            <code className="bg-gray-100 px-1 rounded">{'{{empreendimentos}}'}</code>,{' '}
+            <code className="bg-gray-100 px-1 rounded">{'{{transcricao}}'}</code> para injetar dados dinâmicos.
+          </p>
+
+          {subagents.length > 0 && (
+            <div className="space-y-4 pt-1">
+              {subagents.map((s, i) => (
+                <div key={i} className="border border-gray-200 rounded-xl p-4 space-y-3 bg-gray-50/50">
+                  {/* Linha topo: nome, gatilho, ativo, remover */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={s.name}
+                      onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
+                      placeholder="Nome do subagente"
+                      className="flex-1 border border-gray-200 rounded-md px-2 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                    <select
+                      value={s.trigger_type}
+                      onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, trigger_type: e.target.value as SubagentTrigger } : x))}
+                      className="h-8 rounded-md border border-gray-200 bg-white px-2 text-xs"
+                    >
+                      <option value="image">📷 Imagem</option>
+                      <option value="document">📄 Documento</option>
+                      <option value="audio">🎙 Áudio</option>
+                    </select>
+                    <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={s.is_active}
+                        onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, is_active: e.target.checked } : x))}
+                      />
+                      Ativo
+                    </label>
+                    <button
+                      onClick={() => setSubagents(subagents.filter((_, j) => j !== i))}
+                      className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Extração (não p/ áudio) */}
+                  {s.trigger_type !== 'audio' && (
+                    <div>
+                      <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">
+                        Passo 1 — Extração de dados (prompt enviado junto com a mídia)
+                      </label>
+                      <textarea
+                        value={s.extraction_prompt}
+                        onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, extraction_prompt: e.target.value } : x))}
+                        rows={3}
+                        placeholder="Ex: Extraia da imagem: beneficiário, valor, vencimento... Responda em JSON."
+                        className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
+                      />
+                    </div>
+                  )}
+
+                  {/* Instruções / critérios */}
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">
+                      {s.trigger_type === 'audio' ? 'Instruções (como interpretar o áudio)' : 'Passo 2 — Instruções / critérios de análise'}
+                    </label>
+                    <textarea
+                      value={s.instructions}
+                      onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, instructions: e.target.value } : x))}
+                      rows={6}
+                      placeholder="Critérios de avaliação, regras de classificação..."
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
+                    />
+                  </div>
+
+                  {/* Formato de saída */}
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">
+                      Formato de saída (texto livre ou JSON)
+                    </label>
+                    <textarea
+                      value={s.output_format}
+                      onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, output_format: e.target.value } : x))}
+                      rows={3}
+                      placeholder="Ex: Texto corrido de 3 linhas: classificação, motivo, recomendação."
+                      className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
+                    />
+                  </div>
+
+                  {/* Modelos */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {s.trigger_type !== 'audio' && (
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Modelo extração</label>
+                        <input
+                          value={s.extraction_model}
+                          onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, extraction_model: e.target.value } : x))}
+                          placeholder="gpt-4o-mini"
+                          className="w-full border border-gray-200 rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Modelo análise</label>
+                      <input
+                        value={s.model}
+                        onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, model: e.target.value } : x))}
+                        placeholder="gpt-4o-mini"
+                        className="w-full border border-gray-200 rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={() => setSubagents([...subagents, {
+              name: '', trigger_type: 'image', extraction_prompt: '', extraction_model: 'gpt-4o-mini',
+              instructions: '', output_format: '', model: 'gpt-4o-mini', is_active: true, sort_order: subagents.length,
+            }])}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Adicionar subagente
+          </button>
         </Section>
 
       </div>

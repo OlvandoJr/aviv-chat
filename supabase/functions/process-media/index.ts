@@ -78,25 +78,27 @@ Deno.serve(async (req) => {
     // 4. Atualizar mensagem com URL da mídia
     await supabase.from('chat_messages').update({ media_url: publicUrl }).eq('id', messageId)
 
-    // 5. Processar por tipo
+    // 5. Processar por tipo (usando subagentes configuráveis)
     if (msgType === 'audio') {
-      // ── Áudio: transcrever e acionar bot ──────────────────────────────────
-      // O try/catch garante que o bot responde mesmo se o Whisper falhar
       try {
         await transcribeAudio(messageId, mediaBuffer, mimeType)
+        const sub = await getSubagentForConv(convId, 'audio')
+        if (sub?.instructions?.trim()) await interpretAudio(messageId, sub)
       } catch (transcriptionErr) {
-        console.error('Audio transcription error (continuing):', transcriptionErr)
+        console.error('Audio processing error (continuing):', transcriptionErr)
       }
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'image') {
-      // ── Imagem: extrair campos → validar com veredicto → acionar bot ─────
-      await analyzeImage(messageId, convId, contactWaId, publicUrl)
+      const sub = await getSubagentForConv(convId, 'image')
+      if (sub) await analyzeImage(messageId, convId, contactWaId, publicUrl, sub)
+      else console.log('Nenhum subagente de imagem configurado — pulando análise')
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'document' && mimeType === 'application/pdf') {
-      // ── PDF: extrair → buscar boleto → validar → acionar bot ─────────────
-      await analyzePdf(messageId, convId, contactWaId, mediaBuffer)
+      const sub = await getSubagentForConv(convId, 'document')
+      if (sub) await analyzePdf(messageId, convId, contactWaId, mediaBuffer, sub)
+      else console.log('Nenhum subagente de documento configurado — pulando análise')
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else {
@@ -114,6 +116,77 @@ Deno.serve(async (req) => {
     })
   }
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUBAGENTES — busca o subagente ativo do agente da conversa por tipo de gatilho
+// ─────────────────────────────────────────────────────────────────────────────
+async function getSubagentForConv(convId: string, triggerType: string): Promise<any | null> {
+  const { data: conv } = await supabase
+    .from('chat_conversations')
+    .select('agent_id, inbox_id')
+    .eq('id', convId)
+    .maybeSingle()
+
+  let agentId = conv?.agent_id as string | null
+  if (!agentId && conv?.inbox_id) {
+    const { data: rule } = await supabase
+      .from('chat_agent_rules')
+      .select('agent_id')
+      .eq('rule_type', 'inbox')
+      .eq('rule_value', conv.inbox_id)
+      .maybeSingle()
+    agentId = rule?.agent_id || null
+  }
+  if (!agentId) {
+    const { data: def } = await supabase.from('chat_agents').select('id').eq('is_default', true).maybeSingle()
+    agentId = def?.id || null
+  }
+  if (!agentId) return null
+
+  const { data: sub } = await supabase
+    .from('chat_subagents')
+    .select('*')
+    .eq('agent_id', agentId)
+    .eq('trigger_type', triggerType)
+    .eq('is_active', true)
+    .order('sort_order')
+    .limit(1)
+    .maybeSingle()
+  return sub
+}
+
+// Substitui placeholders {{...}} do prompt do subagente pelos dados dinâmicos
+function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
+  return (tpl || '')
+    .replace(/\{\{dados_extraidos\}\}/g, vars.dados_extraidos ?? '')
+    .replace(/\{\{contexto_sienge\}\}/g, vars.contexto_sienge ?? '')
+    .replace(/\{\{empreendimentos\}\}/g, vars.empreendimentos ?? EMPREENDIMENTOS)
+    .replace(/\{\{transcricao\}\}/g, vars.transcricao ?? '')
+}
+
+// Interpreta a transcrição de áudio usando o subagente de áudio
+async function interpretAudio(messageId: string, sub: any) {
+  const { data: msg } = await supabase
+    .from('chat_messages').select('metadata').eq('id', messageId).maybeSingle()
+  const transcricao = (msg?.metadata as any)?.transcription || ''
+  if (!transcricao) return
+
+  const prompt = fillPlaceholders(sub.instructions, { transcricao })
+    + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
+
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: sub.model || 'gpt-4o-mini', max_tokens: 200, messages: [{ role: 'user', content: prompt }] }),
+  })
+  if (!resp.ok) return
+  const interpretation = (await resp.json()).choices?.[0]?.message?.content?.trim() || ''
+  if (interpretation) {
+    await supabase.from('chat_messages')
+      .update({ metadata: { ...(msg?.metadata as any), audio_interpretation: interpretation } })
+      .eq('id', messageId)
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOOKUP SIENGE — 3 estratégias em cascata:
@@ -321,22 +394,20 @@ async function analyzeImage(
   convId:    string,
   waId:      string,
   imageUrl:  string,
+  sub:       any,
 ) {
-  // ── Passo 1: extrair campos brutos da imagem ──────────────────────────────
+  // ── Passo 1: extrair campos brutos da imagem (prompt do subagente) ────────
   console.log('Image step 1: extracting fields from', imageUrl)
   const extractResp = await fetch('https://api.openai.com/v1/chat/completions', {
     method:  'POST',
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model:      'gpt-4o-mini',
+      model:      sub.extraction_model || 'gpt-4o-mini',
       max_tokens: 500,
       messages: [{
         role: 'user',
         content: [
-          {
-            type: 'text',
-            text: 'Extraia da imagem as informações:\nBeneficiário/favorecido:\nValor documento:\nVencimento:\nPagador:\nCPF Pagador:\n\nResponda em JSON com as chaves: beneficiario, valor, vencimento, data_pagamento, pagador, cpf_cnpj. Se não for um comprovante de pagamento, responda: {"nao_comprovante": true}',
-          },
+          { type: 'text', text: sub.extraction_prompt || '' },
           { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
         ],
       }],
@@ -377,44 +448,18 @@ async function analyzeImage(
   const siengeCtx        = buildSiengeContext(boleto)
   const extractedSummary = `Dados extraídos da imagem:\n${Object.entries(extractedData).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
 
-  const validationPrompt = `# Papel
-Você é um agente especialista em validar comprovantes de pagamento recebidos em imagem.
+  const validationPrompt = fillPlaceholders(sub.instructions, {
+    dados_extraidos: extractedSummary,
+    contexto_sienge: siengeCtx,
+    empreendimentos: EMPREENDIMENTOS,
+  }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
-# Objetivo
-Analisar o comprovante enviado e verificar: nome do pagador, data de vencimento, unidade/empreendimento, valor pago e banco emissor.
-
-# Dados disponíveis
-${extractedSummary}
-
-${siengeCtx}
-
-# Empreendimentos cadastrados
-${EMPREENDIMENTOS}
-
-# Procedimento
-1. Compare os dados extraídos da imagem com os dados da base (Sienge).
-2. Valide se o CNPJ/CPF e o nome do beneficiário conferem com os empreendimentos cadastrados.
-
-# Regras de classificação
-- **100% válido**: CNPJ/CPF/linha digitável confere + pagador e vencimento iguais à base. Pequenas diferenças de formatação, abreviações ou acentos não invalidam.
-- **80% válido**: dados muito parecidos, pequenas divergências não comprometem a identificação.
-- **50% válido**: divergências relevantes mas há indícios de relação. Recomende validação humana.
-- **Negado**: CNPJ inválido, beneficiário não encontrado, dados insuficientes ou inconsistência crítica. Recomende validação humana.
-
-Regras:
-- Se 50% ou Negado → finalize com "Recomenda-se validação humana."
-- Se 80% ou 100% → finalize com "Sem necessidade de validação humana."
-- Cite o principal motivo (CNPJ, nome, valor, vencimento ou ausência de dados).
-
-# Formato obrigatório (texto corrido, nunca JSON)
-Comprovante com [100% válido / 80% válido / 50% válido / negado]. [Motivo principal em uma ou duas frases]. [Necessidade ou não de validação humana].`
-
-  console.log('Image step 2: running validation prompt')
+  console.log('Image step 2: running validation prompt (subagente)')
   const verdictResp = await fetch('https://api.openai.com/v1/chat/completions', {
     method:  'POST',
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body:    JSON.stringify({
-      model:      'gpt-4o-mini',
+      model:      sub.model || 'gpt-4o-mini',
       max_tokens: 350,
       messages:   [{ role: 'user', content: validationPrompt }],
     }),
@@ -450,6 +495,7 @@ async function analyzePdf(
   convId:    string,
   waId:      string,
   buffer:    ArrayBuffer,
+  sub:       any,
 ) {
   // ── Upload do PDF para a OpenAI Files API ─────────────────────────────────
   console.log('PDF: uploading to OpenAI Files API')
@@ -485,15 +531,12 @@ async function analyzePdf(
       method:  'POST',
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model:      'gpt-4o-mini',
+        model:      sub.extraction_model || 'gpt-4o-mini',
         max_tokens: 500,
         messages: [{
           role: 'user',
           content: [
-            {
-              type: 'text',
-              text: 'Extraia do documento as informações:\nBeneficiário/favorecido:\nValor documento:\nVencimento:\nPagador:\nCPF/CNPJ Pagador:\n\nResponda em JSON com as chaves: beneficiario, valor, vencimento, data_pagamento, pagador, cpf_cnpj. Se não for um comprovante de pagamento, responda: {"nao_comprovante": true}',
-            },
+            { type: 'text', text: sub.extraction_prompt || '' },
             { type: 'file', file: { file_id: fileId } },
           ],
         }],
@@ -532,48 +575,17 @@ async function analyzePdf(
     // ── Passo 2: validação completa com veredicto (GPT-4o lê o PDF) ─────
     const siengeCtx = buildSiengeContext(boleto)
 
-    const analysisPrompt = `OVERRIDE: SAÍDA APENAS EM TEXTO SIMPLES (NUNCA JSON).
+    const analysisPrompt = fillPlaceholders(sub.instructions, {
+      contexto_sienge: siengeCtx,
+      empreendimentos: EMPREENDIMENTOS,
+    }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
-Você recebe um PDF de comprovante de pagamento.
-
-Analise os seguintes pontos:
-- CNPJ, CPF, linha digitável ou código de barras
-- Nome do pagador
-- Nome do beneficiário
-- Valor
-- Data de vencimento
-- Data de pagamento (quando existir)
-- Presença ou ausência de dados importantes
-- Consistência geral do documento
-
-${siengeCtx}
-
-Empreendimentos de referência:
-${EMPREENDIMENTOS}
-
-Classifique em uma das opções:
-- 100% válido: CNPJ/CPF/linha digitável confere + pagador e vencimento iguais à base.
-- 80% válido: dados muito parecidos, pequenas divergências não comprometem a identificação.
-- 50% válido: divergências relevantes mas há indícios de relação. Recomende validação humana.
-- Negado: CNPJ inválido, beneficiário não encontrado, dados insuficientes. Recomende validação humana.
-
-Regras:
-- Se 50% ou Negado → finalize com "Recomenda-se validação humana."
-- Se 80% ou 100% → finalize com "Sem necessidade de validação humana."
-
-Formato de saída obrigatório (texto corrido, 3 linhas):
-1) Comprovante [100% válido / 80% válido / 50% válido / negado].
-2) [Motivo: CNPJ, nome, valor, vencimento, beneficiário ou ausência de dados].
-3) [Recomendação de validação humana ou não].
-
-Responda SOMENTE nesse formato. Nunca use JSON, lista ou tópicos.`
-
-    console.log('PDF step 2: analyzing with GPT-4o')
+    console.log('PDF step 2: analyzing with subagente model', sub.model)
     const analysisResp = await fetch('https://api.openai.com/v1/chat/completions', {
       method:  'POST',
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        model:      'gpt-4o',
+        model:      sub.model || 'gpt-4o',
         max_tokens: 400,
         messages: [{
           role: 'user',

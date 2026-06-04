@@ -292,6 +292,25 @@ export interface ScheduledPayment {
   created_at:               string
 }
 
+// ── Subagentes ────────────────────────────────────────────────────────────────
+
+export type SubagentTrigger = 'image' | 'document' | 'audio'
+
+export interface Subagent {
+  id:                string
+  agent_id:          string
+  name:              string
+  trigger_type:      SubagentTrigger
+  extraction_prompt: string | null
+  extraction_model:  string
+  instructions:      string
+  output_format:     string
+  model:             string
+  is_active:         boolean
+  sort_order:        number
+  created_at:        string
+}
+
 // ── Campos de Atualização de Conversa ────────────────────────────────────────
 
 export type UpdateFieldType = 'text' | 'select' | 'number' | 'boolean'

@@ -32,11 +32,12 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         tools={[]}
         apiConnections={apiConnections || []}
         updateDefs={[]}
+        subagents={[]}
       />
     )
   }
 
-  const [{ data: agent }, { data: rules }, { data: attrDefs }, { data: tools }, { data: updateDefs }] = await Promise.all([
+  const [{ data: agent }, { data: rules }, { data: attrDefs }, { data: tools }, { data: updateDefs }, { data: subagents }] = await Promise.all([
     supabase.from('chat_agents').select('*').eq('id', id).single(),
     supabase.from('chat_agent_rules').select('*').eq('agent_id', id).order('priority'),
     supabase.from('chat_contact_attribute_defs').select('*').eq('agent_id', id).order('sort_order'),
@@ -47,6 +48,11 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       .order('sort_order'),
     supabase
       .from('chat_conversation_update_defs')
+      .select('*')
+      .eq('agent_id', id)
+      .order('sort_order'),
+    supabase
+      .from('chat_subagents')
       .select('*')
       .eq('agent_id', id)
       .order('sort_order'),
@@ -64,6 +70,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       tools={tools || []}
       apiConnections={apiConnections || []}
       updateDefs={updateDefs || []}
+      subagents={subagents || []}
     />
   )
 }
