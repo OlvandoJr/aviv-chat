@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import {
@@ -180,6 +180,14 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       })),
     }))
   )
+
+  // Schema do banco (tabelas → colunas) para os dropdowns das fontes de dados
+  const [dbSchema, setDbSchema] = useState<Record<string, string[]>>({})
+  useEffect(() => {
+    supabase.rpc('get_public_schema').then(({ data }) => {
+      if (data && typeof data === 'object') setDbSchema(data as Record<string, string[]>)
+    })
+  }, [])
 
   const [loading,             setLoading]            = useState(false)
   const [error,               setError]              = useState('')
@@ -1327,12 +1335,23 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                               <option value="">— Conexão —</option>
                               {apiConnections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                             </select>
-                            <input
-                              value={d.table_name}
-                              onChange={(e) => upd({ table_name: e.target.value })}
-                              placeholder="tabela (ex: sienge_boletos)"
-                              className="flex-1 border border-gray-200 rounded px-2 py-1 text-[11px] font-mono"
-                            />
+                            {apiConnections.find(c => c.id === d.connection_id)?.provider === 'supabase_db' && Object.keys(dbSchema).length ? (
+                              <select
+                                value={d.table_name}
+                                onChange={(e) => upd({ table_name: e.target.value, filter_column: '' })}
+                                className="flex-1 border border-gray-200 rounded px-2 py-1 text-[11px] font-mono bg-white"
+                              >
+                                <option value="">— Selecione a tabela —</option>
+                                {Object.keys(dbSchema).sort().map(t => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                            ) : (
+                              <input
+                                value={d.table_name}
+                                onChange={(e) => upd({ table_name: e.target.value })}
+                                placeholder="tabela (ex: sienge_boletos)"
+                                className="flex-1 border border-gray-200 rounded px-2 py-1 text-[11px] font-mono"
+                              />
+                            )}
                             <button
                               onClick={() => setSubagents(subagents.map((x, j) =>
                                 j === i ? { ...x, datasources: x.datasources.filter((_, k) => k !== di) } : x))}
@@ -1342,8 +1361,16 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                             </button>
                           </div>
                           <div className="grid grid-cols-2 gap-2">
-                            <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
-                              placeholder="coluna filtro (customer_phone)" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            {dbSchema[d.table_name]?.length ? (
+                              <select value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                                className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono bg-white">
+                                <option value="">— Coluna do filtro —</option>
+                                {dbSchema[d.table_name].map(col => <option key={col} value={col}>{col}</option>)}
+                              </select>
+                            ) : (
+                              <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                                placeholder="coluna filtro (customer_phone)" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            )}
                             <input value={d.filter_template} onChange={(e) => upd({ filter_template: e.target.value })}
                               placeholder="valor: {{contato}} ou {{cpf}}" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
                           </div>
