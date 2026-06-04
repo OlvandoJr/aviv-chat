@@ -310,8 +310,9 @@ Deno.serve(async (req) => {
     if (includeBoletos) {
       const { data } = await supabase
         .from('sienge_boletos')
-        .select('parcela_descricao, due_date, amount, status')
+        .select('parcela_descricao, due_date, amount, status, receivable_bill_id, installment_id')
         .eq('phone_norm', normalizePhone(contactWaId))   // comparação normalizada
+        .not('status', 'in', '("pago","cancelado")')
         .order('due_date', { ascending: true })
         .limit(10)
       boletos = data || []
@@ -471,6 +472,29 @@ Deno.serve(async (req) => {
         // Incluir link do boleto no contexto (SGL sempre tem link)
         if (b.link_boleto) {
           customerContext += `  Link para pagamento: ${b.link_boleto}\n`
+        }
+      }
+
+      // ── 2ª via sob demanda: gera, baixa o PDF e envia como documento ──────────
+      const wantsBoleto = /boleto|pagar|pagamento|\blink\b|segunda via|2.?via|c[oó]digo|barras|\bpix\b|fatura|linha digit|2ª? ?via/i.test(lastUserText)
+      const first = boletos[0]
+      if (wantsBoleto && boletoSource === 'sienge' && first?.receivable_bill_id) {
+        const via = await siengeSegundaVia(first.receivable_bill_id, first.installment_id)
+        if (via && (via.url || via.digitavel)) {
+          let pdfEnviado = false
+          if (via.url) {
+            pdfEnviado = await enviarBoletoPDF(
+              phoneNumberId, accessToken, contactWaId, conversationId,
+              via.url, first.parcela_descricao || 'Boleto',
+            )
+          }
+          customerContext += `\nBOLETO PARA PAGAMENTO (2ª via — ${first.parcela_descricao || 'parcela'}):\n`
+          if (pdfEnviado)    customerContext += 'O PDF do boleto JÁ FOI ENVIADO ao cliente como documento nesta conversa. Confirme o envio.\n'
+          if (via.digitavel) customerContext += `Linha digitável (envie no texto para o cliente copiar): ${via.digitavel}\n`
+          if (!pdfEnviado && via.url) customerContext += `Link do boleto: ${via.url}\n`
+          customerContext += 'Oriente o cliente a pagar pela linha digitável ou pelo PDF. A linha digitável não expira.\n'
+        } else {
+          customerContext += '\n(Não foi possível gerar a 2ª via do boleto agora. Peça ao cliente que aguarde ou ofereça atendente.)\n'
         }
       }
     } else if (includeBoletos) {
@@ -1239,4 +1263,80 @@ async function runSubagentDatasources(
     }
   }
   return out
+}
+
+// ── 2ª via do boleto no Sienge (link expira ~5min; linha digitável não) ───────
+async function siengeSegundaVia(billId: number, instId: number): Promise<{ url: string; digitavel: string } | null> {
+  try {
+    const url = `${SIENGE_BASE}/payment-slip-notification?billReceivableId=${billId}&installmentId=${instId}`
+    const r = await fetch(url, { headers: { Authorization: siengeAuth(), Accept: 'application/json' } })
+    if (!r.ok) {
+      console.error('siengeSegundaVia HTTP', r.status, await r.text().catch(() => ''))
+      return null
+    }
+    const j = await r.json()
+    const b = (j.results || [])[0] || {}
+    return { url: b.urlReport || '', digitavel: b.digitableNumber || '' }
+  } catch (e) {
+    console.error('siengeSegundaVia error:', e)
+    return null
+  }
+}
+
+// ── Baixa o PDF da 2ª via, sobe no Storage e envia como documento ao cliente ──
+async function enviarBoletoPDF(
+  phoneNumberId: string, accessToken: string, waId: string, conversationId: string,
+  pdfUrl: string, parcela: string,
+): Promise<boolean> {
+  try {
+    // 1. Baixar o PDF (dentro da validade do link)
+    const pdfResp = await fetch(pdfUrl)
+    if (!pdfResp.ok) { console.error('Falha ao baixar PDF da 2ª via:', pdfResp.status); return false }
+    const pdfBytes = new Uint8Array(await pdfResp.arrayBuffer())
+
+    // 2. Subir no Supabase Storage (URL permanente, também aparece no chat interno)
+    const path = `chat/${conversationId}/boleto-${Date.now()}.pdf`
+    const { error: upErr } = await supabase.storage
+      .from('chat-media')
+      .upload(path, pdfBytes, { contentType: 'application/pdf', upsert: true })
+    if (upErr) { console.error('Storage upload PDF erro:', upErr.message); return false }
+    const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(path)
+
+    // 3. Enviar como documento via WhatsApp (por link → não precisa reupload)
+    const filename = `Boleto ${parcela}.pdf`.replace(/[\/\\]/g, '-')
+    const sendResp = await fetch(
+      `https://graph.facebook.com/v20.0/${phoneNumberId}/messages`,
+      {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to:                waId,
+          type:              'document',
+          document:          { link: publicUrl, filename },
+        }),
+      }
+    )
+    if (!sendResp.ok) { console.error('WhatsApp send document erro:', await sendResp.text()); return false }
+    const sendData    = await sendResp.json()
+    const waMessageId = sendData.messages?.[0]?.id ?? null
+
+    // 4. Registrar no histórico do chat
+    await supabase.from('chat_messages').insert({
+      conversation_id: conversationId,
+      wa_message_id:   waMessageId,
+      direction:       'out',
+      type:            'document',
+      content:         null,
+      media_url:       publicUrl,
+      media_mime_type: 'application/pdf',
+      media_filename:  filename,
+      wa_status:       'sent',
+      metadata:        { sent_by: 'bot', kind: 'boleto_2via' },
+    })
+    return true
+  } catch (e) {
+    console.error('enviarBoletoPDF error:', e)
+    return false
+  }
 }
