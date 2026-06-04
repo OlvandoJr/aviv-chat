@@ -1184,8 +1184,10 @@ async function fetchBoletoFromSiengeAPI(cpfDigits: string, waId: string): Promis
         { headers: { Authorization: auth } }
       )
       if (!instResp.ok) continue
+      // Parcela mais ANTIGA em aberto (a cobrar primeiro) — ordena por vencimento
       const openInst = ((await instResp.json()).results || [])
-        .find((i: any) => Number(i.balanceDue || 0) > 0)
+        .filter((i: any) => Number(i.balanceDue || 0) > 0)
+        .sort((a: any, b: any) => String(a.dueDate || '').localeCompare(String(b.dueDate || '')))[0]
       if (!openInst) continue
 
       const payload = {
@@ -1197,8 +1199,8 @@ async function fetchBoletoFromSiengeAPI(cpfDigits: string, waId: string): Promis
         customer_cpf:       cpfDigits,
         due_date:           openInst.dueDate,
         amount:             openInst.balanceDue,
-        parcela_descricao:  `Parcela ${openInst.installmentId}`,
-        status:             'em_aberto',
+        parcela_descricao:  `${openInst.conditionTypeId || 'Parcela'} - ${openInst.installmentId}`,
+        status:             'aberto',
         updated_at:         new Date().toISOString(),
       }
 
