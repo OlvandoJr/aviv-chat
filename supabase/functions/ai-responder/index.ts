@@ -255,6 +255,29 @@ Deno.serve(async (req) => {
       })
     }
 
+    // Ferramenta de 2ª via — a IA chama quando o cliente confirma QUAL boleto quer
+    if (includeBoletos) {
+      openAiTools.push({
+        type: 'function',
+        function: {
+          name: 'enviar_segunda_via_boleto',
+          description:
+            'Gera a 2ª via do boleto escolhido, envia o PDF ao cliente como documento e retorna a linha digitável. ' +
+            'Use os IDs (receivable_bill_id e installment_id) do boleto exatamente como aparecem na lista "BOLETOS CADASTRADOS" do contexto. ' +
+            'Se houver MAIS DE UM boleto em aberto, primeiro liste-os (vencimento e valor) e pergunte qual o cliente deseja — só chame esta função após o cliente escolher. ' +
+            'Se houver apenas UM, pode chamar diretamente quando o cliente pedir o boleto.',
+          parameters: {
+            type: 'object',
+            required: ['receivable_bill_id', 'installment_id'],
+            properties: {
+              receivable_bill_id: { type: 'number', description: 'ID do título (receivable_bill_id) do boleto escolhido.' },
+              installment_id:     { type: 'number', description: 'ID da parcela (installment_id) do boleto escolhido.' },
+            },
+          },
+        },
+      })
+    }
+
     // ── 3. Buscar contato ─────────────────────────────────────────────────────
     const { data: contact } = await supabase
       .from('chat_contacts').select('id, wa_id, name')
@@ -467,7 +490,11 @@ Deno.serve(async (req) => {
           b.status === 'cancelado'            ? '❌ Cancelado'            :
                                                '🔵 Em aberto'
 
-        customerContext += `- ${b.parcela_descricao || 'Parcela'}: ${amount} | Vencimento: ${dueDate} | ${statusLabel}\n`
+        // IDs para a IA acionar a ferramenta de 2ª via (boletos do Sienge)
+        const ids = (b.receivable_bill_id && b.installment_id)
+          ? ` [IDs: receivable_bill_id=${b.receivable_bill_id}, installment_id=${b.installment_id}]`
+          : ''
+        customerContext += `- ${b.parcela_descricao || 'Parcela'}: ${amount} | Vencimento: ${dueDate} | ${statusLabel}${ids}\n`
 
         // Incluir link do boleto no contexto (SGL sempre tem link)
         if (b.link_boleto) {
@@ -475,27 +502,11 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ── 2ª via sob demanda: gera, baixa o PDF e envia como documento ──────────
-      const wantsBoleto = /boleto|pagar|pagamento|\blink\b|segunda via|2.?via|c[oó]digo|barras|\bpix\b|fatura|linha digit|2ª? ?via/i.test(lastUserText)
-      const first = boletos[0]
-      if (wantsBoleto && boletoSource === 'sienge' && first?.receivable_bill_id) {
-        const via = await siengeSegundaVia(first.receivable_bill_id, first.installment_id)
-        if (via && (via.url || via.digitavel)) {
-          let pdfEnviado = false
-          if (via.url) {
-            pdfEnviado = await enviarBoletoPDF(
-              phoneNumberId, accessToken, contactWaId, conversationId,
-              via.url, first.parcela_descricao || 'Boleto',
-            )
-          }
-          customerContext += `\nBOLETO PARA PAGAMENTO (2ª via — ${first.parcela_descricao || 'parcela'}):\n`
-          if (pdfEnviado)    customerContext += 'O PDF do boleto JÁ FOI ENVIADO ao cliente como documento nesta conversa. Confirme o envio.\n'
-          if (via.digitavel) customerContext += `Linha digitável (envie no texto para o cliente copiar): ${via.digitavel}\n`
-          if (!pdfEnviado && via.url) customerContext += `Link do boleto: ${via.url}\n`
-          customerContext += 'Oriente o cliente a pagar pela linha digitável ou pelo PDF. A linha digitável não expira.\n'
-        } else {
-          customerContext += '\n(Não foi possível gerar a 2ª via do boleto agora. Peça ao cliente que aguarde ou ofereça atendente.)\n'
-        }
+      // Instrução de uso da ferramenta de 2ª via
+      if (boletoSource === 'sienge') {
+        customerContext += boletos.length > 1
+          ? '\nHá MAIS DE UM boleto em aberto. Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja. Após a escolha, chame a função enviar_segunda_via_boleto com os IDs correspondentes.\n'
+          : '\nQuando o cliente pedir o boleto, chame a função enviar_segunda_via_boleto com os IDs deste boleto.\n'
       }
     } else if (includeBoletos) {
       customerContext += '\nEste número ainda não possui boletos vinculados no sistema. ' +
@@ -690,6 +701,24 @@ Deno.serve(async (req) => {
             toolResult = await handleConfirmarAgendamento(toolArgs, conv, contact, boletos, paymentTool)
           } else if (toolName === 'atualizar_conversa') {
             toolResult = await handleAtualizarConversa(toolArgs, conversationId, updateDefs)
+          } else if (toolName === 'enviar_segunda_via_boleto') {
+            const via = await siengeSegundaVia(toolArgs.receivable_bill_id, toolArgs.installment_id)
+            if (via && (via.url || via.digitavel)) {
+              let pdfOk = false
+              if (via.url) {
+                pdfOk = await enviarBoletoPDF(
+                  phoneNumberId, accessToken, contactWaId, conversationId,
+                  via.url, `Boleto ${toolArgs.receivable_bill_id}-${toolArgs.installment_id}`,
+                )
+              }
+              toolResult = JSON.stringify({
+                sucesso: true, pdf_enviado: pdfOk,
+                linha_digitavel: via.digitavel || null,
+                instrucao: 'Confirme ao cliente que o boleto foi enviado e informe a linha digitável (se houver) para pagamento.',
+              })
+            } else {
+              toolResult = JSON.stringify({ sucesso: false, erro: 'Não foi possível gerar a 2ª via agora. Peça para o cliente aguardar ou ofereça atendente.' })
+            }
           }
 
           // Segunda chamada ao OpenAI com o resultado da ferramenta
