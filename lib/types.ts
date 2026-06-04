@@ -262,7 +262,7 @@ export interface AgentTool {
   api_connection?:   ApiConnection | null
 }
 
-export type ConnectionProvider = 'google_calendar' | 'smtp' | 'webhook'
+export type ConnectionProvider = 'google_calendar' | 'smtp' | 'webhook' | 'supabase_db'
 
 export interface ApiConnection {
   id:          string
@@ -309,6 +309,22 @@ export interface Subagent {
   is_active:         boolean
   sort_order:        number
   created_at:        string
+  // join
+  datasources?:      SubagentDatasource[]
+}
+
+export interface SubagentDatasource {
+  id:                 string
+  subagent_id:        string
+  connection_id:      string | null
+  name:               string
+  table_name:         string
+  filter_column:      string | null
+  filter_template:    string | null
+  columns:            string
+  max_rows:           number
+  output_placeholder: string
+  sort_order:         number
 }
 
 // ── Campos de Atualização de Conversa ────────────────────────────────────────

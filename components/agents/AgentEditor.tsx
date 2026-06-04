@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import {
   ArrowLeft, Save, Bot, Cpu, MessageSquare, Database,
-  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags, Wrench, RefreshCw,
+  AlertTriangle, GitBranch, Star, Trash2, Plus, X, Tags, Wrench, RefreshCw, Plug,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type {
@@ -28,6 +28,18 @@ interface Props {
   subagents:       Subagent[]
 }
 
+interface DatasourceDraft {
+  id?:                string
+  connection_id:      string | null
+  name:               string
+  table_name:         string
+  filter_column:      string
+  filter_template:    string
+  columns:            string
+  max_rows:           number
+  output_placeholder: string
+}
+
 interface SubagentDraft {
   id?:               string
   name:              string
@@ -39,6 +51,7 @@ interface SubagentDraft {
   model:             string
   is_active:         boolean
   sort_order:        number
+  datasources:       DatasourceDraft[]
 }
 
 interface AttrDefDraft {
@@ -154,6 +167,17 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       model:             s.model,
       is_active:         s.is_active,
       sort_order:        s.sort_order,
+      datasources:       (s.datasources || []).map(d => ({
+        id:                 d.id,
+        connection_id:      d.connection_id,
+        name:               d.name,
+        table_name:         d.table_name,
+        filter_column:      d.filter_column || '',
+        filter_template:    d.filter_template || '',
+        columns:            d.columns || '*',
+        max_rows:           d.max_rows ?? 5,
+        output_placeholder: d.output_placeholder,
+      })),
     }))
   )
 
@@ -314,24 +338,59 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       )
     }
 
-    // Salvar subagentes (apagar e reinserir)
-    await supabase.from('chat_subagents').delete().eq('agent_id', agentId!)
+    // Salvar subagentes — UPSERT preservando IDs (não apagar: as fontes têm FK cascade)
     const validSubagents = subagents.filter(s => s.name.trim() && s.instructions.trim())
-    if (validSubagents.length > 0) {
-      await supabase.from('chat_subagents').insert(
-        validSubagents.map((s, i) => ({
-          agent_id:          agentId,
-          name:              s.name.trim(),
-          trigger_type:      s.trigger_type,
-          extraction_prompt: s.extraction_prompt.trim() || null,
-          extraction_model:  s.extraction_model.trim() || 'gpt-4o-mini',
-          instructions:      s.instructions,
-          output_format:     s.output_format,
-          model:             s.model.trim() || 'gpt-4o-mini',
-          is_active:         s.is_active,
-          sort_order:        i,
-        }))
-      )
+
+    // Remover subagentes que foram excluídos na UI
+    const keptIds = validSubagents.map(s => s.id).filter(Boolean) as string[]
+    const { data: existingSubs } = await supabase.from('chat_subagents').select('id').eq('agent_id', agentId!)
+    const toDelete = (existingSubs || []).map(x => x.id).filter(id => !keptIds.includes(id))
+    if (toDelete.length) await supabase.from('chat_subagents').delete().in('id', toDelete)
+
+    // Upsert cada subagente e salvar suas fontes
+    for (let i = 0; i < validSubagents.length; i++) {
+      const s = validSubagents[i]
+      const payload = {
+        agent_id:          agentId,
+        name:              s.name.trim(),
+        trigger_type:      s.trigger_type,
+        extraction_prompt: s.extraction_prompt.trim() || null,
+        extraction_model:  s.extraction_model.trim() || 'gpt-4o-mini',
+        instructions:      s.instructions,
+        output_format:     s.output_format,
+        model:             s.model.trim() || 'gpt-4o-mini',
+        is_active:         s.is_active,
+        sort_order:        i,
+      }
+
+      let subId = s.id
+      if (subId) {
+        await supabase.from('chat_subagents').update(payload).eq('id', subId)
+      } else {
+        const { data: created } = await supabase.from('chat_subagents').insert(payload).select('id').single()
+        subId = created?.id
+      }
+      if (!subId) continue
+
+      // Fontes de dados (delete + reinsert por subagente — id estável)
+      await supabase.from('chat_subagent_datasources').delete().eq('subagent_id', subId)
+      const validDs = s.datasources.filter(d => d.table_name.trim() && d.output_placeholder.trim())
+      if (validDs.length) {
+        await supabase.from('chat_subagent_datasources').insert(
+          validDs.map((d, j) => ({
+            subagent_id:        subId,
+            connection_id:      d.connection_id || null,
+            name:               d.name.trim() || d.table_name.trim(),
+            table_name:         d.table_name.trim(),
+            filter_column:      d.filter_column.trim() || null,
+            filter_template:    d.filter_template.trim() || null,
+            columns:            d.columns.trim() || '*',
+            max_rows:           d.max_rows || 5,
+            output_placeholder: d.output_placeholder.trim(),
+            sort_order:         j,
+          }))
+        )
+      }
     }
 
     setLoading(false)
@@ -1234,6 +1293,75 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                       />
                     </div>
                   </div>
+
+                  {/* ── Fontes de dados do subagente ── */}
+                  <div className="border-t border-gray-200 pt-3 mt-1">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[11px] font-semibold text-gray-600 flex items-center gap-1">
+                        <Plug className="w-3 h-3" /> Fontes de dados (consultas à base)
+                      </label>
+                      <button
+                        onClick={() => setSubagents(subagents.map((x, j) => j === i ? { ...x, datasources: [...x.datasources, {
+                          connection_id: apiConnections.find(c => c.provider === 'supabase_db')?.id || null,
+                          name: '', table_name: '', filter_column: '', filter_template: '', columns: '*', max_rows: 5, output_placeholder: '',
+                        }] } : x))}
+                        className="text-[11px] text-emerald-600 hover:text-emerald-700"
+                      >
+                        + Adicionar fonte
+                      </button>
+                    </div>
+                    {s.datasources.length === 0 && (
+                      <p className="text-[11px] text-gray-400 italic">Nenhuma fonte. O subagente usa só os dados extraídos da mídia.</p>
+                    )}
+                    {s.datasources.map((d, di) => {
+                      const upd = (patch: Partial<DatasourceDraft>) => setSubagents(subagents.map((x, j) =>
+                        j === i ? { ...x, datasources: x.datasources.map((y, k) => k === di ? { ...y, ...patch } : y) } : x))
+                      return (
+                        <div key={di} className="bg-white border border-gray-200 rounded-lg p-2.5 mb-2 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={d.connection_id || ''}
+                              onChange={(e) => upd({ connection_id: e.target.value || null })}
+                              className="h-7 rounded border border-gray-200 bg-white px-1.5 text-[11px] shrink-0"
+                            >
+                              <option value="">— Conexão —</option>
+                              {apiConnections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            </select>
+                            <input
+                              value={d.table_name}
+                              onChange={(e) => upd({ table_name: e.target.value })}
+                              placeholder="tabela (ex: sienge_boletos)"
+                              className="flex-1 border border-gray-200 rounded px-2 py-1 text-[11px] font-mono"
+                            />
+                            <button
+                              onClick={() => setSubagents(subagents.map((x, j) =>
+                                j === i ? { ...x, datasources: x.datasources.filter((_, k) => k !== di) } : x))}
+                              className="text-gray-400 hover:text-red-500 shrink-0"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                              placeholder="coluna filtro (customer_phone)" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            <input value={d.filter_template} onChange={(e) => upd({ filter_template: e.target.value })}
+                              placeholder="valor: {{contato}} ou {{cpf}}" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <input value={d.columns} onChange={(e) => upd({ columns: e.target.value })}
+                              placeholder="colunas (*)" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            <input type="number" value={d.max_rows} onChange={(e) => upd({ max_rows: parseInt(e.target.value) || 5 })}
+                              placeholder="máx linhas" className="border border-gray-200 rounded px-2 py-1 text-[11px]" />
+                            <input value={d.output_placeholder} onChange={(e) => upd({ output_placeholder: e.target.value.replace(/[^a-z0-9_]/gi, '_') })}
+                              placeholder="placeholder saída" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                          </div>
+                          {d.output_placeholder && (
+                            <p className="text-[10px] text-gray-400">Use <code className="bg-gray-100 px-1 rounded">{`{{${d.output_placeholder}}}`}</code> nas instruções acima para inserir o resultado.</p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1243,6 +1371,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
             onClick={() => setSubagents([...subagents, {
               name: '', trigger_type: 'image', extraction_prompt: '', extraction_model: 'gpt-4o-mini',
               instructions: '', output_format: '', model: 'gpt-4o-mini', is_active: true, sort_order: subagents.length,
+              datasources: [],
             }])}
             className="flex items-center gap-1.5 px-3 py-2 text-xs text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
           >

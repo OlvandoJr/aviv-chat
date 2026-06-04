@@ -155,13 +155,61 @@ async function getSubagentForConv(convId: string, triggerType: string): Promise<
   return sub
 }
 
-// Substitui placeholders {{...}} do prompt do subagente pelos dados dinâmicos
+// Substitui QUALQUER placeholder {{chave}} do prompt pelos valores fornecidos
 function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
-  return (tpl || '')
-    .replace(/\{\{dados_extraidos\}\}/g, vars.dados_extraidos ?? '')
-    .replace(/\{\{contexto_sienge\}\}/g, vars.contexto_sienge ?? '')
-    .replace(/\{\{empreendimentos\}\}/g, vars.empreendimentos ?? EMPREENDIMENTOS)
-    .replace(/\{\{transcricao\}\}/g, vars.transcricao ?? '')
+  let out = tpl || ''
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), v ?? '')
+  }
+  // Empreendimentos é sempre disponível como default
+  if (!('empreendimentos' in vars)) {
+    out = out.replace(/\{\{\s*empreendimentos\s*\}\}/g, EMPREENDIMENTOS)
+  }
+  return out
+}
+
+// ── Fontes de dados do subagente — consultam tabelas e devolvem placeholders ──
+async function runDatasources(subId: string, baseVars: Record<string, string>): Promise<Record<string, string>> {
+  const { data: sources } = await supabase
+    .from('chat_subagent_datasources')
+    .select('*')
+    .eq('subagent_id', subId)
+    .order('sort_order')
+
+  const out: Record<string, string> = {}
+  for (const ds of sources || []) {
+    try {
+      // Resolver o valor do filtro (substituindo {{contato}}, {{cpf}}, etc)
+      let filterVal = ds.filter_template || ''
+      for (const [k, v] of Object.entries(baseVars)) {
+        filterVal = filterVal.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), v ?? '')
+      }
+      // Normalizar CPF/telefone (só dígitos) quando o filtro parecer numérico
+      const looksNumeric = /^[\d.\-/()\s]+$/.test(filterVal)
+      const cleanVal = looksNumeric ? filterVal.replace(/\D/g, '') : filterVal
+
+      let q = supabase.from(ds.table_name).select(ds.columns || '*').limit(ds.max_rows || 5)
+      if (ds.filter_column && cleanVal) q = q.eq(ds.filter_column, cleanVal)
+
+      const { data: rows, error } = await q
+      if (error) {
+        out[ds.output_placeholder] = `${ds.name}: erro ao consultar (${error.message}).`
+        continue
+      }
+      out[ds.output_placeholder] = formatRows(ds.name, rows || [])
+    } catch (e) {
+      out[ds.output_placeholder] = `${ds.name}: falha na consulta.`
+    }
+  }
+  return out
+}
+
+function formatRows(name: string, rows: any[]): string {
+  if (!rows.length) return `${name}: nenhum registro encontrado na base.`
+  const lines = rows.map(r =>
+    '- ' + Object.entries(r).map(([k, v]) => `${k}: ${v ?? '—'}`).join(', ')
+  )
+  return `${name} (${rows.length}):\n${lines.join('\n')}`
 }
 
 // Interpreta a transcrição de áudio usando o subagente de áudio
@@ -171,7 +219,8 @@ async function interpretAudio(messageId: string, sub: any) {
   const transcricao = (msg?.metadata as any)?.transcription || ''
   if (!transcricao) return
 
-  const prompt = fillPlaceholders(sub.instructions, { transcricao })
+  const dsVars = await runDatasources(sub.id, { transcricao })
+  const prompt = fillPlaceholders(sub.instructions, { transcricao, ...dsVars })
     + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -448,10 +497,16 @@ async function analyzeImage(
   const siengeCtx        = buildSiengeContext(boleto)
   const extractedSummary = `Dados extraídos da imagem:\n${Object.entries(extractedData).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
 
+  // Executar fontes de dados configuradas (injetam placeholders adicionais)
+  const dsVars = await runDatasources(sub.id, {
+    contato: waId, cpf: extractedData.cpf_cnpj || '', telefone: waId,
+  })
+
   const validationPrompt = fillPlaceholders(sub.instructions, {
     dados_extraidos: extractedSummary,
     contexto_sienge: siengeCtx,
     empreendimentos: EMPREENDIMENTOS,
+    ...dsVars,   // fontes configuradas têm prioridade (podem sobrescrever contexto_sienge)
   }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
   console.log('Image step 2: running validation prompt (subagente)')
@@ -575,9 +630,14 @@ async function analyzePdf(
     // ── Passo 2: validação completa com veredicto (GPT-4o lê o PDF) ─────
     const siengeCtx = buildSiengeContext(boleto)
 
+    const dsVars = await runDatasources(sub.id, {
+      contato: waId, cpf: extractedData.cpf_cnpj || '', telefone: waId,
+    })
+
     const analysisPrompt = fillPlaceholders(sub.instructions, {
       contexto_sienge: siengeCtx,
       empreendimentos: EMPREENDIMENTOS,
+      ...dsVars,
     }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
     console.log('PDF step 2: analyzing with subagente model', sub.model)
