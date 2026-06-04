@@ -427,18 +427,31 @@ Deno.serve(async (req) => {
     let sglBoletos: any[] = []
 
     if (boletos.length === 0 && contactWaId) {
+      const sglCols =
+        'id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, ' +
+        'unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, ' +
+        'contasrecebervalor, linkboleto, status, created_at'
+
+      // Busca por telefone normalizado (cobre formatos com/sem 9º dígito, DDI, 0 no DDD)
       const { data: sglRows } = await supabase
         .from('mensagens_cobranca')
-        .select(
-          'id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, ' +
-          'unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, ' +
-          'contasrecebervalor, linkboleto, status, created_at'
-        )
-        .eq('phone', contactWaId)
+        .select(sglCols)
+        .eq('phone_norm', normalizePhone(contactWaId))
         .order('created_at', { ascending: false })
         .limit(5)
 
       sglBoletos = sglRows || []
+
+      // Fallback: telefone exato (caso algum registro antigo não normalize)
+      if (sglBoletos.length === 0) {
+        const { data: exact } = await supabase
+          .from('mensagens_cobranca')
+          .select(sglCols)
+          .eq('phone', contactWaId)
+          .order('created_at', { ascending: false })
+          .limit(5)
+        sglBoletos = exact || []
+      }
 
       if (sglBoletos.length > 0) {
         boletoSource = 'sgl'
