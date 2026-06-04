@@ -502,17 +502,28 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Instrução de uso da ferramenta de 2ª via
+      // Instrução de uso conforme a origem do boleto
       if (boletoSource === 'sienge') {
         customerContext += boletos.length > 1
           ? '\nHá MAIS DE UM boleto em aberto. Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja. Após a escolha, chame a função enviar_segunda_via_boleto com os IDs correspondentes.\n'
           : '\nQuando o cliente pedir o boleto, chame a função enviar_segunda_via_boleto com os IDs deste boleto.\n'
+      } else if (boletoSource === 'sgl') {
+        // Clientes legados do SGL: o link de pagamento JÁ está na base — NÃO usar a 2ª via do Sienge
+        customerContext += boletos.length > 1
+          ? '\nOs boletos acima já possuem LINK de pagamento (no campo "Link para pagamento"). Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja; depois ENVIE o link correspondente diretamente no texto. NUNCA use a função enviar_segunda_via_boleto para estes boletos.\n'
+          : '\nO boleto acima já possui LINK de pagamento (campo "Link para pagamento"). Quando o cliente pedir, ENVIE esse link diretamente no texto. NUNCA use a função enviar_segunda_via_boleto para este boleto.\n'
       }
     } else if (includeBoletos) {
       customerContext += '\nEste número ainda não possui boletos vinculados no sistema. ' +
         'Isso é NORMAL e NÃO é motivo para escalar. Cumprimente o cliente normalmente, ' +
         'pergunte com quem está falando (nome/CPF) e como pode ajudar. Só escale se o cliente ' +
         'pedir atendente ou se a situação realmente exigir (negociação, jurídico).\n'
+    }
+
+    // Cliente legado do SGL tem link direto → remover a ferramenta de 2ª via do Sienge
+    if (boletoSource === 'sgl') {
+      const i = openAiTools.findIndex((t: any) => t.function?.name === 'enviar_segunda_via_boleto')
+      if (i >= 0) openAiTools.splice(i, 1)
     }
 
     if (customContext) {
