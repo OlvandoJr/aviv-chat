@@ -23,7 +23,21 @@ const EMPREENDIMENTOS = `
 - CONJUNTO HABITACIONAL AMADOR GONÇALVES
 - JARDIM IMPERIAL SPE LTDA – CNPJ 62.143.390/0001-06
 - FELIPE GIOVANINI ROSSETO – CPF 079.605.329-40
+- LOTEAMENTO JARDIM PAULO FREIRE SPE LTDA – CNPJ 61.024.834/0001-21
+- LOTEAMENTO JARDIM DAS PALMEIRAS SPE LTDA
 `.trim()
+
+// Lista de empreendimentos dinâmica (tabela sincronizada do Sienge) — fallback ao hardcoded
+async function getEmpreendimentosTexto(): Promise<string> {
+  const { data } = await supabase
+    .from('sienge_empreendimentos')
+    .select('name, company_name, cnpj')
+    .order('name')
+  if (!data || !data.length) return EMPREENDIMENTOS
+  return data
+    .map(e => `- ${e.company_name || e.name}${e.cnpj ? ' – CNPJ ' + e.cnpj : ''}`)
+    .join('\n')
+}
 
 // ── Handler principal ─────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
@@ -515,7 +529,7 @@ async function analyzeImage(
   const validationPrompt = fillPlaceholders(sub.instructions, {
     dados_extraidos: extractedSummary,
     contexto_sienge: siengeCtx,
-    empreendimentos: EMPREENDIMENTOS,
+    empreendimentos: await getEmpreendimentosTexto(),
     ...dsVars,   // fontes configuradas têm prioridade (podem sobrescrever contexto_sienge)
   }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
@@ -646,7 +660,7 @@ async function analyzePdf(
 
     const analysisPrompt = fillPlaceholders(sub.instructions, {
       contexto_sienge: siengeCtx,
-      empreendimentos: EMPREENDIMENTOS,
+      empreendimentos: await getEmpreendimentosTexto(),
       ...dsVars,
     }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
