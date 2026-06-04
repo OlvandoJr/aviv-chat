@@ -1361,30 +1361,47 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                             </button>
                           </div>
                           <div className="grid grid-cols-2 gap-2">
-                            {dbSchema[d.table_name]?.length ? (
-                              <select value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
-                                className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono bg-white">
-                                <option value="">— Coluna do filtro —</option>
-                                {dbSchema[d.table_name].map(col => <option key={col} value={col}>{col}</option>)}
-                              </select>
-                            ) : (
-                              <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
-                                placeholder="coluna filtro (customer_phone)" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
-                            )}
-                            <input value={d.filter_template} onChange={(e) => upd({ filter_template: e.target.value })}
-                              placeholder="valor: {{contato}} ou {{cpf}}" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            <div>
+                              <label className="text-[10px] text-gray-500 mb-0.5 block">Filtrar pela coluna</label>
+                              {dbSchema[d.table_name]?.length ? (
+                                <select value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                                  className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono bg-white">
+                                  <option value="">— Coluna do filtro —</option>
+                                  {dbSchema[d.table_name].map(col => <option key={col} value={col}>{col}</option>)}
+                                </select>
+                              ) : (
+                                <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                                  placeholder="customer_phone" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                              )}
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-gray-500 mb-0.5 block">Igual ao valor</label>
+                              <input value={d.filter_template} onChange={(e) => upd({ filter_template: e.target.value })}
+                                placeholder="{{telefone}} ou {{cpf}}" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            </div>
                           </div>
                           <div className="grid grid-cols-3 gap-2">
-                            <input value={d.columns} onChange={(e) => upd({ columns: e.target.value })}
-                              placeholder="colunas (*)" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
-                            <input type="number" value={d.max_rows} onChange={(e) => upd({ max_rows: parseInt(e.target.value) || 5 })}
-                              placeholder="máx linhas" className="border border-gray-200 rounded px-2 py-1 text-[11px]" />
-                            <input value={d.output_placeholder} onChange={(e) => upd({ output_placeholder: e.target.value.replace(/[^a-z0-9_]/gi, '_') })}
-                              placeholder="placeholder saída" className="border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            <div>
+                              <label className="text-[10px] text-gray-500 mb-0.5 block">Colunas a trazer</label>
+                              <input value={d.columns} onChange={(e) => upd({ columns: e.target.value })}
+                                placeholder="* (todas)" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-gray-500 mb-0.5 block">Máx. linhas</label>
+                              <input type="number" value={d.max_rows} onChange={(e) => upd({ max_rows: parseInt(e.target.value) || 5 })}
+                                className="w-full border border-gray-200 rounded px-2 py-1 text-[11px]" />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-gray-500 mb-0.5 block">Salvar resultado em *</label>
+                              <input value={d.output_placeholder} onChange={(e) => upd({ output_placeholder: e.target.value.replace(/[^a-z0-9_]/gi, '_') })}
+                                placeholder="contexto_sienge" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                            </div>
                           </div>
-                          {d.output_placeholder && (
-                            <p className="text-[10px] text-gray-400">Use <code className="bg-gray-100 px-1 rounded">{`{{${d.output_placeholder}}}`}</code> nas instruções acima para inserir o resultado.</p>
-                          )}
+                          <p className="text-[10px] text-gray-400">
+                            {d.output_placeholder
+                              ? <>Use <code className="bg-gray-100 px-1 rounded">{`{{${d.output_placeholder}}}`}</code> nas instruções do subagente para inserir o resultado da consulta.</>
+                              : <>Valores de filtro disponíveis: <code className="bg-gray-100 px-1 rounded">{'{{telefone}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{contato}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{cpf}}'}</code> — preenchidos automaticamente.</>}
+                          </p>
                         </div>
                       )
                     })}
