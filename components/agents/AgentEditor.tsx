@@ -1214,6 +1214,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                       onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, trigger_type: e.target.value as SubagentTrigger } : x))}
                       className="h-8 rounded-md border border-gray-200 bg-white px-2 text-xs"
                     >
+                      <option value="text">💬 Texto</option>
                       <option value="image">📷 Imagem</option>
                       <option value="document">📄 Documento</option>
                       <option value="audio">🎙 Áudio</option>
@@ -1235,7 +1236,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                   </div>
 
                   {/* Extração (não p/ áudio) */}
-                  {s.trigger_type !== 'audio' && (
+                  {( s.trigger_type === 'image' || s.trigger_type === 'document' ) && (
                     <div>
                       <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">
                         Passo 1 — Extração de dados (prompt enviado junto com a mídia)
@@ -1253,7 +1254,9 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                   {/* Instruções / critérios */}
                   <div>
                     <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">
-                      {s.trigger_type === 'audio' ? 'Instruções (como interpretar o áudio)' : 'Passo 2 — Instruções / critérios de análise'}
+                      {s.trigger_type === 'audio' ? 'Instruções (como interpretar o áudio)'
+                        : s.trigger_type === 'text' ? 'Instruções (como a IA deve usar os dados consultados)'
+                        : 'Passo 2 — Instruções / critérios de análise'}
                     </label>
                     <textarea
                       value={s.instructions}
@@ -1280,7 +1283,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
 
                   {/* Modelos */}
                   <div className="grid grid-cols-2 gap-2">
-                    {s.trigger_type !== 'audio' && (
+                    {( s.trigger_type === 'image' || s.trigger_type === 'document' ) && (
                       <div>
                         <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Modelo extração</label>
                         <input

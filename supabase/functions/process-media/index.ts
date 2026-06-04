@@ -204,6 +204,16 @@ async function runDatasources(subId: string, baseVars: Record<string, string>): 
   return out
 }
 
+// Normaliza telefone BR → DDD + 8 últimos dígitos (espelha normalize_phone do SQL)
+function normalizePhone(raw: string): string {
+  let d = (raw || '').replace(/\D/g, '')
+  if (!d) return ''
+  if (d.startsWith('55') && d.length >= 12) d = d.slice(2)
+  if (d.startsWith('0')) d = d.slice(1)
+  if (d.length >= 11 && d[2] === '9') d = d.slice(0, 2) + d.slice(3)
+  return d.slice(-10)
+}
+
 function formatRows(name: string, rows: any[]): string {
   if (!rows.length) return `${name}: nenhum registro encontrado na base.`
   const lines = rows.map(r =>
@@ -499,7 +509,7 @@ async function analyzeImage(
 
   // Executar fontes de dados configuradas (injetam placeholders adicionais)
   const dsVars = await runDatasources(sub.id, {
-    contato: waId, cpf: extractedData.cpf_cnpj || '', telefone: waId,
+    contato: waId, telefone: waId, telefone_norm: normalizePhone(waId), cpf: extractedData.cpf_cnpj || "",
   })
 
   const validationPrompt = fillPlaceholders(sub.instructions, {
@@ -631,7 +641,7 @@ async function analyzePdf(
     const siengeCtx = buildSiengeContext(boleto)
 
     const dsVars = await runDatasources(sub.id, {
-      contato: waId, cpf: extractedData.cpf_cnpj || '', telefone: waId,
+      contato: waId, telefone: waId, telefone_norm: normalizePhone(waId), cpf: extractedData.cpf_cnpj || "",
     })
 
     const analysisPrompt = fillPlaceholders(sub.instructions, {

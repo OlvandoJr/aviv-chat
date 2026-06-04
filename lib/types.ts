@@ -294,7 +294,7 @@ export interface ScheduledPayment {
 
 // ── Subagentes ────────────────────────────────────────────────────────────────
 
-export type SubagentTrigger = 'image' | 'document' | 'audio'
+export type SubagentTrigger = 'image' | 'document' | 'audio' | 'text'
 
 export interface Subagent {
   id:                string

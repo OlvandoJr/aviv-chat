@@ -45,6 +45,16 @@ const SYSTEM_TOKEN_PROTECTION = `
 
 REGRA CRÍTICA: NUNCA inclua tokens internos (como Atualiza_base_dados, UPDATE_DB, ou qualquer instrução no formato token { ... }) na sua resposta ao cliente. Esses tokens são processados internamente e JAMAIS devem aparecer na mensagem enviada ao cliente.`
 
+// Normaliza telefone BR → DDD + 8 últimos dígitos (espelha normalize_phone do SQL)
+function normalizePhone(raw: string): string {
+  let d = (raw || '').replace(/\D/g, '')
+  if (!d) return ''
+  if (d.startsWith('55') && d.length >= 12) d = d.slice(2)
+  if (d.startsWith('0')) d = d.slice(1)
+  if (d.length >= 11 && d[2] === '9') d = d.slice(0, 2) + d.slice(3)
+  return d.slice(-10)
+}
+
 // ── Handler principal ──────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
@@ -262,6 +272,10 @@ Deno.serve(async (req) => {
 
     const history = (rawMessages || []).reverse()
 
+    // Texto da última mensagem recebida do cliente (para subagentes de texto)
+    const lastUserText = [...history].reverse()
+      .find((m: any) => m.direction === 'in' && m.content)?.content || ''
+
     // ── 4b. Histórico legado do n8n (sistema SGL anterior) ────────────────────
     // Carregado apenas quando a conversa no nosso sistema ainda é nova (≤ 5 msgs),
     // evitando poluir conversas longas com contexto antigo irrelevante.
@@ -297,7 +311,7 @@ Deno.serve(async (req) => {
       const { data } = await supabase
         .from('sienge_boletos')
         .select('parcela_descricao, due_date, amount, status')
-        .eq('customer_phone', contactWaId)
+        .eq('phone_norm', normalizePhone(contactWaId))   // comparação normalizada
         .order('due_date', { ascending: true })
         .limit(10)
       boletos = data || []
@@ -504,6 +518,35 @@ Deno.serve(async (req) => {
         customerContext +=
           '\nREGRAS PARA atualizar_conversa — use a função quando identificar estes dados:\n' +
           instrucoes.join('\n') + '\n'
+      }
+    }
+
+    // ── 6c. Subagentes de TEXTO — consultam a base e injetam contexto ─────────
+    if (agent?.id) {
+      const { data: textSubs } = await supabase
+        .from('chat_subagents')
+        .select('*, datasources:chat_subagent_datasources(*)')
+        .eq('agent_id', agent.id)
+        .eq('trigger_type', 'text')
+        .eq('is_active', true)
+        .order('sort_order')
+
+      for (const sub of textSubs || []) {
+        const dsVars = await runSubagentDatasources(sub.datasources || [], {
+          contato: contactWaId, telefone: contactWaId, telefone_norm: normalizePhone(contactWaId),
+          cpf: '', texto: lastUserText || '',
+        })
+        // Injeta cada placeholder preenchido + instruções do subagente
+        let block = ''
+        for (const [k, v] of Object.entries(dsVars)) {
+          if (v) block += `\n${v}\n`
+        }
+        if (sub.instructions?.trim()) {
+          block += '\n' + fillSubagentPlaceholders(sub.instructions, dsVars) + '\n'
+        }
+        if (block.trim()) {
+          customerContext += `\n--- ${sub.name} ---\n${block}`
+        }
       }
     }
 
@@ -1148,4 +1191,52 @@ async function fetchBoletoFromSiengeAPI(cpfDigits: string, waId: string): Promis
     console.error('fetchBoletoFromSiengeAPI error:', err)
     return null
   }
+}
+
+// ── Subagentes de texto: consultar fontes de dados e preencher placeholders ───
+function fillSubagentPlaceholders(tpl: string, vars: Record<string, string>): string {
+  let out = tpl || ''
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), v ?? '')
+  }
+  return out
+}
+
+function formatSubagentRows(name: string, rows: any[]): string {
+  if (!rows.length) return `${name}: nenhum registro encontrado na base.`
+  const lines = rows.map(r =>
+    '- ' + Object.entries(r).map(([k, v]) => {
+      const val = (v && typeof v === 'object') ? JSON.stringify(v) : (v ?? '—')
+      return `${k}: ${val}`
+    }).join(', ')
+  )
+  return `${name} (${rows.length}):\n${lines.join('\n')}`
+}
+
+async function runSubagentDatasources(
+  datasources: any[],
+  baseVars: Record<string, string>,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  for (const ds of datasources || []) {
+    try {
+      let filterVal = ds.filter_template || ''
+      for (const [k, v] of Object.entries(baseVars)) {
+        filterVal = filterVal.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), v ?? '')
+      }
+      const looksNumeric = /^[\d.\-/()\s]+$/.test(filterVal)
+      const cleanVal = looksNumeric ? filterVal.replace(/\D/g, '') : filterVal
+
+      let q = supabase.from(ds.table_name).select(ds.columns || '*').limit(ds.max_rows || 5)
+      if (ds.filter_column && cleanVal) q = q.eq(ds.filter_column, cleanVal)
+
+      const { data: rows, error } = await q
+      out[ds.output_placeholder] = error
+        ? `${ds.name}: erro ao consultar (${error.message}).`
+        : formatSubagentRows(ds.name, rows || [])
+    } catch (e) {
+      out[ds.output_placeholder] = `${ds.name}: falha na consulta.`
+    }
+  }
+  return out
 }
