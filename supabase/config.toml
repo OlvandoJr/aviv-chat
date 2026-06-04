@@ -1,0 +1,16 @@
+project_id = "jpxlczmbxfcnujemlxzq"
+
+# ── Edge Functions ────────────────────────────────────────────────────────────
+# Webhooks externos (Meta, Sienge) NÃO enviam JWT do Supabase.
+# verify_jwt = false é obrigatório, senão o Supabase bloqueia com 401
+# antes de a requisição chegar no código da função.
+
+[functions.whatsapp-webhook]
+verify_jwt = false
+
+[functions.process-media]
+verify_jwt = false
+
+# Funções abaixo são chamadas pelo frontend autenticado OU por outras
+# funções com service-role; mantêm verify_jwt = true (default) e validam
+# o token internamente.
