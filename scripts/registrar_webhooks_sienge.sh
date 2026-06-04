@@ -1,7 +1,19 @@
 #!/bin/bash
-# Registra os webhooks de cobrança no Sienge apontando para o receptor n8n
-# Rodar quando a quota REST do Sienge estiver disponível
-CRED="avivconstrutora-olvando:9l3iHjuk5JdqSl3QmSFdH5S4EYjMQ5CS"
+# Registra os webhooks de cobrança no Sienge apontando para o receptor n8n.
+#
+# ⚠️ NÃO coloque credenciais neste arquivo. Use variáveis de ambiente:
+#   export SIENGE_USER="avivconstrutora-usuario"
+#   export SIENGE_PASSWORD="••••••"
+#   bash scripts/registrar_webhooks_sienge.sh
+#
+# Ou inline:  SIENGE_USER=... SIENGE_PASSWORD=... bash scripts/registrar_webhooks_sienge.sh
+
+set -euo pipefail
+
+: "${SIENGE_USER:?defina SIENGE_USER}"
+: "${SIENGE_PASSWORD:?defina SIENGE_PASSWORD}"
+
+CRED="${SIENGE_USER}:${SIENGE_PASSWORD}"
 BASE="https://api.sienge.com.br/avivconstrutora/public/api/v1/hooks"
 URL="https://bot-evo-n8n.8s2tnz.easypanel.host/webhook/sienge-eventos"
 
@@ -11,12 +23,9 @@ register() {
     -d "{\"url\":\"$URL\",\"events\":[\"$1\"]}" -w " [HTTP:%{http_code}]\n"
 }
 
-# 1. Cobrança escritural confirmada — boleto DISPONÍVEL (hipótese principal p/ Aviv)
-register "BOOK_COLLECTION_CONFIRMED"
-# 2. Registro de boleto processado — caso usem boleto registrado
-register "PAYMENT_SLIP_REGISTERED"
-# 3. Pagamento processado — BAIXA do boleto (encerra a régua)
-register "RECEIPT_PROCESSED"
+register "BOOK_COLLECTION_CONFIRMED"   # cobrança escritural confirmada — boleto disponível
+register "PAYMENT_SLIP_REGISTERED"     # registro de boleto processado
+register "RECEIPT_PROCESSED"           # pagamento/baixa do boleto
 
 echo ""
 echo "Webhooks registrados. Listando todos:"
