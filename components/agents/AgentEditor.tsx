@@ -79,6 +79,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   const [escalationContexts,    setEscalationContexts]   = useState<string>((agent as any)?.escalation_contexts   || '')
   const [escalationBotPhrases,  setEscalationBotPhrases] = useState<string[]>((agent as any)?.escalation_bot_phrases || [])
   const [escalationMessage,     setEscalationMessage]    = useState(agent?.escalation_message || '')
+  const [escalationRules,       setEscalationRules]      = useState<string>((agent as any)?.escalation_rules || '')
   const [newKeyword,            setNewKeyword]           = useState('')
   const [newBotPhrase,          setNewBotPhrase]         = useState('')
 
@@ -177,6 +178,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       escalation_contexts:    escalationContexts.trim()    || null,
       escalation_bot_phrases: escalationBotPhrases,
       escalation_message:     escalationMessage.trim()     || null,
+      escalation_rules:       escalationRules.trim()       || null,
       updated_at:           new Date().toISOString(),
     }
 
@@ -641,6 +643,26 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
           <p className="text-xs text-gray-500 -mt-1">
             Configure quando o bot deve parar de responder e sinalizar que um humano precisa assumir.
           </p>
+
+          {/* 0 — Regras base de escalação (editável) */}
+          <div className="pt-1">
+            <label className="text-xs font-medium text-gray-700 mb-0.5 block">
+              Regras de escalação (instruções para a IA)
+            </label>
+            <p className="text-[11px] text-gray-400 mb-2">
+              Estas regras dizem à IA <strong>quando</strong> usar <code className="bg-gray-100 px-1 rounded">ESCALAR_HUMANO:</code> e quando <strong>não</strong> escalar.
+              São injetadas no prompt. Edite com cuidado — se deixar em branco, o sistema usa as regras padrão.
+            </p>
+            <textarea
+              value={escalationRules}
+              onChange={(e) => setEscalationRules(e.target.value)}
+              rows={10}
+              placeholder="--- REGRAS DE ESCALAÇÃO ---&#10;Use ESCALAR_HUMANO: <motivo> apenas quando...&#10;NUNCA escale em saudações..."
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y"
+            />
+          </div>
+
+          <div className="border-t border-gray-100 pt-3" />
 
           {/* 1 — Palavras-chave do cliente */}
           <div className="pt-1">

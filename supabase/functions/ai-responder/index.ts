@@ -17,11 +17,10 @@ const siengeAuth  = () =>
 const FALLBACK_SYSTEM_PROMPT = `Você é um assistente virtual de atendimento ao cliente.
 Seja educado, empático e profissional. Responda em português brasileiro.`
 
-// ── Sufixo de escalação — sempre injetado ao final do system prompt ────────────
-// Garante que QUALQUER agente (customizado ou fallback) saiba quando escalar.
-const ESCALATION_SUFFIX = `
-
---- REGRAS DE ESCALAÇÃO PARA ATENDENTE HUMANO ---
+// ── Regras de escalação (EDITÁVEIS na UI do agente) ────────────────────────────
+// Usado como fallback quando o agente não tem escalation_rules configurado.
+// O admin pode sobrescrever no campo "Regras de escalação" do quadro Escalação.
+const DEFAULT_ESCALATION_RULES = `--- REGRAS DE ESCALAÇÃO PARA ATENDENTE HUMANO ---
 Use EXATAMENTE o token ESCALAR_HUMANO: <motivo> como sua resposta COMPLETA (sem mais nada) APENAS nos seguintes casos:
 1. O cliente pede explicitamente falar com um humano, atendente, gerente ou responsável.
 2. A dúvida envolve cláusulas contratuais, jurídico, distrato ou negociação/parcelamento especial.
@@ -38,7 +37,11 @@ Exemplos de uso correto:
 - ESCALAR_HUMANO: cliente solicita negociação especial de boleto vencido
 - ESCALAR_HUMANO: solicitou falar com atendente
 
-Na dúvida entre escalar ou ajudar, PREFIRA ajudar. Só escale se um dos casos 1-4 acima for claramente atendido. NUNCA use ESCALAR_HUMANO: em saudações ou respostas de rotina.
+Na dúvida entre escalar ou ajudar, PREFIRA ajudar. Só escale se um dos casos 1-4 acima for claramente atendido. NUNCA use ESCALAR_HUMANO: em saudações ou respostas de rotina.`
+
+// ── Proteção técnica do sistema (NÃO editável — sempre injetada) ───────────────
+// Impede vazamento de tokens internos para o cliente. Não depende do agente.
+const SYSTEM_TOKEN_PROTECTION = `
 
 REGRA CRÍTICA: NUNCA inclua tokens internos (como Atualiza_base_dados, UPDATE_DB, ou qualquer instrução no formato token { ... }) na sua resposta ao cliente. Esses tokens são processados internamente e JAMAIS devem aparecer na mensagem enviada ao cliente.`
 
@@ -128,15 +131,22 @@ Deno.serve(async (req) => {
     const escalationMessage  = agent?.escalation_message   ||
       'Entendido! Vou encaminhar você para um de nossos atendentes agora mesmo. Por favor, aguarde um momento. 🙏'
 
-    // Contextos configurados pelo admin — injetados como regras extras no ESCALATION_SUFFIX
+    // Contextos configurados pelo admin — injetados como regras extras
     const agentContexts   = (agent?.escalation_contexts   as string | null) || ''
     const agentBotPhrases = (agent?.escalation_bot_phrases as string[] | null) || []
+
+    // Regras de escalação editáveis na UI (fallback para o default do sistema)
+    const escalationRules = ((agent?.escalation_rules as string | null) || '').trim() || DEFAULT_ESCALATION_RULES
 
     const contextRules = agentContexts.trim()
       ? '\n\nCONTEXTOS ADICIONAIS QUE DEVEM ESCALAR (configurados pelo administrador):\n' + agentContexts
       : ''
 
-    const systemPrompt = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT) + ESCALATION_SUFFIX + contextRules
+    // Prompt final = prompt do agente + regras de escalação (UI) + contextos + proteção técnica fixa
+    const systemPrompt = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT)
+      + '\n\n' + escalationRules
+      + contextRules
+      + SYSTEM_TOKEN_PROTECTION
 
     console.log(`Using agent: ${agent?.name || 'fallback'} | model: ${model}`)
 
@@ -450,7 +460,10 @@ Deno.serve(async (req) => {
         }
       }
     } else if (includeBoletos) {
-      customerContext += '\nNenhum boleto encontrado no sistema para este número.\n'
+      customerContext += '\nEste número ainda não possui boletos vinculados no sistema. ' +
+        'Isso é NORMAL e NÃO é motivo para escalar. Cumprimente o cliente normalmente, ' +
+        'pergunte com quem está falando (nome/CPF) e como pode ajudar. Só escale se o cliente ' +
+        'pedir atendente ou se a situação realmente exigir (negociação, jurídico).\n'
     }
 
     if (customContext) {
