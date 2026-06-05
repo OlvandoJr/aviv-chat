@@ -182,8 +182,41 @@ function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
   return out
 }
 
+// Converte texto monetário ("R$ 1.234,56" / "1234.56") em número
+function parseMoney(s: any): number {
+  if (s == null) return 0
+  const c = String(s).replace(/[^\d.,-]/g, '')
+  if (!c) return 0
+  if (c.includes(',')) return parseFloat(c.replace(/\./g, '').replace(',', '.')) || 0
+  return parseFloat(c) || 0
+}
+
+// Acha a parcela SGL (mensagens_cobranca) que o comprovante quita, casando pelo
+// valor extraído (parcela mais próxima); se não houver valor, a mais vencida em aberto.
+async function resolveSglParcelaId(waId: string, extracted: any): Promise<string> {
+  const { data } = await supabase
+    .from('mensagens_cobranca')
+    .select('id, contasrecebervalor, contasrecebervencimento, status, created_at')
+    .eq('phone_norm', normalizePhone(waId))
+    .order('contasrecebervencimento', { ascending: true })
+  if (!data?.length) return ''
+  const quitado = (st: any) => ['pago', 'comprovante_confirmado', 'comprovante_recebido', 'baixado'].includes(String(st || '').toLowerCase())
+  const abertos = data.filter((r: any) => !quitado(r.status))
+  const pool = abertos.length ? abertos : data
+  const alvo = parseMoney(extracted?.valor)
+  if (alvo > 0) {
+    let best: any = null, bestDiff = Infinity
+    for (const r of pool) {
+      const diff = Math.abs(parseMoney(r.contasrecebervalor) - alvo)
+      if (diff < bestDiff) { best = r; bestDiff = diff }
+    }
+    if (best) return String(best.id)
+  }
+  return String(pool[0]?.id ?? '')
+}
+
 // Monta os placeholders disponíveis para as operações de escrita
-function writeVars(waId: string, extracted: any, verdict: string, boleto: any, siengeStatus: any): Record<string, string> {
+function writeVars(waId: string, extracted: any, verdict: string, boleto: any, siengeStatus: any, extra: Record<string, string> = {}): Record<string, string> {
   const base: Record<string, string> = {
     contato: waId, telefone: waId, telefone_norm: normalizePhone(waId),
     cpf: extracted?.cpf_cnpj || '',
@@ -196,6 +229,7 @@ function writeVars(waId: string, extracted: any, verdict: string, boleto: any, s
     hoje: new Date().toISOString().slice(0, 10),
   }
   for (const [k, v] of Object.entries(extracted || {})) base[k] = String(v ?? '')
+  for (const [k, v] of Object.entries(extra)) base[k] = String(v ?? '')
   return base
 }
 
@@ -659,7 +693,8 @@ async function analyzeImage(
   }).eq('id', messageId)
 
   // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ─────
-  await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus))
+  const sglMsgId = await resolveSglParcelaId(waId, extractedData)
+  await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -801,7 +836,8 @@ async function analyzePdf(
     }).eq('id', messageId)
 
     // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ───
-    await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus))
+    const sglMsgId = await resolveSglParcelaId(waId, extractedData)
+    await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
 
   } finally {
     // Limpar arquivo do OpenAI (não acumula custo de armazenamento)

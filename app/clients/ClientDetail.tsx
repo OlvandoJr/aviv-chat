@@ -19,10 +19,35 @@ function sglAmount(v: string | null) {
 function dt(d?: string | null) { return d ? new Date(d).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : '—' }
 function dtTime(d?: string | null) { return d ? new Date(d).toLocaleString('pt-BR') : '—' }
 
+// Estado de pagamento exibido (dois estados além de vencido/aberto):
+//  PAGO (baixa financeira) · COMPROVANTE RECEBIDO (cliente enviou na conversa)
+const PAGO_ST  = ['pago', 'comprovante_confirmado', 'baixado', 'pago_confirmado', 'quitado']
+const COMPR_ST = ['comprovante_recebido', 'comprovante', 'em_validacao']
+function estado(status: string | null, dueDate: string | null, paidAt?: string | null) {
+  const s = (status || '').toLowerCase()
+  if (paidAt || PAGO_ST.includes(s)) return { label: 'PAGO', cls: 'bg-emerald-100 text-emerald-700' }
+  if (COMPR_ST.includes(s))          return { label: 'COMPROVANTE', cls: 'bg-amber-100 text-amber-700' }
+  const hoje = new Date().toISOString().slice(0, 10)
+  if (dueDate && String(dueDate).slice(0, 10) < hoje) return { label: 'VENCIDO', cls: 'bg-red-100 text-red-600' }
+  return { label: 'EM ABERTO', cls: 'bg-gray-100 text-gray-500' }
+}
+const statusRank = (s: string | null) => PAGO_ST.includes((s || '').toLowerCase()) ? 3 : COMPR_ST.includes((s || '').toLowerCase()) ? 2 : 1
+
 export default function ClientDetail({ cliente, boletosSienge, boletosSgl, reguaLog, conversations, messages }: {
   cliente: any; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; conversations: any[]; messages: any[]
 }) {
   const o = ORIGEM[cliente.origem] || ORIGEM.contato
+
+  // Deduplica SGL por parcela (mantém o registro com status mais avançado / mais recente)
+  const sglMap: Record<string, any> = {}
+  for (const b of boletosSgl) {
+    const k = b.contasreceberparcela || String(b.id)
+    const prev = sglMap[k]
+    if (!prev || statusRank(b.status) > statusRank(prev.status) ||
+        (statusRank(b.status) === statusRank(prev.status) && new Date(b.created_at) > new Date(prev.created_at))) sglMap[k] = b
+  }
+  const sglBoletos = Object.values(sglMap).sort((a: any, b: any) =>
+    new Date(b.contasrecebervencimento || 0).getTime() - new Date(a.contasrecebervencimento || 0).getTime())
 
   // Timeline de cobrança (régua Sienge + SGL)
   const timeline = [
@@ -79,32 +104,39 @@ export default function ClientDetail({ cliente, boletosSienge, boletosSgl, regua
         {/* Boletos */}
         <section className="bg-white border border-gray-100 rounded-xl p-5">
           <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 mb-3"><FileText className="w-4 h-4 text-gray-400" /> Boletos</h2>
-          {boletosSienge.length === 0 && boletosSgl.length === 0 && <p className="text-xs text-gray-400">Nenhum boleto em aberto.</p>}
+          {boletosSienge.length === 0 && sglBoletos.length === 0 && <p className="text-xs text-gray-400">Nenhum boleto.</p>}
           <div className="space-y-2">
-            {boletosSienge.map((b, i) => (
-              <div key={'s'+i} className="rounded-xl border border-gray-100 p-3 bg-gray-50 space-y-1.5">
-                {b.empreendimento && <p className="text-[10px] font-medium text-gray-500 uppercase truncate">{b.empreendimento}{b.quadra ? ` · ${b.quadra}` : ''}{b.lote ? ` · ${b.lote}` : ''}</p>}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-gray-800">Parcela {b.parcela || '—'}</span>
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600">SIENGE</span>
+            {boletosSienge.map((b, i) => {
+              const e = estado(b.status, b.due_date, b.paid_at)
+              return (
+                <div key={'s'+i} className="rounded-xl border border-gray-100 p-3 bg-gray-50 space-y-1.5">
+                  {b.empreendimento && <p className="text-[10px] font-medium text-gray-500 uppercase truncate">{b.empreendimento}{b.quadra ? ` · ${b.quadra}` : ''}{b.lote ? ` · ${b.lote}` : ''}</p>}
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-gray-800 truncate">{b.parcela_descricao || 'Parcela'}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', e.cls)}>{e.label}</span>
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600">SIENGE</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.due_date)}</span>
+                    {b.amount != null && <span className="flex items-center gap-1 font-semibold text-gray-800"><DollarSign className="w-3 h-3 text-gray-400" />{formatCurrency(Number(b.amount))}</span>}
+                  </div>
+                  {b.paid_at && <p className="text-[10px] text-emerald-600">Baixa em {dt(b.paid_at)}</p>}
                 </div>
-                <div className="flex justify-between text-xs">
-                  <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.due_date)}</span>
-                  {b.amount != null && <span className="flex items-center gap-1 font-semibold text-gray-800"><DollarSign className="w-3 h-3 text-gray-400" />{formatCurrency(Number(b.amount))}</span>}
-                </div>
-                {b.link_boleto && <p className="text-[10px] text-gray-400 font-mono truncate">{b.link_boleto}</p>}
-              </div>
-            ))}
-            {boletosSgl.map((b) => {
-              const overdue = b.contasrecebervencimento && new Date(b.contasrecebervencimento) < new Date()
+              )
+            })}
+            {sglBoletos.map((b: any) => {
+              const e = estado(b.status, b.contasrecebervencimento)
               return (
                 <div key={'g'+b.id} className="rounded-xl border border-orange-100 p-3 bg-orange-50/50 space-y-1.5">
                   {b.unidadeempreendimento && <p className="text-[10px] font-medium text-orange-700 uppercase truncate flex items-center gap-1"><Building2 className="w-3 h-3" />{b.unidadeempreendimento}</p>}
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-gray-800">{b.contasreceberparcela || 'Parcela'}</span>
-                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', b.status === 'pago' ? 'bg-emerald-100 text-emerald-600' : overdue ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600')}>
-                      {b.status === 'pago' ? 'PAGO' : overdue ? 'VENCIDO' : 'SGL'}
-                    </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-gray-800 truncate">{b.contasreceberparcela || 'Parcela'}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', e.cls)}>{e.label}</span>
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600">SGL</span>
+                    </div>
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.contasrecebervencimento)}</span>
