@@ -1,0 +1,257 @@
+'use client'
+
+import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
+import { ArrowLeft, Megaphone, Users, Send } from 'lucide-react'
+import { AVAILABLE_COLUMNS, COLUMN_LABEL } from '@/lib/whatsapp/vars'
+import MappedPreview from '@/components/whatsapp/MappedPreview'
+import { cn } from '@/lib/utils'
+
+interface Tpl {
+  id: string; name: string; inbox_id: string; language: string
+  header_type: string | null; header_text: string | null; body_text: string; footer_text?: string | null
+  header_var_count: number; body_var_count: number
+}
+interface Props { inboxes: { id: string; name: string }[]; templates: Tpl[] }
+
+function varNums(text: string): number[] {
+  const s = new Set<number>()
+  for (const m of (text || '').matchAll(/\{\{(\d+)\}\}/g)) s.add(parseInt(m[1]))
+  return [...s].sort((a, b) => a - b)
+}
+function defaultFormat(col: string): 'currency' | 'date' | undefined {
+  if (col === 'amount') return 'currency'
+  if (col === 'due_date') return 'date'
+  return undefined
+}
+
+export default function CampaignWizard({ inboxes, templates }: Props) {
+  const router = useRouter()
+  const supabase = createClient()
+
+  const [name, setName]       = useState('')
+  const [inboxId, setInboxId] = useState(inboxes[0]?.id || '')
+  const [templateId, setTemplateId] = useState('')
+  const [mapping, setMapping] = useState<Record<string, { type: 'static' | 'column'; value: string; format?: string }>>({})
+  const [filter, setFilter]   = useState<{ source: string; dueFrom: string; dueTo: string; empreendimento: string }>(
+    { source: 'both', dueFrom: '', dueTo: '', empreendimento: '' })
+  const [scheduledAt, setScheduledAt] = useState('')
+
+  const [busy, setBusy]   = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [draftId, setDraftId] = useState<string | null>(null)
+  const [audienceTotal, setAudienceTotal] = useState<number | null>(null)
+
+  const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
+  const tpl = templates.find(t => t.id === templateId) || null
+
+  const allVars = useMemo(() => {
+    if (!tpl) return [] as number[]
+    const h = tpl.header_type === 'TEXT' && tpl.header_text ? varNums(tpl.header_text) : []
+    const b = varNums(tpl.body_text)
+    return [...new Set([...h, ...b])].sort((a, b) => a - b)
+  }, [tpl])
+
+  function setVar(n: number, patch: Partial<{ type: 'static' | 'column'; value: string; format?: string }>) {
+    setMapping(m => {
+      const prev = m[n] || { type: 'column' as const, value: '' }
+      return { ...m, [n]: { ...prev, ...patch } }
+    })
+  }
+
+  const mappingReady = allVars.every(n => mapping[n]?.value)
+
+  async function authHeader() {
+    const { data: { session } } = await supabase.auth.getSession()
+    return { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` }
+  }
+
+  // Cria rascunho (se preciso) + resolve audiência → mostra total
+  async function calcAudience() {
+    setError(null)
+    if (!name || !inboxId || !templateId) { setError('Preencha nome, inbox e template.'); return }
+    if (!mappingReady) { setError('Mapeie todas as variáveis do template.'); return }
+    setBusy(true)
+    try {
+      const headers = await authHeader()
+      let id = draftId
+      const cleanMapping: any = {}
+      for (const n of allVars) {
+        const m = mapping[n]
+        cleanMapping[String(n)] = m.type === 'static'
+          ? { type: 'static', value: m.value }
+          : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
+      }
+      if (!id) {
+        const r = await fetch('/api/campaigns', {
+          method: 'POST', headers,
+          body: JSON.stringify({ name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null }),
+        })
+        const j = await r.json()
+        if (!r.ok) throw new Error(j.error || 'Falha ao criar campanha')
+        id = j.id; setDraftId(id)
+      }
+      const ra = await fetch(`/api/campaigns/${id}/audience`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ mode: 'view', filter }),
+      })
+      const ja = await ra.json()
+      if (!ra.ok) throw new Error(ja.error || 'Falha ao calcular audiência')
+      setAudienceTotal(ja.total)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function start() {
+    if (!draftId) return
+    setBusy(true); setError(null)
+    try {
+      const headers = await authHeader()
+      const r = await fetch(`/api/campaigns/${draftId}/start`, { method: 'POST', headers })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error || 'Falha ao iniciar')
+      router.push(`/campaigns/${draftId}`)
+    } catch (e: any) {
+      setError(e.message); setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <button onClick={() => router.push('/campaigns')} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4">
+        <ArrowLeft className="w-4 h-4" /> Campanhas
+      </button>
+      <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2 mb-6">
+        <Megaphone className="w-5 h-5 text-emerald-600" /> Nova campanha
+      </h1>
+
+      <div className="space-y-6">
+        {/* 1. Básico */}
+        <section className="bg-white border border-gray-100 rounded-xl p-5 space-y-4">
+          <div>
+            <label className="text-xs font-medium text-gray-600 mb-1 block">Nome da campanha</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Cobrança junho/2026"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Caixa de entrada</label>
+              <select value={inboxId} onChange={e => { setInboxId(e.target.value); setTemplateId('') }}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+                {inboxes.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Template aprovado</label>
+              <select value={templateId} onChange={e => { setTemplateId(e.target.value); setMapping({}); setAudienceTotal(null) }}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+                <option value="">Selecione…</option>
+                {inboxTemplates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </div>
+          </div>
+          {tpl && (
+            <MappedPreview headerText={tpl.header_text} bodyText={tpl.body_text} footerText={tpl.footer_text} mapping={mapping} />
+          )}
+        </section>
+
+        {/* 2. Variáveis */}
+        {tpl && allVars.length > 0 && (
+          <section className="bg-white border border-gray-100 rounded-xl p-5 space-y-3">
+            <h2 className="text-sm font-semibold text-gray-800">Mapeamento de variáveis</h2>
+            {allVars.map(n => {
+              const m = mapping[n] || { type: 'column', value: '' }
+              return (
+                <div key={n} className="flex items-center gap-2">
+                  <span className="text-xs font-mono text-gray-500 w-10">{`{{${n}}}`}</span>
+                  <select value={m.type} onChange={e => setVar(n, { type: e.target.value as any, value: '' })}
+                    className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+                    <option value="column">Coluna</option>
+                    <option value="static">Texto fixo</option>
+                  </select>
+                  {m.type === 'column' ? (
+                    <select value={m.value} onChange={e => setVar(n, { value: e.target.value, format: defaultFormat(e.target.value) })}
+                      className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white">
+                      <option value="">Escolha a coluna…</option>
+                      {AVAILABLE_COLUMNS.map(c => <option key={c} value={c}>{COLUMN_LABEL[c]}</option>)}
+                    </select>
+                  ) : (
+                    <input value={m.value} onChange={e => setVar(n, { value: e.target.value })} placeholder="Valor fixo"
+                      className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+                  )}
+                </div>
+              )
+            })}
+          </section>
+        )}
+
+        {/* 3. Audiência */}
+        {tpl && (
+          <section className="bg-white border border-gray-100 rounded-xl p-5 space-y-4">
+            <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+              <Users className="w-4 h-4 text-gray-500" /> Audiência (boletos em aberto)
+            </h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Origem</label>
+                <select value={filter.source} onChange={e => { setFilter(f => ({ ...f, source: e.target.value })); setAudienceTotal(null) }}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+                  <option value="both">Sienge + SGL</option>
+                  <option value="sienge">Somente Sienge</option>
+                  <option value="sgl">Somente SGL</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Empreendimento (contém)</label>
+                <input value={filter.empreendimento} onChange={e => { setFilter(f => ({ ...f, empreendimento: e.target.value })); setAudienceTotal(null) }}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="opcional" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Vencimento de</label>
+                <input type="date" value={filter.dueFrom} onChange={e => { setFilter(f => ({ ...f, dueFrom: e.target.value })); setAudienceTotal(null) }}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Vencimento até</label>
+                <input type="date" value={filter.dueTo} onChange={e => { setFilter(f => ({ ...f, dueTo: e.target.value })); setAudienceTotal(null) }}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Agendar para (opcional)</label>
+              <input type="datetime-local" value={scheduledAt} onChange={e => setScheduledAt(e.target.value)}
+                className="border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <button onClick={calcAudience} disabled={busy}
+              className="text-sm font-medium px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-50">
+              {busy ? 'Calculando…' : 'Calcular audiência'}
+            </button>
+            {audienceTotal !== null && (
+              <p className="text-sm text-gray-700">
+                <strong>{audienceTotal}</strong> destinatário(s) na audiência.
+              </p>
+            )}
+          </section>
+        )}
+
+        {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+
+        {/* Ações */}
+        {audienceTotal !== null && audienceTotal > 0 && (
+          <div className="flex justify-end">
+            <button onClick={start} disabled={busy}
+              className={cn('flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white transition-colors',
+                busy ? 'bg-gray-300' : 'bg-emerald-600 hover:bg-emerald-700')}>
+              <Send className="w-4 h-4" />
+              {scheduledAt ? 'Agendar campanha' : `Enviar para ${audienceTotal}`}
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
