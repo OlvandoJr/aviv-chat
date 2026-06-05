@@ -26,6 +26,7 @@ const admin = createClient(
 
 const BATCH = 80
 const DELAY_MS = 120
+const MAX_ATTEMPTS = 5   // após N falhas de envio, desiste (marca tratado) para não loopar
 
 function brtTodayStr(): string {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
@@ -65,14 +66,14 @@ Deno.serve(async (req) => {
     // Registros novos
     const { data: rows } = await admin
       .from('mensagens_cobranca')
-      .select('id, phone, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto')
+      .select('id, phone, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, app_dispatch_attempts')
       .is('app_dispatched_at', null)
       .order('created_at', { ascending: true })
       .limit(limit)
 
     const inboxCache: Record<string, any> = {}
     const tplCache: Record<string, TemplateRow | null> = {}
-    const result = { processed: 0, sent: 0, skipped: 0, failed: 0, byClass: {} as Record<string, number>, samples: [] as any[] }
+    const result = { processed: 0, sent: 0, skipped: 0, failed: 0, retry: 0, gaveup: 0, byClass: {} as Record<string, number>, samples: [] as any[] }
 
     for (const r of rows || []) {
       result.processed++
@@ -108,8 +109,7 @@ Deno.serve(async (req) => {
       }
       const tpl = tplCache[m.template_id]
       if (!inbox?.phone_number_id || !tpl) {
-        await markDispatched(r.id)
-        result.failed++
+        bump(result, await giveUpOrRetry(r.id, r.app_dispatch_attempts || 0, 'inbox ou template inválido'))
         continue
       }
 
@@ -125,7 +125,7 @@ Deno.serve(async (req) => {
       }
 
       const conv = await ensureConversation(admin, m.inbox_id, waId, r.pessoanomecompleto || undefined)
-      if (!conv) { await markDispatched(r.id); result.failed++; continue }
+      if (!conv) { bump(result, await giveUpOrRetry(r.id, r.app_dispatch_attempts || 0, 'falha ao criar conversa')); continue }
 
       const variables = resolveVariables(m.variable_mapping as VariableMapping, rowObj)
       const res = await sendTemplateMessage({
@@ -138,8 +138,12 @@ Deno.serve(async (req) => {
         metaExtra: { sgl_classificacao: classificacao, mensagem_cobranca_id: r.id },
       })
 
-      await markDispatched(r.id)
-      if (res.ok) result.sent++; else result.failed++
+      if (res.ok) {
+        await markDispatched(r.id)
+        result.sent++
+      } else {
+        bump(result, await giveUpOrRetry(r.id, r.app_dispatch_attempts || 0, JSON.stringify(res.error).slice(0, 500)))
+      }
       await SLEEP(DELAY_MS)
     }
 
@@ -151,7 +155,30 @@ Deno.serve(async (req) => {
 })
 
 async function markDispatched(id: string) {
-  await admin.from('mensagens_cobranca').update({ app_dispatched_at: new Date().toISOString() }).eq('id', id)
+  await admin.from('mensagens_cobranca')
+    .update({ app_dispatched_at: new Date().toISOString(), app_dispatch_error: null })
+    .eq('id', id)
+}
+
+// Falha de envio: incrementa tentativas. Antes do limite → deixa pendente (retry no
+// próximo ciclo). No limite → marca tratado (desiste) para não loopar.
+async function giveUpOrRetry(id: string, attemptsNow: number, error: string): Promise<'retry' | 'gaveup'> {
+  const attempts = (attemptsNow || 0) + 1
+  if (attempts >= MAX_ATTEMPTS) {
+    await admin.from('mensagens_cobranca')
+      .update({ app_dispatched_at: new Date().toISOString(), app_dispatch_attempts: attempts, app_dispatch_error: error })
+      .eq('id', id)
+    return 'gaveup'
+  }
+  await admin.from('mensagens_cobranca')
+    .update({ app_dispatch_attempts: attempts, app_dispatch_error: error })
+    .eq('id', id)
+  return 'retry'
+}
+
+function bump(result: { failed: number; retry: number; gaveup: number }, outcome: 'retry' | 'gaveup') {
+  result.failed++
+  if (outcome === 'gaveup') result.gaveup++; else result.retry++
 }
 
 function json(body: unknown, status = 200) {
