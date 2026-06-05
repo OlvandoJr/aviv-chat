@@ -25,6 +25,8 @@ FROM public.boletos_emitidos be
 LEFT JOIN public.sienge_boletos sb
   ON sb.customer_id = be.client_id AND sb.due_date = be.vencimento
 WHERE be.phone_norm IS NOT NULL
-  AND lower(coalesce(be.status, 'aberto')) = 'aberto';
+  AND lower(coalesce(be.status, 'aberto')) = 'aberto'
+  -- ciente de pagamento: se a parcela correspondente no Sienge já foi paga, exclui
+  AND (sb.status IS NULL OR lower(trim(sb.status)) = 'aberto');
 
 GRANT SELECT ON public.vw_cobranca_boletos TO authenticated, service_role;
