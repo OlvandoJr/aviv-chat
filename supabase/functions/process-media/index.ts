@@ -400,16 +400,40 @@ async function fetchBoletoFromSiengeAPI(cpfDigits: string, waId: string): Promis
 // ── Formatar contexto Sienge para injeção no prompt ───────────────────────────
 function buildSiengeContext(boleto: any): string {
   if (!boleto) return 'DADOS NA BASE: Nenhum boleto encontrado para este cliente.'
-  const dueDate = new Date(boleto.due_date).toLocaleDateString('pt-BR')
-  const amount  = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(boleto.amount)
+  const origem  = boleto._source === 'sgl' ? 'SGL' : 'Sienge'
+  const dueDate = boleto.due_date ? new Date(boleto.due_date).toLocaleDateString('pt-BR') : 'N/A'
+  const amount  = (boleto.amount != null)
+    ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(boleto.amount)
+    : 'N/A'
   return [
-    'DADOS DO BOLETO NA BASE (Sienge):',
+    `DADOS DO BOLETO NA BASE (${origem}):`,
     `- Pagador: ${boleto.customer_name || 'N/A'}`,
     `- CPF/CNPJ cadastrado: ${boleto.customer_cpf || 'N/A'}`,
     `- Parcela: ${boleto.parcela_descricao || 'N/A'}`,
     `- Valor esperado: ${amount}`,
     `- Vencimento: ${dueDate}`,
   ].join('\n')
+}
+
+// ── Boleto unificado (Sienge + SGL) via view — fonte única para validação ─────
+// Resolve o caso de clientes legados do SGL (sem isto, o comprovante deles cai
+// em validação manual por "falta de dados na base").
+async function getBoletoUnificado(waId: string): Promise<any | null> {
+  const { data } = await supabase
+    .from('vw_clientes_boletos')
+    .select('source, customer_name, parcela, due_date, amount, empreendimento, receivable_bill_id, installment_id')
+    .eq('phone_norm', normalizePhone(waId))
+    .maybeSingle()
+  if (!data) return null
+  return {
+    customer_name:     data.customer_name,
+    customer_cpf:      null,
+    parcela_descricao: data.parcela,
+    amount:            data.amount,
+    due_date:          data.due_date,
+    empreendimento:    data.empreendimento,
+    _source:           data.source,
+  }
 }
 
 // ── Verificar status no Sienge API ────────────────────────────────────────────
@@ -509,12 +533,14 @@ async function analyzeImage(
     return
   }
 
-  // ── Buscar boleto com CPF extraído como fallback ───────────────────────────
-  const boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+  // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ───────
+  let boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
   let siengeStatus: 'pago' | 'pendente' | null = null
   if (boleto) {
     siengeStatus = await checkSiengePayment(boleto)
     await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'image')
+  } else {
+    boleto = await getBoletoUnificado(waId)   // cliente legado SGL
   }
 
   // ── Passo 2: validação completa com veredicto ─────────────────────────────
@@ -643,12 +669,14 @@ async function analyzePdf(
       return
     }
 
-    // ── Buscar boleto com CPF extraído como fallback ─────────────────────
-    const boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+    // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ──
+    let boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
     let siengeStatus: 'pago' | 'pendente' | null = null
     if (boleto) {
       siengeStatus = await checkSiengePayment(boleto)
       await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'document')
+    } else {
+      boleto = await getBoletoUnificado(waId)   // cliente legado SGL
     }
 
     // ── Passo 2: validação completa com veredicto (GPT-4o lê o PDF) ─────

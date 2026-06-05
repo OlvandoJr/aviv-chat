@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient }              from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { sendTemplateMessage }       from '@/lib/whatsapp/send'
 
 const admin = createAdminClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -52,84 +53,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Inbox ou contato inválido' }, { status: 422 })
     }
 
-    // Montar componentes com variáveis
-    const components: any[] = []
-
-    if (tpl.header_var_count > 0 && tpl.header_text) {
-      const headerVars = variables.slice(0, tpl.header_var_count)
-      components.push({
-        type:       'header',
-        parameters: headerVars.map((v: string) => ({ type: 'text', text: v })),
-      })
-    }
-
-    if (tpl.body_var_count > 0) {
-      const bodyVars = variables.slice(tpl.header_var_count)
-      components.push({
-        type:       'body',
-        parameters: bodyVars.map((v: string) => ({ type: 'text', text: v })),
-      })
-    }
-
-    // Payload WhatsApp
-    const payload: any = {
-      messaging_product: 'whatsapp',
-      to:                contact.wa_id,
-      type:              'template',
-      template: {
-        name:     tpl.name,
-        language: { code: tpl.language },
-        ...(components.length ? { components } : {}),
-      },
-    }
-
-    const sendResp = await fetch(
-      `https://graph.facebook.com/v20.0/${inbox.phone_number_id}/messages`,
-      {
-        method:  'POST',
-        headers: {
-          Authorization:  `Bearer ${inbox.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      }
-    )
-
-    if (!sendResp.ok) {
-      const err = await sendResp.json().catch(() => ({}))
-      console.error('[send-template] error:', err)
-      return NextResponse.json({ error: 'Falha ao enviar template', details: err }, { status: 502 })
-    }
-
-    const sendData    = await sendResp.json()
-    const waMessageId = sendData.messages?.[0]?.id ?? null
-    const now         = new Date().toISOString()
-
-    // Renderizar texto do template com variáveis (para preview no banco)
-    let rendered = tpl.body_text
-    const allVars: string[] = variables
-    allVars.forEach((v: string, i: number) => {
-      rendered = rendered.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, 'g'), v)
-    })
-    // Prefixar com nome do atendente para o histórico
-    const content = me?.name ? `${me.name}:\n${rendered}` : rendered
-
-    await admin.from('chat_messages').insert({
-      conversation_id: conversationId,
-      wa_message_id:   waMessageId,
-      direction:       'out',
-      type:            'template',
-      content,
-      wa_status:       'sent',
-      attendant_id:    me?.id || null,
-      metadata:        { template_id: templateId, template_name: tpl.name, variables },
+    const result = await sendTemplateMessage({
+      admin,
+      inbox:          { phone_number_id: inbox.phone_number_id, access_token: inbox.access_token },
+      toWaId:         contact.wa_id,
+      tpl,
+      variables,
+      conversationId,
+      sentBy:         me?.name,
+      attendantId:    me?.id || null,
     })
 
-    await admin.from('chat_conversations').update({
-      last_message_at:      now,
-      last_message_preview: `[Template] ${tpl.name}`,
-      status:               'open',
-    }).eq('id', conversationId)
+    if (!result.ok) {
+      console.error('[send-template] error:', result.error)
+      return NextResponse.json({ error: 'Falha ao enviar template', details: result.error }, { status: 502 })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
