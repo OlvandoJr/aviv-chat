@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     todayBrt.setDate(todayBrt.getDate() - Number(offsetDays))
     const targetDue = todayBrt.toISOString().slice(0, 10)
 
-    let q = admin.from('vw_clientes_boletos')
+    let q = admin.from('vw_cobranca_boletos')
       .select('customer_name, customer_phone, parcela, due_date, amount, empreendimento, source')
       .eq('due_date', targetDue)
     if (filter.source && filter.source !== 'both') q = q.eq('source', filter.source)

@@ -78,7 +78,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
   const label = { regua: regua.name, offset: step.offset_days, targetDue }
 
   // Audiência: boletos vencendo na data-alvo (filtro do fluxo pai)
-  let vq = admin.from('vw_clientes_boletos')
+  let vq = admin.from('vw_cobranca_boletos')
     .select('phone_norm, source, customer_name, customer_phone, empreendimento, quadra, lote, parcela, due_date, amount, link_boleto')
     .eq('due_date', targetDue)
   const af = regua.audience_filter || {}
