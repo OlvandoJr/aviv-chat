@@ -104,15 +104,29 @@ Deno.serve(async (req) => {
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'image') {
-      const sub = await getSubagentForConv(convId, 'image')
-      if (sub) await analyzeImage(messageId, convId, contactWaId, publicUrl, sub)
-      else console.log('Nenhum subagente de imagem configurado — pulando análise')
+      try {
+        const sub = await getSubagentForConv(convId, 'image')
+        if (sub) await analyzeImage(messageId, convId, contactWaId, publicUrl, sub)
+        else console.log('Nenhum subagente de imagem configurado — pulando análise')
+      } catch (analysisErr) {
+        console.error('Image analysis error (continuing to responder):', analysisErr)
+        await supabase.from('chat_messages').update({
+          ai_analysis: { error: String(analysisErr), validated_at: new Date().toISOString() },
+        }).eq('id', messageId).then(() => {}, () => {})
+      }
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'document' && mimeType === 'application/pdf') {
-      const sub = await getSubagentForConv(convId, 'document')
-      if (sub) await analyzePdf(messageId, convId, contactWaId, mediaBuffer, sub)
-      else console.log('Nenhum subagente de documento configurado — pulando análise')
+      try {
+        const sub = await getSubagentForConv(convId, 'document')
+        if (sub) await analyzePdf(messageId, convId, contactWaId, mediaBuffer, sub)
+        else console.log('Nenhum subagente de documento configurado — pulando análise')
+      } catch (analysisErr) {
+        console.error('PDF analysis error (continuing to responder):', analysisErr)
+        await supabase.from('chat_messages').update({
+          ai_analysis: { error: String(analysisErr), validated_at: new Date().toISOString() },
+        }).eq('id', messageId).then(() => {}, () => {})
+      }
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else {
