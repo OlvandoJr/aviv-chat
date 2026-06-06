@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, ExternalLink, Building2, Calendar, DollarSign } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { cn, formatCurrency, formatDate, getInitials, formatHour } from '@/lib/utils'
+import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
 
 const ORIGEM: Record<string, { label: string; cls: string }> = {
   sienge:  { label: 'Sienge', cls: 'bg-blue-100 text-blue-700' },
@@ -123,6 +124,9 @@ export default function ClientDetail({ cliente, boletosSienge, boletosSgl, regua
                     {b.amount != null && <span className="flex items-center gap-1 font-semibold text-gray-800"><DollarSign className="w-3 h-3 text-gray-400" />{formatCurrency(Number(b.amount))}</span>}
                   </div>
                   {b.paid_at && <p className="text-[10px] text-emerald-600">Baixa em {dt(b.paid_at)}</p>}
+                  {e.label !== 'PAGO' && b.id && (
+                    <div className="pt-1"><ConfirmPaymentButton source="sienge" id={b.id} /></div>
+                  )}
                 </div>
               )
             })}
@@ -142,7 +146,12 @@ export default function ClientDetail({ cliente, boletosSienge, boletosSgl, regua
                     <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.contasrecebervencimento)}</span>
                     {sglAmount(b.contasrecebervalor) > 0 && <span className="font-semibold text-gray-800">{formatCurrency(sglAmount(b.contasrecebervalor))}</span>}
                   </div>
-                  {b.linkboleto && <a href={b.linkboleto} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-orange-600 hover:underline"><ExternalLink className="w-3 h-3" />Ver boleto</a>}
+                  <div className="flex items-center justify-between gap-2">
+                    {b.linkboleto
+                      ? <a href={b.linkboleto} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-orange-600 hover:underline"><ExternalLink className="w-3 h-3" />Ver boleto</a>
+                      : <span />}
+                    {e.label !== 'PAGO' && <ConfirmPaymentButton source="sgl" id={b.id} />}
+                  </div>
                 </div>
               )
             })}

@@ -14,7 +14,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
 
   const [{ data: boletosSienge }, { data: boletosSgl }, { data: reguaLog }] = await Promise.all([
     supabase.from('sienge_boletos')
-      .select('customer_name, empreendimento, quadra, lote, parcela_descricao, due_date, amount, status, paid_at')
+      .select('id, customer_name, empreendimento, quadra, lote, parcela_descricao, due_date, amount, status, paid_at')
       .eq('phone_norm', phone).order('due_date', { ascending: false }).limit(40),
     supabase.from('mensagens_cobranca')
       .select('id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, status, classificacao, app_dispatched_at, created_at')

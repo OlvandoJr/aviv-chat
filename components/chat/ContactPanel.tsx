@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { X, Phone, Tags, ArrowUpRight } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { cn, formatCurrency, formatDate, getInitials } from '@/lib/utils'
+import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
 import type { Contact, Conversation, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
@@ -44,8 +45,8 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
 
   // Lista unificada compacta (Sienge + SGL), ordenada por vencimento desc
   const boletoRows = [
-    ...siengeBoletos.map((b) => ({ key: 's' + b.id, parcela: b.parcela_descricao || 'Parcela', due: b.due_date, amount: Number(b.amount) || 0, status: b.status, src: 'Sienge' })),
-    ...sglUnicos.map((b) => ({ key: 'g' + b.id, parcela: b.contasreceberparcela || 'Parcela', due: b.contasrecebervencimento, amount: parseSglAmount(b.contasrecebervalor), status: b.status, src: 'SGL' })),
+    ...siengeBoletos.map((b) => ({ key: 's' + b.id, id: b.id, source: 'sienge' as const, parcela: b.parcela_descricao || 'Parcela', due: b.due_date, amount: Number(b.amount) || 0, status: b.status, src: 'Sienge' })),
+    ...sglUnicos.map((b) => ({ key: 'g' + b.id, id: b.id, source: 'sgl' as const, parcela: b.contasreceberparcela || 'Parcela', due: b.contasrecebervencimento, amount: parseSglAmount(b.contasrecebervalor), status: b.status, src: 'SGL' })),
   ].sort((a, b) => new Date(b.due || 0).getTime() - new Date(a.due || 0).getTime())
 
   return (
@@ -142,6 +143,7 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
                     </div>
                     {r.amount > 0 && <span className="text-xs font-semibold text-gray-700 shrink-0">{formatCurrency(r.amount)}</span>}
                     <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0', e.cls)}>{e.label}</span>
+                    {e.label !== 'Pago' && <ConfirmPaymentButton source={r.source} id={r.id} variant="icon" />}
                   </div>
                 )
               })}
