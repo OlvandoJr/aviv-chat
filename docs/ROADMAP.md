@@ -12,11 +12,10 @@ Mapa do produto: ideias e features, agrupadas por área. Os itens acionáveis vi
 ## 🟡 Em aberto
 
 ### Cobrança (Sienge / SGL)
-- [ ] **Webhook de status do boleto (Sienge)** → marca **PAGO (🟢)** na Central — [#11](https://github.com/OlvandoJr/aviv-chat/issues/11).
-      Edge function `sienge-webhook` pronta e testada (eventos `RECEIPT_PROCESSED` e
-      `UPDATE_RECEIVABLE_BILL_SITUATION`; auditoria em `sienge_webhook_events`). **Falta:**
-      (1) setar o secret `SIENGE_WEBHOOK_TOKEN`; (2) registrar o hook no Sienge (`POST /v1/hooks`).
-      *(SGL não tem API de pagamento — fica no 🟡 comprovante recebido.)*
+- [x] **Webhook de status do boleto (Sienge)** → marca **PAGO (🟢)** na Central — [#11](https://github.com/OlvandoJr/aviv-chat/issues/11)
+      ✅ *(no ar; validado com pagamento real bill 5/parc 2 → pago. Hook `69881d0c` registrado,
+      eventos `RECEIPT_PROCESSED`+`UPDATE_RECEIVABLE_BILL_SITUATION`, auditoria `sienge_webhook_events`,
+      token via header `Authorization`.)* — SGL não tem API de pagamento, fica no 🟡 comprovante recebido.
 - [ ] **Ativar a Régua Sienge** e desativar a régua antiga no n8n — [#4](https://github.com/OlvandoJr/aviv-chat/issues/4)
 - [ ] **UI para o mapa SGL** (`sgl_regua_map`) — [#6](https://github.com/OlvandoJr/aviv-chat/issues/6)
 - [ ] **Template `vence_hoje`** (criar/aprovar na Meta para o passo D0) — [#7](https://github.com/OlvandoJr/aviv-chat/issues/7)

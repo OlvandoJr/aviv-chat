@@ -58,7 +58,7 @@ function classifySituation(s: string): 'pago' | 'cancelado' | null {
 Deno.serve(async (req) => {
  try {
   const url = new URL(req.url)
-  if (req.method === 'GET')  return ok({ ok: true, service: 'sienge-webhook', tokenConfigured: !!EXPECTED_TOKEN })
+  if (req.method === 'GET')  return ok({ ok: true, service: 'sienge-webhook' })
   if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
 
   // ── Autenticação por token ──────────────────────────────────────────────────
