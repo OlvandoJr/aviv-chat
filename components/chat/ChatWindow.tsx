@@ -24,9 +24,16 @@ interface Props {
   siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
   sglBoletos:        SglBoleto[]
   contactAttributes: ContactAttribute[]
+  origem?:           string | null
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes }: Props) {
+const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
+  sienge: { label: 'Sienge',        cls: 'bg-blue-100 text-blue-700' },
+  sgl:    { label: 'SGL',           cls: 'bg-orange-100 text-orange-700' },
+  ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
+}
+
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, origem }: Props) {
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -120,7 +127,14 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
               <AvatarFallback>{getInitials(name)}</AvatarFallback>
             </Avatar>
             <div>
-              <p className="text-sm font-semibold text-gray-900">{name}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-gray-900">{name}</p>
+                {origem && ORIGEM_TAG[origem] && (
+                  <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase', ORIGEM_TAG[origem].cls)}>
+                    {ORIGEM_TAG[origem].label}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-400">{contact?.wa_id}</p>
             </div>
           </div>

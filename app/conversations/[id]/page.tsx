@@ -44,6 +44,7 @@ export default async function ConversationPage({ params }: Props) {
     { data: boletos },
     { data: sglBoletos },
     { data: contactAttributes },
+    { data: central },
   ] = await Promise.all([
     supabase
       .from('sienge_boletos')
@@ -66,6 +67,11 @@ export default async function ConversationPage({ params }: Props) {
       .select('*')
       .eq('contact_id', contact?.id || '')
       .order('captured_at', { ascending: false }),
+    supabase
+      .from('vw_central_clientes')
+      .select('origem')
+      .eq('contact_id', contact?.id || '')
+      .maybeSingle(),
   ])
 
   return (
@@ -77,6 +83,7 @@ export default async function ConversationPage({ params }: Props) {
         siengeBoletos={boletos || []}
         sglBoletos={(sglBoletos || []) as any}
         contactAttributes={contactAttributes || []}
+        origem={(central as any)?.origem || null}
       />
     </>
   )
