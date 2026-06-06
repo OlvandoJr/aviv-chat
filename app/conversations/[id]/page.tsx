@@ -37,21 +37,28 @@ export default async function ConversationPage({ params }: Props) {
     .order('name')
 
   const contact = conversation.contact as any
-  const waId    = contact?.wa_id || ''
 
-  // Buscar dados em paralelo: boletos Sienge, boletos SGL, atributos capturados
+  // Resumo 360 da Central (por contact_id) — origem, phone_norm, cpf, cobrança
+  const { data: central } = await supabase
+    .from('vw_central_clientes')
+    .select('phone_norm, cpf, origem, ja_cobrado, total_cobrancas, ultima_cobranca, proximo_venc, boleto_vencido')
+    .eq('contact_id', contact?.id || '')
+    .maybeSingle()
+
+  const phoneNorm = (central as any)?.phone_norm || ''
+
+  // Boletos por phone_norm (mesma chave da Central — robusto a formatos de telefone)
   const [
     { data: boletos },
     { data: sglBoletos },
     { data: contactAttributes },
-    { data: central },
   ] = await Promise.all([
     supabase
       .from('sienge_boletos')
       .select('id, parcela_descricao, due_date, amount, status')
-      .eq('customer_phone', waId)
+      .eq('phone_norm', phoneNorm)
       .order('due_date', { ascending: false })
-      .limit(5),
+      .limit(20),
     supabase
       .from('mensagens_cobranca')
       .select(
@@ -59,19 +66,14 @@ export default async function ConversationPage({ params }: Props) {
         'unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, ' +
         'contasrecebervalor, linkboleto, status, created_at'
       )
-      .eq('phone', waId)
+      .eq('phone_norm', phoneNorm)
       .order('created_at', { ascending: false })
-      .limit(5),
+      .limit(30),
     supabase
       .from('chat_contact_attributes')
       .select('*')
       .eq('contact_id', contact?.id || '')
       .order('captured_at', { ascending: false }),
-    supabase
-      .from('vw_central_clientes')
-      .select('origem')
-      .eq('contact_id', contact?.id || '')
-      .maybeSingle(),
   ])
 
   return (
@@ -83,7 +85,7 @@ export default async function ConversationPage({ params }: Props) {
         siengeBoletos={boletos || []}
         sglBoletos={(sglBoletos || []) as any}
         contactAttributes={contactAttributes || []}
-        origem={(central as any)?.origem || null}
+        central={central || null}
       />
     </>
   )

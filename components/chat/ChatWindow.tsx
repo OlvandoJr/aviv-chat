@@ -24,7 +24,7 @@ interface Props {
   siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
   sglBoletos:        SglBoleto[]
   contactAttributes: ContactAttribute[]
-  origem?:           string | null
+  central?:          any
 }
 
 const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
@@ -33,7 +33,8 @@ const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, origem }: Props) {
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central }: Props) {
+  const origem = central?.origem as string | undefined
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -256,6 +257,7 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
           siengeBoletos={siengeBoletos}
           sglBoletos={sglBoletos}
           contactAttributes={contactAttributes}
+          central={central}
           onClose={() => setPanelOpen(false)}
         />
       )}

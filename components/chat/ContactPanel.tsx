@@ -1,9 +1,10 @@
 'use client'
 
-import { X, Phone, Calendar, DollarSign, AlertCircle, CheckCircle, Tags, ExternalLink, Building2 } from 'lucide-react'
+import Link from 'next/link'
+import { X, Phone, Calendar, DollarSign, AlertCircle, CheckCircle, Tags, ExternalLink, Building2, ArrowUpRight } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { formatCurrency, formatDate, getInitials } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, getInitials } from '@/lib/utils'
 import type { Contact, Conversation, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
@@ -12,11 +13,35 @@ interface Props {
   siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
   sglBoletos:        SglBoleto[]
   contactAttributes: ContactAttribute[]
+  central?:          any
   onClose:           () => void
 }
 
-export default function ContactPanel({ contact, conversation, siengeBoletos, sglBoletos, contactAttributes, onClose }: Props) {
-  const name = contact?.name || contact?.wa_id || 'Desconhecido'
+const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
+  sienge: { label: 'Sienge',       cls: 'bg-blue-100 text-blue-700' },
+  sgl:    { label: 'SGL',          cls: 'bg-orange-100 text-orange-700' },
+  ambos:  { label: 'Sienge + SGL', cls: 'bg-violet-100 text-violet-700' },
+}
+
+// Dedup SGL por parcela: mantém o registro com status mais avançado / mais recente
+const PAGO_ST  = ['pago', 'comprovante_confirmado', 'baixado', 'pago_confirmado', 'quitado']
+const COMPR_ST = ['comprovante_recebido', 'comprovante', 'em_validacao']
+const sglRank = (s: string | null) => PAGO_ST.includes((s || '').toLowerCase()) ? 3 : COMPR_ST.includes((s || '').toLowerCase()) ? 2 : 1
+
+export default function ContactPanel({ contact, conversation, siengeBoletos, sglBoletos, contactAttributes, central, onClose }: Props) {
+  const name   = contact?.name || contact?.wa_id || 'Desconhecido'
+  const origem = central?.origem as string | undefined
+  const tag    = origem ? ORIGEM_TAG[origem] : undefined
+
+  // Dedup SGL por parcela
+  const sglMap: Record<string, any> = {}
+  for (const b of sglBoletos) {
+    const k = b.contasreceberparcela || String(b.id)
+    const prev = sglMap[k]
+    if (!prev || sglRank(b.status) > sglRank(prev.status) ||
+        (sglRank(b.status) === sglRank(prev.status) && new Date(b.created_at || 0) > new Date(prev.created_at || 0))) sglMap[k] = b
+  }
+  const sglUnicos = Object.values(sglMap) as SglBoleto[]
 
   return (
     <aside className="w-72 border-l border-gray-200 bg-white flex flex-col overflow-hidden shrink-0">
@@ -40,7 +65,12 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
               <AvatarFallback className="text-lg">{getInitials(name)}</AvatarFallback>
             </Avatar>
             <div>
-              <p className="font-semibold text-gray-900">{name}</p>
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                <p className="font-semibold text-gray-900">{name}</p>
+                {tag && (
+                  <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase', tag.cls)}>{tag.label}</span>
+                )}
+              </div>
               <div className="flex items-center justify-center gap-1 mt-0.5">
                 <Phone className="w-3 h-3 text-gray-400" />
                 <p className="text-xs text-gray-500">{contact?.wa_id}</p>
@@ -49,15 +79,28 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
           </div>
 
           <div className="space-y-2">
-            <InfoRow label="WhatsApp ID" value={contact?.wa_id || '—'} />
+            {central?.cpf && <InfoRow label="CPF/CNPJ" value={formatAttrValue(String(central.cpf).replace(/\D/g, ''), 'cpf')} />}
             <InfoRow
               label="Primeiro contato"
               value={contact?.created_at ? formatDate(contact.created_at) : '—'}
             />
+            {central?.ultima_cobranca && <InfoRow label="Última cobrança" value={formatDate(central.ultima_cobranca)} />}
+            {central?.total_cobrancas != null && Number(central.total_cobrancas) > 0 && (
+              <InfoRow label="Cobranças enviadas" value={String(central.total_cobrancas)} />
+            )}
             {conversation.assignee && (
               <InfoRow label="Atendente" value={conversation.assignee.name} />
             )}
           </div>
+
+          {central?.phone_norm && (
+            <Link
+              href={`/clients/${central.phone_norm}`}
+              className="mt-3 flex items-center justify-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg py-1.5 transition-colors"
+            >
+              Ver ficha completa na Central <ArrowUpRight className="w-3.5 h-3.5" />
+            </Link>
+          )}
         </section>
 
         {/* Campos Capturados */}
@@ -95,7 +138,7 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
           </section>
         )}
 
-        {siengeBoletos.length === 0 && sglBoletos.length === 0 && (
+        {siengeBoletos.length === 0 && sglUnicos.length === 0 && (
           <section>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
               Boletos
@@ -105,7 +148,7 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
         )}
 
         {/* Boletos SGL (mensagens_cobranca) */}
-        {sglBoletos.length > 0 && (
+        {sglUnicos.length > 0 && (
           <section>
             <div className="flex items-center gap-1.5 mb-3">
               <Building2 className="w-3.5 h-3.5 text-orange-400" />
@@ -117,7 +160,7 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
               </span>
             </div>
             <div className="space-y-2">
-              {sglBoletos.map((boleto) => (
+              {sglUnicos.map((boleto) => (
                 <SglBoletoCard key={boleto.id} boleto={boleto} />
               ))}
             </div>
