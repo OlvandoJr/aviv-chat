@@ -24,14 +24,23 @@ interface Props {
   siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
   sglBoletos:        SglBoleto[]
   contactAttributes: ContactAttribute[]
+  central?:          any
+  initialMessages?:  Message[]
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes }: Props) {
+const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
+  sienge: { label: 'Sienge',        cls: 'bg-blue-100 text-blue-700' },
+  sgl:    { label: 'SGL',           cls: 'bg-orange-100 text-orange-700' },
+  ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
+}
+
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages }: Props) {
+  const origem = central?.origem as string | undefined
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  const [messages,    setMessages]    = useState<Message[]>([])
-  const [loading,     setLoading]     = useState(true)
+  const [messages,    setMessages]    = useState<Message[]>(initialMessages || [])
+  const [loading,     setLoading]     = useState(!initialMessages)
   const [panelOpen,   setPanelOpen]   = useState(false)
   const [conv,        setConv]        = useState(conversation)
   const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
@@ -64,8 +73,17 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
     setLoading(false)
   }, [conv.id])
 
+  // Zerar unread no cliente (fora do caminho de render do servidor)
   useEffect(() => {
-    fetchMessages()
+    if (conversation.unread_count && conversation.unread_count > 0) {
+      supabase.from('chat_conversations').update({ unread_count: 0 }).eq('id', conv.id).then(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
+    // Mensagens já vêm do servidor (initialMessages) → evita 2º round-trip.
+    // Só busca no cliente se não vieram pré-carregadas.
+    if (!initialMessages) fetchMessages()
 
     const channel = supabase
       .channel(`chat-${conv.id}`)
@@ -120,7 +138,14 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
               <AvatarFallback>{getInitials(name)}</AvatarFallback>
             </Avatar>
             <div>
-              <p className="text-sm font-semibold text-gray-900">{name}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-gray-900">{name}</p>
+                {origem && ORIGEM_TAG[origem] && (
+                  <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase', ORIGEM_TAG[origem].cls)}>
+                    {ORIGEM_TAG[origem].label}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-400">{contact?.wa_id}</p>
             </div>
           </div>
@@ -242,6 +267,7 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
           siengeBoletos={siengeBoletos}
           sglBoletos={sglBoletos}
           contactAttributes={contactAttributes}
+          central={central}
           onClose={() => setPanelOpen(false)}
         />
       )}

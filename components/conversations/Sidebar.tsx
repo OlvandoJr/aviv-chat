@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { MessageSquare, Settings, LogOut, Users, Bot, Inbox, Plug, Puzzle, CalendarDays, LayoutTemplate, Megaphone, CalendarClock } from 'lucide-react'
+import { MessageSquare, Settings, LogOut, Users, Bot, Inbox, Plug, Puzzle, CalendarDays, LayoutTemplate, Megaphone, CalendarClock, UsersRound } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { getInitials } from '@/lib/utils'
@@ -55,6 +55,7 @@ export default function Sidebar({ attendant }: SidebarProps) {
         {/* Admin + Gerente */}
         {(attendant?.role === 'admin' || attendant?.role === 'manager') && (
           <>
+            <NavItem href="/clients"             icon={<UsersRound     className="w-5 h-5" />} label="Central de Clientes" active={pathname.startsWith('/clients')} />
             <NavItem href="/agents"              icon={<Bot            className="w-5 h-5" />} label="Agentes IA" active={pathname.startsWith('/agents')} />
             <NavItem href="/templates"           icon={<LayoutTemplate className="w-5 h-5" />} label="Templates"  active={pathname.startsWith('/templates')} />
             <NavItem href="/campaigns"           icon={<Megaphone      className="w-5 h-5" />} label="Campanhas"  active={pathname.startsWith('/campaigns')} />

@@ -104,15 +104,29 @@ Deno.serve(async (req) => {
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'image') {
-      const sub = await getSubagentForConv(convId, 'image')
-      if (sub) await analyzeImage(messageId, convId, contactWaId, publicUrl, sub)
-      else console.log('Nenhum subagente de imagem configurado — pulando análise')
+      try {
+        const sub = await getSubagentForConv(convId, 'image')
+        if (sub) await analyzeImage(messageId, convId, contactWaId, publicUrl, sub)
+        else console.log('Nenhum subagente de imagem configurado — pulando análise')
+      } catch (analysisErr) {
+        console.error('Image analysis error (continuing to responder):', analysisErr)
+        await supabase.from('chat_messages').update({
+          ai_analysis: { error: String(analysisErr), validated_at: new Date().toISOString() },
+        }).eq('id', messageId).then(() => {}, () => {})
+      }
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else if (msgType === 'document' && mimeType === 'application/pdf') {
-      const sub = await getSubagentForConv(convId, 'document')
-      if (sub) await analyzePdf(messageId, convId, contactWaId, mediaBuffer, sub)
-      else console.log('Nenhum subagente de documento configurado — pulando análise')
+      try {
+        const sub = await getSubagentForConv(convId, 'document')
+        if (sub) await analyzePdf(messageId, convId, contactWaId, mediaBuffer, sub)
+        else console.log('Nenhum subagente de documento configurado — pulando análise')
+      } catch (analysisErr) {
+        console.error('PDF analysis error (continuing to responder):', analysisErr)
+        await supabase.from('chat_messages').update({
+          ai_analysis: { error: String(analysisErr), validated_at: new Date().toISOString() },
+        }).eq('id', messageId).then(() => {}, () => {})
+      }
       await supabase.functions.invoke('ai-responder', { body: { conversationId: convId, messageId } })
 
     } else {
@@ -182,12 +196,113 @@ function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
   return out
 }
 
+// Converte texto monetário ("R$ 1.234,56" / "1234.56") em número
+function parseMoney(s: any): number {
+  if (s == null) return 0
+  const c = String(s).replace(/[^\d.,-]/g, '')
+  if (!c) return 0
+  if (c.includes(',')) return parseFloat(c.replace(/\./g, '').replace(',', '.')) || 0
+  return parseFloat(c) || 0
+}
+
+// Acha a parcela SGL (mensagens_cobranca) que o comprovante quita, casando pelo
+// valor extraído (parcela mais próxima); se não houver valor, a mais vencida em aberto.
+async function resolveSglParcelaId(waId: string, extracted: any): Promise<string> {
+  const { data } = await supabase
+    .from('mensagens_cobranca')
+    .select('id, contasrecebervalor, contasrecebervencimento, status, created_at')
+    .eq('phone_norm', normalizePhone(waId))
+    .order('contasrecebervencimento', { ascending: true })
+  if (!data?.length) return ''
+  const quitado = (st: any) => ['pago', 'comprovante_confirmado', 'comprovante_recebido', 'baixado'].includes(String(st || '').toLowerCase())
+  const abertos = data.filter((r: any) => !quitado(r.status))
+  const pool = abertos.length ? abertos : data
+  const alvo = parseMoney(extracted?.valor)
+  if (alvo > 0) {
+    let best: any = null, bestDiff = Infinity
+    for (const r of pool) {
+      const diff = Math.abs(parseMoney(r.contasrecebervalor) - alvo)
+      if (diff < bestDiff) { best = r; bestDiff = diff }
+    }
+    if (best) return String(best.id)
+  }
+  return String(pool[0]?.id ?? '')
+}
+
+// Monta os placeholders disponíveis para as operações de escrita
+function writeVars(waId: string, extracted: any, verdict: string, boleto: any, siengeStatus: any, extra: Record<string, string> = {}): Record<string, string> {
+  const base: Record<string, string> = {
+    contato: waId, telefone: waId, telefone_norm: normalizePhone(waId),
+    cpf: extracted?.cpf_cnpj || '',
+    verdict: verdict || '',
+    boleto_id:          boleto?.id ? String(boleto.id) : '',
+    receivable_bill_id: boleto?.receivable_bill_id ? String(boleto.receivable_bill_id) : '',
+    installment_id:     boleto?.installment_id ? String(boleto.installment_id) : '',
+    sienge_status: siengeStatus || '',
+    now: new Date().toISOString(),
+    hoje: new Date().toISOString().slice(0, 10),
+  }
+  for (const [k, v] of Object.entries(extracted || {})) base[k] = String(v ?? '')
+  for (const [k, v] of Object.entries(extra)) base[k] = String(v ?? '')
+  return base
+}
+
+// Resolve {{placeholders}} de um template (sem limpar dígitos)
+function resolveTpl(tpl: string, vars: Record<string, string>): string {
+  let out = String(tpl ?? '')
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), v ?? '')
+  }
+  return out
+}
+
+// ── Operações de ESCRITA do subagente (insert/update/upsert) ──────────────────
+// Rodam DEPOIS do veredito; valores via value_map { coluna: "valor_template" }.
+async function runWriteOps(subId: string, baseVars: Record<string, string>): Promise<Record<string, string>> {
+  const { data: ops } = await supabase
+    .from('chat_subagent_datasources')
+    .select('*')
+    .eq('subagent_id', subId)
+    .neq('operation', 'select')
+    .order('sort_order')
+
+  const out: Record<string, string> = {}
+  for (const ds of ops || []) {
+    const place = ds.output_placeholder || ds.name || 'op'
+    try {
+      const payload: Record<string, any> = {}
+      for (const [col, valTpl] of Object.entries(ds.value_map || {})) {
+        payload[col] = resolveTpl(String(valTpl), baseVars).trim()
+      }
+      const keyVal = ds.filter_column ? resolveTpl(ds.filter_template || '', baseVars).trim() : ''
+
+      if (ds.operation === 'insert') {
+        const { error } = await supabase.from(ds.table_name).insert(payload)
+        out[place] = error ? `${ds.name}: erro (${error.message})` : `${ds.name}: criado.`
+      } else if (ds.operation === 'update') {
+        if (!ds.filter_column || !keyVal) { out[place] = `${ds.name}: sem chave — não atualizado.`; continue }
+        const { error, count } = await supabase.from(ds.table_name).update(payload, { count: 'exact' }).eq(ds.filter_column, keyVal)
+        out[place] = error ? `${ds.name}: erro (${error.message})` : `${ds.name}: atualizado (${count ?? '?'}).`
+      } else if (ds.operation === 'upsert') {
+        if (!ds.filter_column || !keyVal) { out[place] = `${ds.name}: sem chave — não gravado.`; continue }
+        const { error } = await supabase.from(ds.table_name)
+          .upsert({ ...payload, [ds.filter_column]: keyVal }, { onConflict: ds.filter_column })
+        out[place] = error ? `${ds.name}: erro (${error.message})` : `${ds.name}: gravado.`
+      }
+    } catch (e) {
+      out[place] = `${ds.name}: falha (${String(e)}).`
+    }
+  }
+  return out
+}
+
 // ── Fontes de dados do subagente — consultam tabelas e devolvem placeholders ──
 async function runDatasources(subId: string, baseVars: Record<string, string>): Promise<Record<string, string>> {
   const { data: sources } = await supabase
     .from('chat_subagent_datasources')
     .select('*')
     .eq('subagent_id', subId)
+    .eq('operation', 'select')
     .order('sort_order')
 
   const out: Record<string, string> = {}
@@ -590,6 +705,10 @@ async function analyzeImage(
       validated_at:  new Date().toISOString(),
     },
   }).eq('id', messageId)
+
+  // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ─────
+  const sglMsgId = await resolveSglParcelaId(waId, extractedData)
+  await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -729,6 +848,10 @@ async function analyzePdf(
         validated_at:  new Date().toISOString(),
       },
     }).eq('id', messageId)
+
+    // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ───
+    const sglMsgId = await resolveSglParcelaId(waId, extractedData)
+    await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
 
   } finally {
     // Limpar arquivo do OpenAI (não acumula custo de armazenamento)

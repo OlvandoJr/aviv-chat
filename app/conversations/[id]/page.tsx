@@ -1,6 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
 import { notFound } from 'next/navigation'
-import ConversationList from '@/components/conversations/ConversationList'
 import ChatWindow from '@/components/chat/ChatWindow'
 
 interface Props {
@@ -11,35 +10,48 @@ export default async function ConversationPage({ params }: Props) {
   const { id }   = await params
   const supabase = await createClient()
 
-  const { data: conversation } = await supabase
-    .from('chat_conversations')
-    .select(`
-      *,
-      contact:chat_contacts(*),
-      assignee:chat_attendants(id, name, avatar_url)
-    `)
-    .eq('id', id)
-    .single()
+  // Dependem só do id da rota → rodam em paralelo
+  const [
+    { data: conversation },
+    { data: attendants },
+    { data: initialMessages },
+  ] = await Promise.all([
+    supabase
+      .from('chat_conversations')
+      .select(`
+        *,
+        contact:chat_contacts(*),
+        assignee:chat_attendants(id, name, avatar_url)
+      `)
+      .eq('id', id)
+      .single(),
+    supabase
+      .from('chat_attendants')
+      .select('id, name, avatar_url')
+      .eq('is_active', true)
+      .order('name'),
+    supabase
+      .from('chat_messages')
+      .select('*, attendant:chat_attendants(id, name)')
+      .eq('conversation_id', id)
+      .order('created_at', { ascending: true })
+      .limit(100),
+  ])
 
   if (!conversation) notFound()
 
-  // Zerar unread
-  await supabase
-    .from('chat_conversations')
-    .update({ unread_count: 0 })
-    .eq('id', id)
-
-  // Buscar atendentes para atribuição
-  const { data: attendants } = await supabase
-    .from('chat_attendants')
-    .select('id, name, avatar_url')
-    .eq('is_active', true)
-    .order('name')
-
   const contact = conversation.contact as any
-  const waId    = contact?.wa_id || ''
 
-  // Buscar dados em paralelo: boletos Sienge, boletos SGL, atributos capturados
+  // Resumo 360 da Central (precisa do contact_id da conversa)
+  const { data: central } = await supabase
+    .from('vw_central_clientes')
+    .select('phone_norm, cpf, origem, ja_cobrado, total_cobrancas, ultima_cobranca, proximo_venc, boleto_vencido')
+    .eq('contact_id', contact?.id || '')
+    .maybeSingle()
+
+  const phoneNorm = (central as any)?.phone_norm || ''
+
+  // Boletos por phone_norm (mesma chave da Central — robusto a formatos de telefone)
   const [
     { data: boletos },
     { data: sglBoletos },
@@ -48,9 +60,9 @@ export default async function ConversationPage({ params }: Props) {
     supabase
       .from('sienge_boletos')
       .select('id, parcela_descricao, due_date, amount, status')
-      .eq('customer_phone', waId)
+      .eq('phone_norm', phoneNorm)
       .order('due_date', { ascending: false })
-      .limit(5),
+      .limit(20),
     supabase
       .from('mensagens_cobranca')
       .select(
@@ -58,9 +70,9 @@ export default async function ConversationPage({ params }: Props) {
         'unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, ' +
         'contasrecebervalor, linkboleto, status, created_at'
       )
-      .eq('phone', waId)
+      .eq('phone_norm', phoneNorm)
       .order('created_at', { ascending: false })
-      .limit(5),
+      .limit(30),
     supabase
       .from('chat_contact_attributes')
       .select('*')
@@ -69,15 +81,15 @@ export default async function ConversationPage({ params }: Props) {
   ])
 
   return (
-    <>
-      <ConversationList />
-      <ChatWindow
-        conversation={conversation as any}
-        attendants={attendants || []}
-        siengeBoletos={boletos || []}
-        sglBoletos={(sglBoletos || []) as any}
-        contactAttributes={contactAttributes || []}
-      />
-    </>
+    <ChatWindow
+      key={id}
+      conversation={conversation as any}
+      attendants={attendants || []}
+      siengeBoletos={boletos || []}
+      sglBoletos={(sglBoletos || []) as any}
+      contactAttributes={contactAttributes || []}
+      central={central || null}
+      initialMessages={(initialMessages || []) as any}
+    />
   )
 }

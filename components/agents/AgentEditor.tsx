@@ -32,9 +32,11 @@ interface DatasourceDraft {
   id?:                string
   connection_id:      string | null
   name:               string
+  operation:          'select' | 'insert' | 'update' | 'upsert'
   table_name:         string
   filter_column:      string
   filter_template:    string
+  value_map:          { col: string; val: string }[]   // editor de coluna=valor (escrita)
   columns:            string
   max_rows:           number
   output_placeholder: string
@@ -171,9 +173,11 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
         id:                 d.id,
         connection_id:      d.connection_id,
         name:               d.name,
+        operation:          (d.operation || 'select') as DatasourceDraft['operation'],
         table_name:         d.table_name,
         filter_column:      d.filter_column || '',
         filter_template:    d.filter_template || '',
+        value_map:          Object.entries(d.value_map || {}).map(([col, val]) => ({ col, val: String(val) })),
         columns:            d.columns || '*',
         max_rows:           d.max_rows ?? 5,
         output_placeholder: d.output_placeholder,
@@ -382,19 +386,22 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
 
       // Fontes de dados (delete + reinsert por subagente — id estável)
       await supabase.from('chat_subagent_datasources').delete().eq('subagent_id', subId)
-      const validDs = s.datasources.filter(d => d.table_name.trim() && d.output_placeholder.trim())
+      const validDs = s.datasources.filter(d =>
+        d.table_name.trim() && (d.operation === 'select' ? d.output_placeholder.trim() : (d.value_map || []).some(v => v.col.trim())))
       if (validDs.length) {
         await supabase.from('chat_subagent_datasources').insert(
           validDs.map((d, j) => ({
             subagent_id:        subId,
             connection_id:      d.connection_id || null,
             name:               d.name.trim() || d.table_name.trim(),
+            operation:          d.operation || 'select',
             table_name:         d.table_name.trim(),
             filter_column:      d.filter_column.trim() || null,
             filter_template:    d.filter_template.trim() || null,
+            value_map:          Object.fromEntries((d.value_map || []).filter(v => v.col.trim()).map(v => [v.col.trim(), v.val])),
             columns:            d.columns.trim() || '*',
             max_rows:           d.max_rows || 5,
-            output_placeholder: d.output_placeholder.trim(),
+            output_placeholder: d.output_placeholder.trim() || null,
             sort_order:         j,
           }))
         )
@@ -1314,11 +1321,11 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                       <button
                         onClick={() => setSubagents(subagents.map((x, j) => j === i ? { ...x, datasources: [...x.datasources, {
                           connection_id: apiConnections.find(c => c.provider === 'supabase_db')?.id || null,
-                          name: '', table_name: '', filter_column: '', filter_template: '', columns: '*', max_rows: 5, output_placeholder: '',
+                          name: '', operation: 'select', table_name: '', filter_column: '', filter_template: '', value_map: [], columns: '*', max_rows: 5, output_placeholder: '',
                         }] } : x))}
                         className="text-[11px] text-emerald-600 hover:text-emerald-700"
                       >
-                        + Adicionar fonte
+                        + Adicionar operação
                       </button>
                     </div>
                     {s.datasources.length === 0 && (
@@ -1363,48 +1370,105 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                               <X className="w-3.5 h-3.5" />
                             </button>
                           </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="text-[10px] text-gray-500 mb-0.5 block">Filtrar pela coluna</label>
-                              {dbSchema[d.table_name]?.length ? (
-                                <select value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
-                                  className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono bg-white">
-                                  <option value="">— Coluna do filtro —</option>
-                                  {dbSchema[d.table_name].map(col => <option key={col} value={col}>{col}</option>)}
-                                </select>
-                              ) : (
-                                <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
-                                  placeholder="customer_phone" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
-                              )}
-                            </div>
-                            <div>
-                              <label className="text-[10px] text-gray-500 mb-0.5 block">Igual ao valor</label>
-                              <input value={d.filter_template} onChange={(e) => upd({ filter_template: e.target.value })}
-                                placeholder="{{telefone}} ou {{cpf}}" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
-                            </div>
+                          {/* Ação + nome da operação */}
+                          <div className="flex items-center gap-2">
+                            <select value={d.operation} onChange={(e) => upd({ operation: e.target.value as any })}
+                              className="h-7 rounded border border-gray-200 bg-white px-1.5 text-[11px] shrink-0">
+                              <option value="select">Consultar</option>
+                              <option value="insert">Criar</option>
+                              <option value="update">Atualizar</option>
+                              <option value="upsert">Upsert</option>
+                            </select>
+                            <input value={d.name} onChange={(e) => upd({ name: e.target.value })}
+                              placeholder="nome da operação" className="flex-1 border border-gray-200 rounded px-2 py-1 text-[11px]" />
                           </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            <div>
-                              <label className="text-[10px] text-gray-500 mb-0.5 block">Colunas a trazer</label>
-                              <input value={d.columns} onChange={(e) => upd({ columns: e.target.value })}
-                                placeholder="* (todas)" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+
+                          {/* Chave: filtro (SELECT) ou chave de gravação (UPDATE/UPSERT) */}
+                          {(d.operation === 'select' || d.operation === 'update' || d.operation === 'upsert') && (
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[10px] text-gray-500 mb-0.5 block">{d.operation === 'select' ? 'Filtrar pela coluna' : 'Chave (coluna)'}</label>
+                                {dbSchema[d.table_name]?.length ? (
+                                  <select value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                                    className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono bg-white">
+                                    <option value="">— Coluna —</option>
+                                    {dbSchema[d.table_name].map(col => <option key={col} value={col}>{col}</option>)}
+                                  </select>
+                                ) : (
+                                  <input value={d.filter_column} onChange={(e) => upd({ filter_column: e.target.value })}
+                                    placeholder="customer_phone" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                                )}
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-gray-500 mb-0.5 block">Igual a</label>
+                                <input value={d.filter_template} onChange={(e) => upd({ filter_template: e.target.value })}
+                                  placeholder="{{telefone}} ou {{boleto_id}}" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                              </div>
                             </div>
+                          )}
+
+                          {/* SELECT: colunas a trazer + placeholder */}
+                          {d.operation === 'select' && (
+                            <>
+                              <div className="grid grid-cols-3 gap-2">
+                                <div>
+                                  <label className="text-[10px] text-gray-500 mb-0.5 block">Colunas a trazer</label>
+                                  <input value={d.columns} onChange={(e) => upd({ columns: e.target.value })}
+                                    placeholder="* (todas)" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-gray-500 mb-0.5 block">Máx. linhas</label>
+                                  <input type="number" value={d.max_rows} onChange={(e) => upd({ max_rows: parseInt(e.target.value) || 5 })}
+                                    className="w-full border border-gray-200 rounded px-2 py-1 text-[11px]" />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-gray-500 mb-0.5 block">Salvar resultado em *</label>
+                                  <input value={d.output_placeholder} onChange={(e) => upd({ output_placeholder: e.target.value.replace(/[^a-z0-9_]/gi, '_') })}
+                                    placeholder="contexto_sienge" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
+                                </div>
+                              </div>
+                              <p className="text-[10px] text-gray-400">
+                                {d.output_placeholder
+                                  ? <>Use <code className="bg-gray-100 px-1 rounded">{`{{${d.output_placeholder}}}`}</code> nas instruções do subagente.</>
+                                  : <>Valores de filtro: <code className="bg-gray-100 px-1 rounded">{'{{telefone}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{cpf}}'}</code> — automáticos.</>}
+                              </p>
+                            </>
+                          )}
+
+                          {/* INSERT/UPDATE/UPSERT: valores a gravar (coluna = valor) */}
+                          {d.operation !== 'select' && (
                             <div>
-                              <label className="text-[10px] text-gray-500 mb-0.5 block">Máx. linhas</label>
-                              <input type="number" value={d.max_rows} onChange={(e) => upd({ max_rows: parseInt(e.target.value) || 5 })}
-                                className="w-full border border-gray-200 rounded px-2 py-1 text-[11px]" />
+                              <label className="text-[10px] text-gray-500 mb-0.5 block">Valores a gravar (coluna = valor)</label>
+                              {(d.value_map || []).map((vm, vi) => {
+                                const updVm = (patch: Partial<{ col: string; val: string }>) =>
+                                  upd({ value_map: (d.value_map || []).map((y, k) => k === vi ? { ...y, ...patch } : y) })
+                                return (
+                                  <div key={vi} className="flex items-center gap-1 mb-1">
+                                    {dbSchema[d.table_name]?.length ? (
+                                      <select value={vm.col} onChange={(e) => updVm({ col: e.target.value })}
+                                        className="w-1/3 border border-gray-200 rounded px-1.5 py-1 text-[11px] font-mono bg-white">
+                                        <option value="">— Coluna —</option>
+                                        {dbSchema[d.table_name].map(col => <option key={col} value={col}>{col}</option>)}
+                                      </select>
+                                    ) : (
+                                      <input value={vm.col} onChange={(e) => updVm({ col: e.target.value })}
+                                        placeholder="coluna" className="w-1/3 border border-gray-200 rounded px-1.5 py-1 text-[11px] font-mono" />
+                                    )}
+                                    <span className="text-gray-400 text-xs">=</span>
+                                    <input value={vm.val} onChange={(e) => updVm({ val: e.target.value })}
+                                      placeholder="comprovante_recebido ou {{verdict}}" className="flex-1 border border-gray-200 rounded px-1.5 py-1 text-[11px] font-mono" />
+                                    <button onClick={() => upd({ value_map: (d.value_map || []).filter((_, k) => k !== vi) })}
+                                      className="text-gray-400 hover:text-red-500 shrink-0"><X className="w-3 h-3" /></button>
+                                  </div>
+                                )
+                              })}
+                              <button onClick={() => upd({ value_map: [...(d.value_map || []), { col: '', val: '' }] })}
+                                className="text-[11px] text-emerald-600 hover:text-emerald-700">+ valor</button>
+                              <p className="text-[10px] text-gray-400 mt-1">
+                                Placeholders: <code className="bg-gray-100 px-1 rounded">{'{{verdict}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{boleto_id}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{telefone_norm}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{cpf}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{hoje}}'}</code> + campos extraídos.
+                              </p>
                             </div>
-                            <div>
-                              <label className="text-[10px] text-gray-500 mb-0.5 block">Salvar resultado em *</label>
-                              <input value={d.output_placeholder} onChange={(e) => upd({ output_placeholder: e.target.value.replace(/[^a-z0-9_]/gi, '_') })}
-                                placeholder="contexto_sienge" className="w-full border border-gray-200 rounded px-2 py-1 text-[11px] font-mono" />
-                            </div>
-                          </div>
-                          <p className="text-[10px] text-gray-400">
-                            {d.output_placeholder
-                              ? <>Use <code className="bg-gray-100 px-1 rounded">{`{{${d.output_placeholder}}}`}</code> nas instruções do subagente para inserir o resultado da consulta.</>
-                              : <>Valores de filtro disponíveis: <code className="bg-gray-100 px-1 rounded">{'{{telefone}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{contato}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{cpf}}'}</code> — preenchidos automaticamente.</>}
-                          </p>
+                          )}
                         </div>
                       )
                     })}

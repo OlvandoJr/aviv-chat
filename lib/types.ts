@@ -313,14 +313,18 @@ export interface Subagent {
   datasources?:      SubagentDatasource[]
 }
 
+export type SubagentOperation = 'select' | 'insert' | 'update' | 'upsert'
+
 export interface SubagentDatasource {
   id:                 string
   subagent_id:        string
   connection_id:      string | null
   name:               string
   table_name:         string
-  filter_column:      string | null
-  filter_template:    string | null
+  operation:          SubagentOperation        // select=consultar | insert/update/upsert=escrita
+  filter_column:      string | null            // select: filtro WHERE | update/upsert: chave
+  filter_template:    string | null            // valor da chave (fixo ou {{placeholder}})
+  value_map:          Record<string, string>   // escrita: { coluna: "valor_template" }
   columns:            string
   max_rows:           number
   output_placeholder: string

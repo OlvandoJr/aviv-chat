@@ -591,10 +591,14 @@ Deno.serve(async (req) => {
         .order('sort_order')
 
       for (const sub of textSubs || []) {
-        const dsVars = await runSubagentDatasources(sub.datasources || [], {
+        const subVars = {
           contato: contactWaId, telefone: contactWaId, telefone_norm: normalizePhone(contactWaId),
           cpf: '', texto: lastUserText || '',
-        })
+          now: new Date().toISOString(), hoje: new Date().toISOString().slice(0, 10),
+        }
+        const dsVars = await runSubagentDatasources(sub.datasources || [], subVars)
+        // Operações de escrita configuradas (insert/update/upsert)
+        await runWriteOpsText(sub.datasources || [], subVars)
         // Injeta cada placeholder preenchido + instruções do subagente
         let block = ''
         for (const [k, v] of Object.entries(dsVars)) {
@@ -1298,6 +1302,7 @@ async function runSubagentDatasources(
 ): Promise<Record<string, string>> {
   const out: Record<string, string> = {}
   for (const ds of datasources || []) {
+    if (ds.operation && ds.operation !== 'select') continue   // escrita roda em runWriteOpsText
     try {
       let filterVal = ds.filter_template || ''
       for (const [k, v] of Object.entries(baseVars)) {
@@ -1318,6 +1323,38 @@ async function runSubagentDatasources(
     }
   }
   return out
+}
+
+// Operações de ESCRITA dos subagentes de texto (insert/update/upsert)
+function resolveTplText(tpl: string, vars: Record<string, string>): string {
+  let out = String(tpl ?? '')
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replace(new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`, 'g'), v ?? '')
+  }
+  return out
+}
+async function runWriteOpsText(datasources: any[], baseVars: Record<string, string>): Promise<void> {
+  for (const ds of datasources || []) {
+    if (!ds.operation || ds.operation === 'select') continue
+    try {
+      const payload: Record<string, any> = {}
+      for (const [col, valTpl] of Object.entries(ds.value_map || {})) {
+        payload[col] = resolveTplText(String(valTpl), baseVars).trim()
+      }
+      const keyVal = ds.filter_column ? resolveTplText(ds.filter_template || '', baseVars).trim() : ''
+      if (ds.operation === 'insert') {
+        await supabase.from(ds.table_name).insert(payload)
+      } else if (ds.operation === 'update') {
+        if (!ds.filter_column || !keyVal) continue
+        await supabase.from(ds.table_name).update(payload).eq(ds.filter_column, keyVal)
+      } else if (ds.operation === 'upsert') {
+        if (!ds.filter_column || !keyVal) continue
+        await supabase.from(ds.table_name).upsert({ ...payload, [ds.filter_column]: keyVal }, { onConflict: ds.filter_column })
+      }
+    } catch (e) {
+      console.error('runWriteOpsText error:', e)
+    }
+  }
 }
 
 // ── 2ª via do boleto no Sienge (link expira ~5min; linha digitável não) ───────

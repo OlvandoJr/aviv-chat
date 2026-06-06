@@ -1,9 +1,10 @@
 'use client'
 
-import { X, Phone, Calendar, DollarSign, AlertCircle, CheckCircle, Tags, ExternalLink, Building2 } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import Link from 'next/link'
+import { X, Phone, Tags, ArrowUpRight } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { formatCurrency, formatDate, getInitials } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, getInitials } from '@/lib/utils'
+import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
 import type { Contact, Conversation, SiengeBoleto, SglBoleto, ContactAttribute } from '@/lib/types'
 
 interface Props {
@@ -12,11 +13,41 @@ interface Props {
   siengeBoletos:     Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>[]
   sglBoletos:        SglBoleto[]
   contactAttributes: ContactAttribute[]
+  central?:          any
   onClose:           () => void
 }
 
-export default function ContactPanel({ contact, conversation, siengeBoletos, sglBoletos, contactAttributes, onClose }: Props) {
-  const name = contact?.name || contact?.wa_id || 'Desconhecido'
+const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
+  sienge: { label: 'Sienge',       cls: 'bg-blue-100 text-blue-700' },
+  sgl:    { label: 'SGL',          cls: 'bg-orange-100 text-orange-700' },
+  ambos:  { label: 'Sienge + SGL', cls: 'bg-violet-100 text-violet-700' },
+}
+
+// Dedup SGL por parcela: mantém o registro com status mais avançado / mais recente
+const PAGO_ST  = ['pago', 'comprovante_confirmado', 'baixado', 'pago_confirmado', 'quitado']
+const COMPR_ST = ['comprovante_recebido', 'comprovante', 'em_validacao']
+const sglRank = (s: string | null) => PAGO_ST.includes((s || '').toLowerCase()) ? 3 : COMPR_ST.includes((s || '').toLowerCase()) ? 2 : 1
+
+export default function ContactPanel({ contact, conversation, siengeBoletos, sglBoletos, contactAttributes, central, onClose }: Props) {
+  const name   = contact?.name || contact?.wa_id || 'Desconhecido'
+  const origem = central?.origem as string | undefined
+  const tag    = origem ? ORIGEM_TAG[origem] : undefined
+
+  // Dedup SGL por parcela
+  const sglMap: Record<string, any> = {}
+  for (const b of sglBoletos) {
+    const k = b.contasreceberparcela || String(b.id)
+    const prev = sglMap[k]
+    if (!prev || sglRank(b.status) > sglRank(prev.status) ||
+        (sglRank(b.status) === sglRank(prev.status) && new Date(b.created_at || 0) > new Date(prev.created_at || 0))) sglMap[k] = b
+  }
+  const sglUnicos = Object.values(sglMap) as SglBoleto[]
+
+  // Lista unificada compacta (Sienge + SGL), ordenada por vencimento desc
+  const boletoRows = [
+    ...siengeBoletos.map((b) => ({ key: 's' + b.id, id: b.id, source: 'sienge' as const, parcela: b.parcela_descricao || 'Parcela', due: b.due_date, amount: Number(b.amount) || 0, status: b.status, src: 'Sienge' })),
+    ...sglUnicos.map((b) => ({ key: 'g' + b.id, id: b.id, source: 'sgl' as const, parcela: b.contasreceberparcela || 'Parcela', due: b.contasrecebervencimento, amount: parseSglAmount(b.contasrecebervalor), status: b.status, src: 'SGL' })),
+  ].sort((a, b) => new Date(b.due || 0).getTime() - new Date(a.due || 0).getTime())
 
   return (
     <aside className="w-72 border-l border-gray-200 bg-white flex flex-col overflow-hidden shrink-0">
@@ -40,7 +71,12 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
               <AvatarFallback className="text-lg">{getInitials(name)}</AvatarFallback>
             </Avatar>
             <div>
-              <p className="font-semibold text-gray-900">{name}</p>
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                <p className="font-semibold text-gray-900">{name}</p>
+                {tag && (
+                  <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase', tag.cls)}>{tag.label}</span>
+                )}
+              </div>
               <div className="flex items-center justify-center gap-1 mt-0.5">
                 <Phone className="w-3 h-3 text-gray-400" />
                 <p className="text-xs text-gray-500">{contact?.wa_id}</p>
@@ -49,11 +85,15 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
           </div>
 
           <div className="space-y-2">
-            <InfoRow label="WhatsApp ID" value={contact?.wa_id || '—'} />
+            {central?.cpf && <InfoRow label="CPF/CNPJ" value={formatAttrValue(String(central.cpf).replace(/\D/g, ''), 'cpf')} />}
             <InfoRow
               label="Primeiro contato"
               value={contact?.created_at ? formatDate(contact.created_at) : '—'}
             />
+            {central?.ultima_cobranca && <InfoRow label="Última cobrança" value={formatDate(central.ultima_cobranca)} />}
+            {central?.total_cobrancas != null && Number(central.total_cobrancas) > 0 && (
+              <InfoRow label="Cobranças enviadas" value={String(central.total_cobrancas)} />
+            )}
             {conversation.assignee && (
               <InfoRow label="Atendente" value={conversation.assignee.name} />
             )}
@@ -81,48 +121,45 @@ export default function ContactPanel({ contact, conversation, siengeBoletos, sgl
           </section>
         )}
 
-        {/* Boletos Sienge */}
-        {siengeBoletos.length > 0 && (
-          <section>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
-              Boletos Sienge
+        {/* Boletos — lista compacta (máx. 3) + expandir p/ a Central */}
+        <section>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Boletos{boletoRows.length > 0 ? ` (${boletoRows.length})` : ''}
             </p>
-            <div className="space-y-2">
-              {siengeBoletos.map((boleto) => (
-                <BoletoCard key={boleto.id} boleto={boleto} />
-              ))}
-            </div>
-          </section>
-        )}
+          </div>
 
-        {siengeBoletos.length === 0 && sglBoletos.length === 0 && (
-          <section>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-              Boletos
-            </p>
-            <p className="text-xs text-gray-400">Nenhum boleto encontrado para este número.</p>
-          </section>
-        )}
+          {boletoRows.length === 0 ? (
+            <p className="text-xs text-gray-400">Nenhum boleto para este número.</p>
+          ) : (
+            <div className="rounded-lg border border-gray-100 overflow-hidden">
+              {boletoRows.slice(0, 3).map((r) => {
+                const e = estadoBoleto(r.status, r.due)
+                return (
+                  <div key={r.key} className="flex items-center gap-2 px-2.5 py-1.5 border-b border-gray-50 last:border-0">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-gray-800 truncate">{r.parcela}</p>
+                      <p className="text-[10px] text-gray-400">{r.src} · {r.due ? formatDate(r.due) : '—'}</p>
+                    </div>
+                    {r.amount > 0 && <span className="text-xs font-semibold text-gray-700 shrink-0">{formatCurrency(r.amount)}</span>}
+                    <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0', e.cls)}>{e.label}</span>
+                    {e.label !== 'Pago' && <ConfirmPaymentButton source={r.source} id={r.id} variant="icon" />}
+                  </div>
+                )
+              })}
+            </div>
+          )}
 
-        {/* Boletos SGL (mensagens_cobranca) */}
-        {sglBoletos.length > 0 && (
-          <section>
-            <div className="flex items-center gap-1.5 mb-3">
-              <Building2 className="w-3.5 h-3.5 text-orange-400" />
-              <p className="text-xs font-semibold text-orange-600 uppercase tracking-wide">
-                Boletos SGL
-              </p>
-              <span className="text-[10px] px-1.5 py-0.5 bg-orange-50 text-orange-500 border border-orange-200 rounded-full ml-auto">
-                Migrando para Sienge
-              </span>
-            </div>
-            <div className="space-y-2">
-              {sglBoletos.map((boleto) => (
-                <SglBoletoCard key={boleto.id} boleto={boleto} />
-              ))}
-            </div>
-          </section>
-        )}
+          {central?.phone_norm && (
+            <Link
+              href={`/clients/${central.phone_norm}`}
+              className="mt-2 flex items-center justify-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg py-1.5 transition-colors"
+            >
+              {boletoRows.length > 3 ? `Ver todos (${boletoRows.length}) na Central` : 'Ver ficha completa na Central'}
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </Link>
+          )}
+        </section>
       </div>
     </aside>
   )
@@ -137,70 +174,14 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-function SglBoletoCard({ boleto }: { boleto: SglBoleto }) {
-  const amount  = parseSglAmount(boleto.contasrecebervalor)
-  const dueDate = boleto.contasrecebervencimento
-    ? new Date(boleto.contasrecebervencimento).toLocaleDateString('pt-BR')
-    : '—'
-  const isOverdue = boleto.contasrecebervencimento
-    ? new Date(boleto.contasrecebervencimento) < new Date()
-    : false
-
-  const statusLabel =
-    boleto.status === 'pago'               ? { text: 'Pago',          color: 'default' as const } :
-    boleto.status === 'comprovante_recebido' ? { text: 'Comprovante',   color: 'info' as const    } :
-    isOverdue                               ? { text: 'Vencido',       color: 'destructive' as const } :
-                                              { text: 'Em aberto',     color: 'warning' as const }
-
-  const parcela = [
-    boleto.contasreceberparcela,
-    [boleto.unidadequadraandar, boleto.unidadeloteapartamento].filter(Boolean).join(' / '),
-  ].filter(Boolean).join(' — ')
-
-  return (
-    <div className="rounded-xl border border-orange-100 p-3 bg-orange-50/50 space-y-2">
-      {/* Empreendimento */}
-      {boleto.unidadeempreendimento && (
-        <p className="text-[10px] font-medium text-orange-700 uppercase tracking-wide truncate">
-          {boleto.unidadeempreendimento}
-        </p>
-      )}
-
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-medium text-gray-800 leading-tight">
-          {parcela || 'Parcela'}
-        </p>
-        <Badge variant={statusLabel.color} className="text-[9px] px-1.5 h-4 shrink-0">
-          {statusLabel.text}
-        </Badge>
-      </div>
-
-      <div className="flex justify-between text-xs">
-        <div className="flex items-center gap-1 text-gray-500">
-          <Calendar className="w-3 h-3" />
-          <span>{dueDate}</span>
-        </div>
-        {amount > 0 && (
-          <div className="flex items-center gap-1 font-semibold text-gray-800">
-            <DollarSign className="w-3 h-3 text-gray-400" />
-            <span>{formatCurrency(amount)}</span>
-          </div>
-        )}
-      </div>
-
-      {boleto.linkboleto && (
-        <a
-          href={boleto.linkboleto}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-1 text-[11px] text-orange-600 hover:text-orange-800 hover:underline font-medium"
-        >
-          <ExternalLink className="w-3 h-3" />
-          Ver / baixar boleto
-        </a>
-      )}
-    </div>
-  )
+// Estado de pagamento compacto: Pago (verde) · Comprovante (amarelo) · Vencido · Em aberto
+function estadoBoleto(status: string | null, due: string | null) {
+  const s = (status || '').toLowerCase()
+  if (PAGO_ST.includes(s))  return { label: 'Pago',        cls: 'bg-emerald-100 text-emerald-700' }
+  if (COMPR_ST.includes(s)) return { label: 'Comprovante', cls: 'bg-amber-100 text-amber-700' }
+  const hoje = new Date().toISOString().slice(0, 10)
+  if (due && String(due).slice(0, 10) < hoje) return { label: 'Vencido', cls: 'bg-red-100 text-red-600' }
+  return { label: 'Em aberto', cls: 'bg-gray-100 text-gray-500' }
 }
 
 function parseSglAmount(value: string | null): number {
@@ -226,50 +207,3 @@ function formatAttrValue(value: string, key: string): string {
   return value
 }
 
-function BoletoCard({
-  boleto,
-}: {
-  boleto: Pick<SiengeBoleto, 'id' | 'parcela_descricao' | 'due_date' | 'amount' | 'status'>
-}) {
-  const isPaid     = boleto.status === 'pago'
-  const isOverdue  = !isPaid && new Date(boleto.due_date) < new Date()
-  const hasComp    = boleto.status === 'comprovante_recebido'
-
-  return (
-    <div className="rounded-xl border border-gray-100 p-3 bg-gray-50 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-medium text-gray-800 leading-tight">
-          {boleto.parcela_descricao || 'Parcela'}
-        </p>
-        <StatusBadge status={boleto.status} isOverdue={isOverdue} />
-      </div>
-
-      <div className="flex justify-between text-xs">
-        <div className="flex items-center gap-1 text-gray-500">
-          <Calendar className="w-3 h-3" />
-          <span>{formatDate(boleto.due_date)}</span>
-        </div>
-        <div className="flex items-center gap-1 font-semibold text-gray-800">
-          <DollarSign className="w-3 h-3 text-gray-400" />
-          <span>{formatCurrency(boleto.amount)}</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function StatusBadge({
-  status,
-  isOverdue,
-}: {
-  status:    string
-  isOverdue: boolean
-}) {
-  if (status === 'pago')
-    return <Badge variant="default" className="text-[9px] px-1.5 h-4"><CheckCircle className="w-2.5 h-2.5 mr-0.5" />Pago</Badge>
-  if (status === 'comprovante_recebido')
-    return <Badge variant="info" className="text-[9px] px-1.5 h-4">Comprovante</Badge>
-  if (isOverdue)
-    return <Badge variant="destructive" className="text-[9px] px-1.5 h-4"><AlertCircle className="w-2.5 h-2.5 mr-0.5" />Vencido</Badge>
-  return <Badge variant="warning" className="text-[9px] px-1.5 h-4">Em aberto</Badge>
-}

@@ -1,9 +1,8 @@
 import { createClient } from '@/lib/supabase/server'
-import { redirect } from 'next/navigation'
-import Sidebar from '@/components/conversations/Sidebar'
-import ConversationList from '@/components/conversations/ConversationList'
+import { redirect }     from 'next/navigation'
+import Sidebar          from '@/components/conversations/Sidebar'
 
-export default async function ConversationsLayout({ children }: { children: React.ReactNode }) {
+export default async function ClientsLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
@@ -14,13 +13,12 @@ export default async function ConversationsLayout({ children }: { children: Reac
     .eq('id', user.id)
     .single()
 
+  if (attendant?.role !== 'admin' && attendant?.role !== 'manager') redirect('/conversations')
+
   return (
     <div className="flex h-screen overflow-hidden bg-white">
       <Sidebar attendant={attendant} />
-      <main className="flex-1 flex overflow-hidden">
-        <ConversationList />
-        {children}
-      </main>
+      <main className="flex-1 overflow-auto bg-gray-50">{children}</main>
     </div>
   )
 }
