@@ -25,6 +25,7 @@ interface Props {
   sglBoletos:        SglBoleto[]
   contactAttributes: ContactAttribute[]
   central?:          any
+  initialMessages?:  Message[]
 }
 
 const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
@@ -33,13 +34,13 @@ const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central }: Props) {
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages }: Props) {
   const origem = central?.origem as string | undefined
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  const [messages,    setMessages]    = useState<Message[]>([])
-  const [loading,     setLoading]     = useState(true)
+  const [messages,    setMessages]    = useState<Message[]>(initialMessages || [])
+  const [loading,     setLoading]     = useState(!initialMessages)
   const [panelOpen,   setPanelOpen]   = useState(false)
   const [conv,        setConv]        = useState(conversation)
   const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
@@ -72,8 +73,17 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
     setLoading(false)
   }, [conv.id])
 
+  // Zerar unread no cliente (fora do caminho de render do servidor)
   useEffect(() => {
-    fetchMessages()
+    if (conversation.unread_count && conversation.unread_count > 0) {
+      supabase.from('chat_conversations').update({ unread_count: 0 }).eq('id', conv.id).then(() => {})
+    }
+  }, [])
+
+  useEffect(() => {
+    // Mensagens já vêm do servidor (initialMessages) → evita 2º round-trip.
+    // Só busca no cliente se não vieram pré-carregadas.
+    if (!initialMessages) fetchMessages()
 
     const channel = supabase
       .channel(`chat-${conv.id}`)

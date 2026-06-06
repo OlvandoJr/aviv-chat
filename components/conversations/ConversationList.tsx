@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useTransition } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Search, Bell } from 'lucide-react'
+import { Search, Bell, Loader2 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -24,8 +24,20 @@ export default function ConversationList() {
   const [status,        setStatus]        = useState<StatusFilter>('open')
   const [attendance,    setAttendance]    = useState<AttendanceFilter>('all')
   const [loading,       setLoading]       = useState(true)
+  const [isPending, startTransition]      = useTransition()
+  const [optimisticId, setOptimisticId]   = useState<string | null>(null)
 
-  const activeId = pathname.split('/conversations/')[1] || null
+  const pathId   = pathname.split('/conversations/')[1] || null
+  const activeId = optimisticId ?? pathId
+
+  // Quando a URL alcança o destino, libera o otimista (passa a refletir o pathname)
+  useEffect(() => { setOptimisticId(null) }, [pathname])
+
+  const selectConversation = useCallback((convId: string) => {
+    if (convId === pathId) return
+    setOptimisticId(convId)
+    startTransition(() => router.push(`/conversations/${convId}`))
+  }, [pathId, router])
 
   const fetchConversations = useCallback(async () => {
     let query = supabase
@@ -190,7 +202,9 @@ export default function ConversationList() {
               key={conv.id}
               conversation={conv}
               active={conv.id === activeId}
-              onClick={() => router.push(`/conversations/${conv.id}`)}
+              pending={isPending && conv.id === optimisticId}
+              onClick={() => selectConversation(conv.id)}
+              onPrefetch={() => router.prefetch(`/conversations/${conv.id}`)}
             />
           ))
         )}
@@ -202,11 +216,15 @@ export default function ConversationList() {
 function ConversationItem({
   conversation: conv,
   active,
+  pending,
   onClick,
+  onPrefetch,
 }: {
   conversation: Conversation
   active:       boolean
+  pending:      boolean
   onClick:      () => void
+  onPrefetch:   () => void
 }) {
   const contact   = conv.contact
   const name      = contact?.name || contact?.wa_id || 'Desconhecido'
@@ -215,12 +233,16 @@ function ConversationItem({
   return (
     <button
       onClick={onClick}
+      onMouseEnter={onPrefetch}
       className={cn(
         'w-full flex items-start gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left border-b border-gray-50 relative',
         active    && 'bg-emerald-50 border-l-[3px] border-l-emerald-500',
         isPending && !active && 'bg-amber-50/60 border-l-[3px] border-l-amber-400'
       )}
     >
+      {pending && (
+        <Loader2 className="absolute right-2.5 bottom-2.5 w-3.5 h-3.5 text-emerald-500 animate-spin" />
+      )}
       {/* Avatar com indicador de urgência */}
       <div className="relative shrink-0">
         <Avatar className="w-10 h-10">

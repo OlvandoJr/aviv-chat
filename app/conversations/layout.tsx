@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Sidebar from '@/components/conversations/Sidebar'
+import ConversationList from '@/components/conversations/ConversationList'
 
 export default async function ConversationsLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -17,6 +18,7 @@ export default async function ConversationsLayout({ children }: { children: Reac
     <div className="flex h-screen overflow-hidden bg-white">
       <Sidebar attendant={attendant} />
       <main className="flex-1 flex overflow-hidden">
+        <ConversationList />
         {children}
       </main>
     </div>
