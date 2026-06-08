@@ -794,6 +794,7 @@ Deno.serve(async (req) => {
                 pdfOk = await enviarBoletoPDF(
                   phoneNumberId, accessToken, contactWaId, conversationId,
                   via.url, `Boleto ${toolArgs.receivable_bill_id}-${toolArgs.installment_id}`,
+                  agent?.name, agent?.avatar_emoji,
                 )
               }
               toolResult = JSON.stringify({
@@ -1462,6 +1463,7 @@ async function siengeSegundaVia(billId: number, instId: number): Promise<{ url: 
 async function enviarBoletoPDF(
   phoneNumberId: string, accessToken: string, waId: string, conversationId: string,
   pdfUrl: string, parcela: string,
+  agentName?: string | null, agentEmoji?: string | null,
 ): Promise<boolean> {
   try {
     // 1. Baixar o PDF (dentro da validade do link)
@@ -1507,7 +1509,7 @@ async function enviarBoletoPDF(
       media_mime_type: 'application/pdf',
       media_filename:  filename,
       wa_status:       'sent',
-      metadata:        { sent_by: 'bot', kind: 'boleto_2via' },
+      metadata:        { sent_by: 'bot', kind: 'boleto_2via', agent_name: agentName || null, agent_emoji: agentEmoji || null },
     })
     return true
   } catch (e) {
