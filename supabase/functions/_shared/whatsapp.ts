@@ -12,6 +12,12 @@ export function normalizeWaId(raw: string): string {
   if (!d) return ''
   if (d.length === 10 || d.length === 11) d = '55' + d            // veio sem DDI
   if (d.startsWith('55') && d.length >= 3 && d[2] === '0') d = '55' + d.slice(3)  // remove 0 de tronco
+  // adiciona o 9 do celular quando o número após o DDD tem 8 dígitos e é faixa móvel (6-9)
+  if (d.startsWith('55') && d.length === 12) {
+    const ddd = d.slice(2, 4)
+    const num = d.slice(4)               // 8 dígitos
+    if (/^[6-9]/.test(num)) d = '55' + ddd + '9' + num
+  }
   return d
 }
 
