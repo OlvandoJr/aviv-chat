@@ -585,29 +585,37 @@ async function checkSiengePayment(boleto: any): Promise<'pago' | 'pendente'> {
 // ── Atualizar boleto e registrar comprovante ──────────────────────────────────
 async function updateBoletoDB(
   boleto:       any,
-  siengeStatus: 'pago' | 'pendente',
+  siengeStatus: 'pago' | 'pendente' | null,
   messageId:    string,
   waId:         string,
   tipo:         'image' | 'document',
 ) {
-  // Só insere na tabela de comprovantes e atualiza o boleto se tiver ID local
-  if (boleto.id) {
-    await supabase.from('sienge_comprovantes').insert({
-      boleto_id:           boleto.id,
-      customer_phone:      waId,
-      whatsapp_message_id: messageId,
-      tipo,
-      media_id:            messageId,
-      status:              siengeStatus === 'pago' ? 'confirmado' : 'pendente',
-    }).catch(() => {})
+  const patch: Record<string, any> = {
+    status:     siengeStatus === 'pago' ? 'pago' : 'comprovante_recebido',
+    updated_at: new Date().toISOString(),
+    ...(siengeStatus === 'pago' ? { paid_at: new Date().toISOString() } : {}),
+  }
 
-    await supabase.from('sienge_boletos').update({
-      status:     siengeStatus === 'pago' ? 'pago' : 'comprovante_recebido',
-      updated_at: new Date().toISOString(),
-      ...(siengeStatus === 'pago' ? { paid_at: new Date().toISOString() } : {}),
-    }).eq('id', boleto.id)
+  // Comprovante registrado só quando há ID local do boleto.
+  if (boleto.id) {
+    try {
+      await supabase.from('sienge_comprovantes').insert({
+        boleto_id:           boleto.id,
+        customer_phone:      waId,
+        whatsapp_message_id: messageId,
+        tipo,
+        media_id:            messageId,
+        status:              siengeStatus === 'pago' ? 'confirmado' : 'pendente',
+      })
+    } catch (_) { /* best-effort */ }
+    await supabase.from('sienge_boletos').update(patch).eq('id', boleto.id)
+  } else if (boleto.receivable_bill_id && boleto.installment_id) {
+    // Fallback (boleto veio da view unificada, sem id local): casa pela chave do Sienge.
+    await supabase.from('sienge_boletos').update(patch)
+      .eq('receivable_bill_id', boleto.receivable_bill_id)
+      .eq('installment_id', boleto.installment_id)
   } else {
-    console.warn('updateBoletoDB: boleto has no local ID, skipping DB update')
+    console.warn('updateBoletoDB: sem id nem receivable_bill_id/installment_id — pulando')
   }
 }
 
@@ -666,10 +674,11 @@ async function analyzeImage(
   let siengeStatus: 'pago' | 'pendente' | null = null
   if (boleto) {
     siengeStatus = await checkSiengePayment(boleto)
-    await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'image')
   } else {
-    boleto = await getBoletoUnificado(waId)   // cliente legado SGL
+    boleto = await getBoletoUnificado(waId)   // cliente legado SGL / fallback por telefone
   }
+  // Marca o boleto (comprovante_recebido/pago) por id OU por receivable_bill_id+installment_id
+  if (boleto) await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'image')
 
   // ── Passo 2: validação completa com veredicto ─────────────────────────────
   const siengeCtx        = buildSiengeContext(boleto)
@@ -806,10 +815,11 @@ async function analyzePdf(
     let siengeStatus: 'pago' | 'pendente' | null = null
     if (boleto) {
       siengeStatus = await checkSiengePayment(boleto)
-      await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'document')
     } else {
-      boleto = await getBoletoUnificado(waId)   // cliente legado SGL
+      boleto = await getBoletoUnificado(waId)   // cliente legado SGL / fallback por telefone
     }
+    // Marca o boleto (comprovante_recebido/pago) por id OU receivable_bill_id+installment_id
+    if (boleto) await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'document')
 
     // ── Passo 2: validação completa com veredicto (GPT-4o lê o PDF) ─────
     const siengeCtx = buildSiengeContext(boleto)
