@@ -104,13 +104,24 @@ Deno.serve(async (req) => {
       if (inbox?.access_token)    accessToken   = inbox.access_token
     }
 
-    // ── 2. Buscar agente (conversa → inbox rule → padrão) ─────────────────────
+    // ── 2. Buscar agente (regra da janela de 24h do template) ─────────────────
+    // Se houve um TEMPLATE de cobrança (out) nas últimas 24h, a conversa está na
+    // "janela de campanha" → agente de cobrança (default/Vivi). Caso contrário, é
+    // uma mensagem avulsa do cliente → agente da regra de inbox (Contato Inteligente).
     let agent: any = null
 
-    if (conv.agent_id) {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const { data: recentTpl } = await supabase
+      .from('chat_messages').select('id')
+      .eq('conversation_id', conversationId)
+      .eq('direction', 'out').eq('type', 'template')
+      .gte('created_at', since24h)
+      .limit(1).maybeSingle()
+
+    if (recentTpl) {
       const { data } = await supabase
         .from('chat_agents').select('*')
-        .eq('id', conv.agent_id).eq('is_active', true).maybeSingle()
+        .eq('is_default', true).eq('is_active', true).maybeSingle()
       agent = data
     }
     if (!agent && conv.inbox_id) {
