@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { normalizeWaId } from '../_shared/whatsapp.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -92,7 +93,9 @@ Deno.serve(async (req) => {
 })
 
 async function processMessage(msg: any, value: any, inboxId: string) {
-  const waId      = msg.from
+  // Normaliza o número recebido (a Meta pode mandar BR sem o "9") para casar com o
+  // mesmo contato/conversa dos envios — senão template e resposta caem em threads diferentes.
+  const waId      = normalizeWaId(msg.from) || msg.from
   const msgType   = msg.type
   const msgId     = msg.id
   const timestamp = new Date(parseInt(msg.timestamp) * 1000).toISOString()
@@ -280,7 +283,7 @@ async function processMessage(msg: any, value: any, inboxId: string) {
 async function handleReaction(msg: any) {
   const waMessageId = msg.reaction?.message_id
   const emoji       = msg.reaction?.emoji   // vazio = reação removida
-  const fromWaId    = msg.from
+  const fromWaId    = normalizeWaId(msg.from) || msg.from
   if (!waMessageId) return
 
   const { data: targetMsg } = await supabase
