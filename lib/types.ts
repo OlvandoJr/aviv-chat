@@ -245,7 +245,14 @@ export interface ApiConfig {
 
 // ── Agent Tools & Integrations ────────────────────────────────────────────────
 
-export type ToolType = 'payment_scheduler' | 'webhook'
+export type ToolType = 'payment_scheduler' | 'webhook' | 'api_call'
+
+export interface ApiToolParam {
+  name:        string
+  type:        'string' | 'number' | 'boolean'
+  description: string
+  required:    boolean
+}
 
 export interface AgentTool {
   id:                string

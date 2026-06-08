@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { X, Save, Trash2, Wrench, Zap } from 'lucide-react'
+import { X, Save, Trash2, Wrench, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { AgentTool, ToolType, ApiConnection } from '@/lib/types'
+import type { AgentTool, ToolType, ApiConnection, ApiToolParam } from '@/lib/types'
 
 interface Props {
   agentId:        string
@@ -21,6 +21,12 @@ const TOOL_TYPES: { value: ToolType; label: string; icon: string; description: s
     label:       'Agendador de Pagamentos',
     icon:        '📅',
     description: 'Permite que o cliente agende o pagamento de um boleto em uma data futura (dias úteis). Cria evento no Google Calendar se configurado.',
+  },
+  {
+    value:       'api_call',
+    label:       'Chamar API',
+    icon:        '🔌',
+    description: 'O AI chama uma integração configurada em /apis (ex.: Sienge) com parâmetros que ele coleta na conversa, e usa a resposta para responder o cliente.',
   },
   {
     value:       'webhook',
@@ -40,15 +46,28 @@ export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onD
   const [apiConnId,       setApiConnId]      = useState<string>(tool?.api_connection_id || '')
   const [isActive,        setIsActive]       = useState(tool?.is_active     ?? true)
   const [webhookUrl,      setWebhookUrl]     = useState<string>((tool?.config as any)?.webhook_url || '')
+  const [apiConfigId,     setApiConfigId]    = useState<string>((tool?.config as any)?.api_config_id || '')
+  const [params,          setParams]         = useState<ApiToolParam[]>(((tool?.config as any)?.parameters as ApiToolParam[]) || [])
+  const [apiConfigs,      setApiConfigs]     = useState<{ id: string; name: string; method: string; url: string }[]>([])
 
   const [loading,         setLoading]        = useState(false)
   const [error,           setError]          = useState('')
 
   const gcalConnections = apiConnections.filter(c => c.provider === 'google_calendar' && c.is_active)
 
+  // Lista de integrações HTTP configuradas em /apis (para a tool "Chamar API")
+  useEffect(() => {
+    supabase.from('chat_api_configs').select('id, name, method, url').order('name')
+      .then(({ data }) => setApiConfigs(data || []))
+  }, [])
+
+  const updateParam = (i: number, patch: Partial<ApiToolParam>) =>
+    setParams(params.map((p, k) => k === i ? { ...p, ...patch } : p))
+
   async function handleSave() {
     if (!name.trim()) { setError('Nome obrigatório'); return }
     if (!description.trim()) { setError('Descrição obrigatória'); return }
+    if (toolType === 'api_call' && !apiConfigId) { setError('Selecione a integração (API)'); return }
 
     setLoading(true)
     setError('')
@@ -56,6 +75,12 @@ export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onD
     const config: Record<string, any> = {}
     if (toolType === 'webhook' && webhookUrl.trim()) {
       config.webhook_url = webhookUrl.trim()
+    }
+    if (toolType === 'api_call') {
+      config.api_config_id = apiConfigId
+      config.parameters    = params
+        .filter(p => p.name.trim())
+        .map(p => ({ name: p.name.trim(), type: p.type || 'string', description: p.description || '', required: !!p.required }))
     }
 
     const payload = {
@@ -232,6 +257,61 @@ export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onD
                   placeholder="https://seu-webhook.com/endpoint"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                 />
+              </div>
+            </>
+          )}
+
+          {toolType === 'api_call' && (
+            <>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block font-medium">Integração (API) *</label>
+                <select
+                  value={apiConfigId}
+                  onChange={(e) => setApiConfigId(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                >
+                  <option value="">— Selecione a integração —</option>
+                  {apiConfigs.map(c => <option key={c.id} value={c.id}>{c.name} ({c.method})</option>)}
+                </select>
+                {apiConfigs.length === 0 && (
+                  <p className="text-[11px] text-amber-600 mt-1">Nenhuma integração. Crie em <a href="/apis" className="underline">APIs</a>.</p>
+                )}
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Os parâmetros abaixo viram <code className="bg-gray-100 px-1 rounded">{'{{variables.X}}'}</code> na integração.
+                  Dados do contato já disponíveis: <code className="bg-gray-100 px-1 rounded">{'{{contact.cpf}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{contact.email}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{contact.customer_id}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{contact.telefone}}'}</code>.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block font-medium">Parâmetros que o AI deve coletar</label>
+                {params.length === 0 && <p className="text-[11px] text-gray-400 mb-1">Nenhum parâmetro (a integração usa só os dados do contato).</p>}
+                {params.map((p, i) => (
+                  <div key={i} className="flex items-center gap-1 mb-1">
+                    <input value={p.name} onChange={(e) => updateParam(i, { name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
+                      placeholder="nome" className="w-24 border border-gray-200 rounded px-1.5 py-1 text-[11px] font-mono" />
+                    <select value={p.type} onChange={(e) => updateParam(i, { type: e.target.value as ApiToolParam['type'] })}
+                      className="border border-gray-200 rounded px-1 py-1 text-[11px] bg-white">
+                      <option value="string">texto</option>
+                      <option value="number">número</option>
+                      <option value="boolean">sim/não</option>
+                    </select>
+                    <input value={p.description} onChange={(e) => updateParam(i, { description: e.target.value })}
+                      placeholder="descrição p/ o AI" className="flex-1 border border-gray-200 rounded px-1.5 py-1 text-[11px]" />
+                    <label className="flex items-center gap-1 text-[10px] text-gray-500 shrink-0">
+                      <input type="checkbox" checked={p.required} onChange={(e) => updateParam(i, { required: e.target.checked })} className="accent-emerald-500" />
+                      obrig.
+                    </label>
+                    <button onClick={() => setParams(params.filter((_, k) => k !== i))} className="text-gray-400 hover:text-red-500 shrink-0">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setParams([...params, { name: '', type: 'string', description: '', required: false }])}
+                  className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 mt-1"
+                >
+                  <Plus className="w-3 h-3" /> parâmetro
+                </button>
               </div>
             </>
           )}
