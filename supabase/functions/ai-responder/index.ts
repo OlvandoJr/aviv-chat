@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { executeApiConfig } from '../_shared/apiExec.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -185,7 +186,32 @@ Deno.serve(async (req) => {
 
     // Construir array de tools para OpenAI
     const openAiTools: any[] = []
+    const apiToolFns: Record<string, any> = {}   // nome-da-function → tool (api_call)
     for (const tool of agentTools) {
+      if (tool.tool_type === 'api_call') {
+        const cfg = tool.config || {}
+        let fn = 'api_' + String(tool.name || tool.id).toLowerCase()
+          .normalize('NFD').replace(/[̀-ͯ]/g, '')
+          .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+        while (apiToolFns[fn]) fn += '_'
+        const properties: Record<string, any> = {}
+        const required: string[] = []
+        for (const p of (cfg.parameters || [])) {
+          if (!p?.name) continue
+          properties[p.name] = { type: p.type || 'string', description: p.description || '' }
+          if (p.required) required.push(p.name)
+        }
+        apiToolFns[fn] = tool
+        openAiTools.push({
+          type: 'function',
+          function: {
+            name:        fn,
+            description: tool.description || tool.name || 'Chama uma integração externa.',
+            parameters:  { type: 'object', properties, required },
+          },
+        })
+        continue
+      }
       if (tool.tool_type === 'payment_scheduler') {
         openAiTools.push({
           type: 'function',
@@ -400,7 +426,17 @@ Deno.serve(async (req) => {
             const cpfDigits = normalized.replace(/\D/g, '')
             if (cpfDigits.length >= 11) {
               const found = await fetchBoletoFromSiengeAPI(cpfDigits, contactWaId)
-              if (found) { boletos = [found]; boletoSource = 'sienge' }
+              if (found) {
+                boletos = [found]; boletoSource = 'sienge'
+                if (found.customer_id) {
+                  await supabase.from('chat_contact_attributes').upsert({
+                    contact_id: conv.contact_id, attribute_key: 'sienge_customer_id',
+                    attribute_value: String(found.customer_id), attribute_label: 'ID Cliente Sienge',
+                    captured_in_conversation_id: conversationId, captured_at: new Date().toISOString(),
+                  }, { onConflict: 'contact_id,attribute_key' })
+                  capturedAttrs['sienge_customer_id'] = { value: String(found.customer_id), label: 'ID Cliente Sienge', fieldType: 'text' }
+                }
+              }
             }
           }
         }
@@ -414,7 +450,17 @@ Deno.serve(async (req) => {
             const cpfDigits = captured.value.replace(/\D/g, '')
             if (cpfDigits.length >= 11) {
               const found = await fetchBoletoFromSiengeAPI(cpfDigits, contactWaId)
-              if (found) { boletos = [found]; boletoSource = 'sienge' }
+              if (found) {
+                boletos = [found]; boletoSource = 'sienge'
+                if (found.customer_id) {
+                  await supabase.from('chat_contact_attributes').upsert({
+                    contact_id: conv.contact_id, attribute_key: 'sienge_customer_id',
+                    attribute_value: String(found.customer_id), attribute_label: 'ID Cliente Sienge',
+                    captured_in_conversation_id: conversationId, captured_at: new Date().toISOString(),
+                  }, { onConflict: 'contact_id,attribute_key' })
+                  capturedAttrs['sienge_customer_id'] = { value: String(found.customer_id), label: 'ID Cliente Sienge', fieldType: 'text' }
+                }
+              }
               break
             }
           }
@@ -746,6 +792,32 @@ Deno.serve(async (req) => {
               })
             } else {
               toolResult = JSON.stringify({ sucesso: false, erro: 'Não foi possível gerar a 2ª via agora. Peça para o cliente aguardar ou ofereça atendente.' })
+            }
+          } else if (apiToolFns[toolName]) {
+            const apiTool   = apiToolFns[toolName]
+            const cpfAttr   = Object.values(capturedAttrs).find((a: any) => a.fieldType === 'cpf_cnpj') as any
+            const emailAttr = Object.values(capturedAttrs).find((a: any) => a.fieldType === 'email') as any
+            const contactCtx = {
+              wa_id:       contactWaId,
+              telefone:    contactWaId,
+              cpf:         cpfAttr ? String(cpfAttr.value).replace(/\D/g, '') : '',
+              email:       emailAttr ? String(emailAttr.value) : '',
+              customer_id: (boletos[0] as any)?.customer_id || capturedAttrs['sienge_customer_id']?.value || '',
+            }
+            const { data: apiCfg } = await supabase
+              .from('chat_api_configs').select('*').eq('id', apiTool.config?.api_config_id).maybeSingle()
+            if (!apiCfg) {
+              toolResult = JSON.stringify({ ok: false, erro: 'Integração não configurada.' })
+            } else {
+              const r = await executeApiConfig(apiCfg, { variables: toolArgs, contact: contactCtx })
+              let bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+              if (bodyStr.length > 3000) bodyStr = bodyStr.slice(0, 3000) + '…'
+              toolResult = JSON.stringify({
+                ok: r.ok, status: r.status, resposta: bodyStr,
+                instrucao: r.ok
+                  ? 'Use os dados acima para responder o cliente de forma clara e curta (sem expor JSON).'
+                  : 'A consulta falhou. Informe que houve um problema e ofereça falar com atendente.',
+              })
             }
           }
 

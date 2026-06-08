@@ -1047,7 +1047,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-gray-800 truncate">{t.name}</div>
                         <div className="text-[11px] text-gray-400 truncate">
-                          {t.tool_type === 'payment_scheduler' ? '📅 Agendador de Pagamentos' : '🔗 Webhook'}
+                          {t.tool_type === 'payment_scheduler' ? '📅 Agendador de Pagamentos' : t.tool_type === 'api_call' ? '🔌 Chamar API' : '🔗 Webhook'}
                           {t.api_connection && (
                             <span className="ml-1 text-emerald-600">· {t.api_connection.name}</span>
                           )}

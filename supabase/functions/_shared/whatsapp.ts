@@ -152,12 +152,17 @@ export async function sendTemplateMessage(args: SendTemplateArgs): Promise<SendR
 }
 
 // ── Início de conversa ───────────────────────────────────────────────────────
+// Agente de cobrança (Vivi) — as threads abertas pelos disparos de cobrança ficam com ela,
+// para o roteamento por origem funcionar mesmo com outro agente atendendo a entrada fria.
+export const COBRANCA_AGENT_ID = 'ead82b93-84c8-49bf-98bb-53d395b49ba7'
+
 export async function ensureConversation(
   // deno-lint-ignore no-explicit-any
   admin: any,
   inboxId: string,
   waId: string,
   name?: string,
+  agentId: string | null = COBRANCA_AGENT_ID,
 ): Promise<{ conversationId: string; contactId: string } | null> {
   const { data: contact, error: cErr } = await admin
     .from('chat_contacts')
@@ -179,10 +184,13 @@ export async function ensureConversation(
   if (!conv) {
     const { data: newConv } = await admin
       .from('chat_conversations')
-      .insert({ inbox_id: inboxId, contact_id: contact.id, status: 'open' })
+      .insert({ inbox_id: inboxId, contact_id: contact.id, status: 'open', ...(agentId ? { agent_id: agentId } : {}) })
       .select('id')
       .single()
     conv = newConv
+  } else if (agentId) {
+    // Mantém a thread de cobrança com a Vivi (só preenche se ainda não tem agente)
+    await admin.from('chat_conversations').update({ agent_id: agentId }).eq('id', conv.id).is('agent_id', null)
   }
   if (!conv) return null
   return { conversationId: conv.id, contactId: contact.id }
