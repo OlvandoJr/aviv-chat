@@ -888,11 +888,20 @@ async function transcribeAudio(messageId: string, buffer: ArrayBuffer, mimeType:
   formData.append('model', 'whisper-1')
   formData.append('language', 'pt')
 
-  const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method:  'POST',
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body:    formData,
-  })
+  // Timeout para não travar a função (e estourar 504) se o Whisper pendurar.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 25000)
+  let resp: Response
+  try {
+    resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body:    formData,
+      signal:  controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
   if (!resp.ok) {
     const errBody = await resp.text()
     console.error(`Whisper transcription failed: ${resp.status} — ${errBody}`)
