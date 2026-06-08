@@ -5,6 +5,16 @@
 
 const GRAPH = 'https://graph.facebook.com/v20.0'
 
+// Normaliza um telefone para o formato que o WhatsApp espera (DDI 55 + DDD + número),
+// removendo o "0" de tronco e adicionando o 55 quando vier só com DDD+número.
+export function normalizeWaId(raw: string): string {
+  let d = String(raw || '').replace(/\D/g, '')
+  if (!d) return ''
+  if (d.length === 10 || d.length === 11) d = '55' + d            // veio sem DDI
+  if (d.startsWith('55') && d.length >= 3 && d[2] === '0') d = '55' + d.slice(3)  // remove 0 de tronco
+  return d
+}
+
 export interface InboxCreds { phone_number_id: string; access_token: string }
 
 export interface TemplateRow {
@@ -100,7 +110,7 @@ export async function sendTemplateMessage(args: SendTemplateArgs): Promise<SendR
   const components = buildTemplateComponents(tpl, variables)
   const payload = {
     messaging_product: 'whatsapp',
-    to: toWaId,
+    to: normalizeWaId(toWaId),
     type: 'template',
     template: {
       name: tpl.name,
@@ -164,6 +174,7 @@ export async function ensureConversation(
   name?: string,
   agentId: string | null = COBRANCA_AGENT_ID,
 ): Promise<{ conversationId: string; contactId: string } | null> {
+  waId = normalizeWaId(waId) || waId
   const { data: contact, error: cErr } = await admin
     .from('chat_contacts')
     .upsert({ wa_id: waId, ...(name ? { name } : {}) }, { onConflict: 'wa_id' })
