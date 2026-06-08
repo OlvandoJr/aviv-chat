@@ -171,15 +171,28 @@ async function getSubagentForConv(convId: string, triggerType: string): Promise<
   }
   if (!agentId) return null
 
-  const { data: sub } = await supabase
-    .from('chat_subagents')
-    .select('*')
-    .eq('agent_id', agentId)
-    .eq('trigger_type', triggerType)
-    .eq('is_active', true)
-    .order('sort_order')
-    .limit(1)
-    .maybeSingle()
+  const loadSub = async (aid: string) => {
+    const { data } = await supabase
+      .from('chat_subagents')
+      .select('*')
+      .eq('agent_id', aid)
+      .eq('trigger_type', triggerType)
+      .eq('is_active', true)
+      .order('sort_order')
+      .limit(1)
+      .maybeSingle()
+    return data
+  }
+
+  let sub = await loadSub(agentId)
+
+  // Fallback global: se o agente da conversa (ex.: Contato Inteligente) não tem
+  // subagente para este tipo de mídia, usa o do agente default (Vivi) — a análise
+  // de comprovante é capacidade compartilhada, sem precisar duplicar config.
+  if (!sub) {
+    const { data: def } = await supabase.from('chat_agents').select('id').eq('is_default', true).maybeSingle()
+    if (def?.id && def.id !== agentId) sub = await loadSub(def.id)
+  }
   return sub
 }
 
