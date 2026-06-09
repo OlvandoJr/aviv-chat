@@ -5,6 +5,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * Resolve a URL de exibição de uma mídia do chat. O bucket `chat-media` é PRIVADO:
+ * URLs antigas (`/object/public/chat-media/...`) e novas são roteadas pelo proxy
+ * autenticado `/api/media`, que devolve uma signed URL fresca. URLs externas passam direto.
+ */
+export function mediaSrc(url?: string | null): string {
+  if (!url) return ''
+  const m = url.match(/\/object\/(?:public|sign)\/chat-media\/(.+?)(?:\?|$)/)
+  if (m) return `/api/media?path=${encodeURIComponent(m[1])}`
+  return url
+}
+
 export function formatTime(dateStr: string | null): string {
   if (!dateStr) return ''
   const date = new Date(dateStr)

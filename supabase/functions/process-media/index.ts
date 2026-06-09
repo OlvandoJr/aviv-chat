@@ -88,8 +88,11 @@ Deno.serve(async (req) => {
     const { data: { publicUrl } } = supabase.storage
       .from('chat-media')
       .getPublicUrl(filePath)
+    // URL ASSINADA p/ buscadores externos (OpenAI) — o bucket é privado.
+    const { data: signed } = await supabase.storage.from('chat-media').createSignedUrl(filePath, 3600)
+    const fetchUrl = signed?.signedUrl || publicUrl
 
-    // 4. Atualizar mensagem com URL da mídia
+    // 4. Atualizar mensagem com a URL canônica (renderizada na UI via proxy /api/media)
     await supabase.from('chat_messages').update({ media_url: publicUrl }).eq('id', messageId)
 
     // 5. Processar por tipo (usando subagentes configuráveis)
@@ -106,7 +109,7 @@ Deno.serve(async (req) => {
     } else if (msgType === 'image') {
       try {
         const sub = await getSubagentForConv(convId, 'image')
-        if (sub) await analyzeImage(messageId, convId, contactWaId, publicUrl, sub)
+        if (sub) await analyzeImage(messageId, convId, contactWaId, fetchUrl, sub)
         else console.log('Nenhum subagente de imagem configurado — pulando análise')
       } catch (analysisErr) {
         console.error('Image analysis error (continuing to responder):', analysisErr)
