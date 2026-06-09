@@ -89,6 +89,7 @@ export interface Conversation {
   last_message_preview: string | null
   unread_count:         number
   sector:               string | null
+  receipt_validation:   boolean
   created_at:           string
   updated_at:           string
   // joins

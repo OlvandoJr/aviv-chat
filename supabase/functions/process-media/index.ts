@@ -782,6 +782,11 @@ async function analyzeImage(
     },
   }).eq('id', messageId)
 
+  // Sinaliza a conversa para VALIDAÇÃO DE COMPROVANTE quando o veredito não foi
+  // "100% válido" (e não está pago). Mostra a tag + alimenta o filtro na lista.
+  const needsHuman = siengeStatus !== 'pago' && !/100\s*%?\s*v[aá]lid/i.test(verdict || '')
+  await supabase.from('chat_conversations').update({ receipt_validation: needsHuman }).eq('id', convId)
+
   // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ─────
   const sglMsgId = await resolveSglParcelaId(waId, extractedData)
   await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
@@ -926,6 +931,10 @@ async function analyzePdf(
         validated_at:  new Date().toISOString(),
       },
     }).eq('id', messageId)
+
+    // Sinaliza VALIDAÇÃO DE COMPROVANTE (veredito não "100% válido" e não pago).
+    const needsHuman = siengeStatus !== 'pago' && !/100\s*%?\s*v[aá]lid/i.test(verdict || '')
+    await supabase.from('chat_conversations').update({ receipt_validation: needsHuman }).eq('id', convId)
 
     // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ───
     const sglMsgId = await resolveSglParcelaId(waId, extractedData)
