@@ -37,7 +37,16 @@ export async function POST(req: NextRequest) {
 
   const now = new Date().toISOString()
 
-  if (source === 'sgl') {
+  if (source === 'emitido') {
+    // boletos_emitidos: confirmação manual da baixa do boleto
+    const { error } = await admin
+      .from('boletos_emitidos')
+      .update(undo
+        ? { status: 'aberto', paid_at: null, updated_at: now }
+        : { status: 'pago', paid_at: now, updated_at: now })
+      .eq('id', id)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  } else if (source === 'sgl') {
     // mensagens_cobranca: confirmado pelo comprovante (não há API de baixa no SGL)
     const { error } = await admin
       .from('mensagens_cobranca')
