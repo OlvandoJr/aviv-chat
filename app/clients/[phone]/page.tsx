@@ -12,16 +12,22 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
     .from('vw_central_clientes').select('*').eq('phone_norm', phone).maybeSingle()
   if (!cliente) notFound()
 
-  const [{ data: boletosSienge }, { data: boletosSgl }, { data: reguaLog }] = await Promise.all([
+  const [{ data: boletosEmitidos }, { data: boletosSienge }, { data: boletosSgl }, { data: reguaLog }, { data: comprovantes }] = await Promise.all([
+    supabase.from('vw_boletos_central')
+      .select('emitido_id, customer_name, empreendimento, quadra, unidade_lote, parcela_descricao, due_date, amount, status, paid_at, pdf_path, linha_digitavel')
+      .eq('phone_norm', phone).order('due_date', { ascending: false }).limit(40),
     supabase.from('sienge_boletos')
       .select('id, customer_name, empreendimento, quadra, lote, parcela_descricao, due_date, amount, status, paid_at')
-      .eq('phone_norm', phone).order('due_date', { ascending: false }).limit(40),
+      .eq('phone_norm', phone).order('due_date', { ascending: false }).limit(60),
     supabase.from('mensagens_cobranca')
       .select('id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, status, classificacao, app_dispatched_at, created_at')
-      .eq('phone_norm', phone).order('created_at', { ascending: false }).limit(30),
+      .eq('phone_norm', phone).order('created_at', { ascending: false }).limit(60),
     supabase.from('cobranca_regua_log')
       .select('offset_days, due_date, parcela, status, run_date, created_at')
       .eq('phone_norm', phone).order('run_date', { ascending: false }),
+    supabase.from('vw_comprovantes')
+      .select('message_id, conversation_id, created_at, type, media_url, media_filename, verdict, sienge_status')
+      .eq('phone_norm', phone).order('created_at', { ascending: false }).limit(50),
   ])
 
   // Conversas + mensagens (da conversa mais recente)
@@ -45,15 +51,33 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
     }
   }
 
+  // Janela de 24h da conversa-alvo (para o botão "Encaminhar"): última msg do cliente < 24h
+  let windowOpen = false
+  if (cliente.conversation_id) {
+    const { data: lastIn } = await supabase
+      .from('chat_messages')
+      .select('created_at')
+      .eq('conversation_id', cliente.conversation_id)
+      .eq('direction', 'in')
+      .order('created_at', { ascending: false })
+      .limit(1).maybeSingle()
+    if (lastIn?.created_at) {
+      windowOpen = (Date.now() - new Date(lastIn.created_at).getTime()) < 24 * 60 * 60 * 1000
+    }
+  }
+
   return (
     <div className="max-w-5xl mx-auto px-6 py-8">
       <ClientDetail
         cliente={cliente}
+        boletosEmitidos={boletosEmitidos || []}
         boletosSienge={boletosSienge || []}
         boletosSgl={boletosSgl || []}
         reguaLog={reguaLog || []}
+        comprovantes={comprovantes || []}
         conversations={conversations}
         messages={messages}
+        windowOpen={windowOpen}
       />
     </div>
   )

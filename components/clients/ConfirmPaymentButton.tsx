@@ -6,7 +6,7 @@ import { Check, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface Props {
-  source:  'sienge' | 'sgl'
+  source:  'sienge' | 'sgl' | 'emitido'
   id:      string | number
   /** 'icon' = só o ✓ compacto (painel da conversa); 'full' = botão com texto (Central) */
   variant?: 'icon' | 'full'

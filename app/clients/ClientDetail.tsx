@@ -1,10 +1,11 @@
 'use client'
 
 import Link from 'next/link'
-import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, ExternalLink, Building2, Calendar, DollarSign } from 'lucide-react'
+import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { cn, formatCurrency, formatDate, getInitials, formatHour } from '@/lib/utils'
+import { cn, formatCurrency, getInitials, formatHour } from '@/lib/utils'
 import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
+import BoletoActions        from '@/components/clients/BoletoActions'
 
 const ORIGEM: Record<string, { label: string; cls: string }> = {
   sienge:  { label: 'Sienge', cls: 'bg-blue-100 text-blue-700' },
@@ -20,8 +21,6 @@ function sglAmount(v: string | null) {
 function dt(d?: string | null) { return d ? new Date(d).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : '—' }
 function dtTime(d?: string | null) { return d ? new Date(d).toLocaleString('pt-BR') : '—' }
 
-// Estado de pagamento exibido (dois estados além de vencido/aberto):
-//  PAGO (baixa financeira) · COMPROVANTE RECEBIDO (cliente enviou na conversa)
 const PAGO_ST  = ['pago', 'comprovante_confirmado', 'baixado', 'pago_confirmado', 'quitado']
 const COMPR_ST = ['comprovante_recebido', 'comprovante', 'em_validacao']
 function estado(status: string | null, dueDate: string | null, paidAt?: string | null) {
@@ -34,23 +33,49 @@ function estado(status: string | null, dueDate: string | null, paidAt?: string |
 }
 const statusRank = (s: string | null) => PAGO_ST.includes((s || '').toLowerCase()) ? 3 : COMPR_ST.includes((s || '').toLowerCase()) ? 2 : 1
 
-export default function ClientDetail({ cliente, boletosSienge, boletosSgl, reguaLog, conversations, messages }: {
-  cliente: any; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; conversations: any[]; messages: any[]
+// Veredito do comprovante → badge curto
+function verdictBadge(v: string | null) {
+  const t = (v || '').toLowerCase()
+  if (/100\s*%/.test(t))       return { label: '100% válido', cls: 'bg-emerald-100 text-emerald-700' }
+  if (/80\s*%/.test(t))        return { label: '80% válido',  cls: 'bg-blue-100 text-blue-700' }
+  if (/50\s*%/.test(t))        return { label: '50% válido',  cls: 'bg-amber-100 text-amber-700' }
+  if (/negad/.test(t))         return { label: 'Negado',      cls: 'bg-red-100 text-red-600' }
+  return { label: 'Analisado', cls: 'bg-gray-100 text-gray-500' }
+}
+
+export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, boletosSgl, reguaLog, comprovantes, conversations, messages, windowOpen }: {
+  cliente: any; boletosEmitidos: any[]; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; comprovantes: any[]; conversations: any[]; messages: any[]; windowOpen: boolean
 }) {
   const o = ORIGEM[cliente.origem] || ORIGEM.contato
 
-  // Deduplica SGL por parcela (mantém o registro com status mais avançado / mais recente)
-  const sglMap: Record<string, any> = {}
-  for (const b of boletosSgl) {
-    const k = b.contasreceberparcela || String(b.id)
-    const prev = sglMap[k]
-    if (!prev || statusRank(b.status) > statusRank(prev.status) ||
-        (statusRank(b.status) === statusRank(prev.status) && new Date(b.created_at) > new Date(prev.created_at))) sglMap[k] = b
-  }
-  const sglBoletos = Object.values(sglMap).sort((a: any, b: any) =>
-    new Date(b.contasrecebervencimento || 0).getTime() - new Date(a.contasrecebervencimento || 0).getTime())
+  // ── Resumo de PARCELAS (Sienge + SGL) — não lista uma a uma ────────────────
+  type Parc = { label: string; amount: number; pago: boolean }
+  const parcelas: Parc[] = [
+    ...boletosSienge.map((b) => ({
+      label: b.parcela_descricao || 'Parcela',
+      amount: Number(b.amount) || 0,
+      pago: statusRank(b.status) >= 3 || !!b.paid_at,
+    })),
+    // SGL deduplicado por parcela (status mais avançado)
+    ...Object.values((() => {
+      const m: Record<string, any> = {}
+      for (const b of boletosSgl) {
+        const k = b.contasreceberparcela || String(b.id)
+        if (!m[k] || statusRank(b.status) > statusRank(m[k].status)) m[k] = b
+      }
+      return m
+    })()).map((b: any) => ({
+      label: b.contasreceberparcela || 'Parcela',
+      amount: sglAmount(b.contasrecebervalor),
+      pago: statusRank(b.status) >= 3,
+    })),
+  ]
+  const parcAbertas = parcelas.filter((p) => !p.pago)
+  const totalAberto = parcAbertas.reduce((s, p) => s + p.amount, 0)
+  const parcPagas   = parcelas.length - parcAbertas.length
+  const tipos       = [...new Set(parcelas.map((p) => p.label).filter(Boolean))]
 
-  // Timeline de cobrança (régua Sienge + SGL)
+  // ── Timeline de cobrança ───────────────────────────────────────────────────
   const timeline = [
     ...reguaLog.map((r) => ({ when: r.run_date, canal: 'Régua Sienge', detalhe: `D${r.offset_days >= 0 ? '+' : ''}${r.offset_days} · venc ${dt(r.due_date)}`, status: r.status })),
     ...boletosSgl.filter((m) => m.app_dispatched_at).map((m) => ({ when: m.app_dispatched_at, canal: 'SGL', detalhe: m.classificacao || '—', status: m.status })),
@@ -80,7 +105,6 @@ export default function ClientDetail({ cliente, boletosSienge, boletosSgl, regua
               <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{cliente.telefone}</span>
               {cliente.cpf && <span>CPF {cliente.cpf}</span>}
             </div>
-            {/* Ações (preparado p/ fase 2) */}
             <div className="flex items-center gap-2 mt-3">
               {cliente.conversation_id ? (
                 <Link href={`/conversations/${cliente.conversation_id}`}
@@ -90,71 +114,68 @@ export default function ClientDetail({ cliente, boletosSienge, boletosSgl, regua
               ) : (
                 <span className="text-xs text-gray-400">sem conversa</span>
               )}
-              <button disabled title="Em breve" className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-gray-100 text-gray-400 cursor-not-allowed">
-                <Send className="w-3.5 h-3.5" /> Enviar template
-              </button>
-              <button disabled title="Em breve" className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-gray-100 text-gray-400 cursor-not-allowed">
-                <CalendarClock className="w-3.5 h-3.5" /> Adicionar à régua
-              </button>
             </div>
           </div>
         </div>
       </div>
 
       <div className="grid md:grid-cols-2 gap-5">
-        {/* Boletos */}
+        {/* Boletos (de verdade — boletos_emitidos) */}
         <section className="bg-white border border-gray-100 rounded-xl p-5">
           <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 mb-3"><FileText className="w-4 h-4 text-gray-400" /> Boletos</h2>
-          {boletosSienge.length === 0 && sglBoletos.length === 0 && <p className="text-xs text-gray-400">Nenhum boleto.</p>}
-          <div className="space-y-2">
-            {boletosSienge.map((b, i) => {
-              const e = estado(b.status, b.due_date, b.paid_at)
-              return (
-                <div key={'s'+i} className="rounded-xl border border-gray-100 p-3 bg-gray-50 space-y-1.5">
-                  {b.empreendimento && <p className="text-[10px] font-medium text-gray-500 uppercase truncate">{b.empreendimento}{b.quadra ? ` · ${b.quadra}` : ''}{b.lote ? ` · ${b.lote}` : ''}</p>}
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-gray-800 truncate">{b.parcela_descricao || 'Parcela'}</span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', e.cls)}>{e.label}</span>
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600">SIENGE</span>
+          {boletosEmitidos.length === 0 ? (
+            <p className="text-xs text-gray-400">Nenhum boleto emitido no banco para este cliente.</p>
+          ) : (
+            <div className="space-y-2">
+              {boletosEmitidos.map((b) => {
+                const e = estado(b.status, b.due_date, b.paid_at)
+                return (
+                  <div key={b.emitido_id} className="rounded-xl border border-gray-100 p-3 bg-gray-50 space-y-1.5">
+                    {b.empreendimento && <p className="text-[10px] font-medium text-gray-500 uppercase truncate">{b.empreendimento}{b.quadra ? ` · Q${b.quadra}` : ''}{b.unidade_lote ? ` · L${b.unidade_lote}` : ''}</p>}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-gray-800 truncate">{b.parcela_descricao || `Boleto venc. ${dt(b.due_date)}`}</span>
+                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0', e.cls)}>{e.label}</span>
                     </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.due_date)}</span>
+                      {b.amount != null && <span className="flex items-center gap-1 font-semibold text-gray-800"><DollarSign className="w-3 h-3 text-gray-400" />{formatCurrency(Number(b.amount))}</span>}
+                    </div>
+                    {b.paid_at && <p className="text-[10px] text-emerald-600">Baixa em {dt(b.paid_at)}</p>}
+                    <BoletoActions emitidoId={b.emitido_id} hasPdf={!!b.pdf_path} conversationId={cliente.conversation_id || null} windowOpen={windowOpen} />
+                    {e.label !== 'PAGO' && (
+                      <div className="pt-0.5"><ConfirmPaymentButton source="emitido" id={b.emitido_id} /></div>
+                    )}
                   </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.due_date)}</span>
-                    {b.amount != null && <span className="flex items-center gap-1 font-semibold text-gray-800"><DollarSign className="w-3 h-3 text-gray-400" />{formatCurrency(Number(b.amount))}</span>}
-                  </div>
-                  {b.paid_at && <p className="text-[10px] text-emerald-600">Baixa em {dt(b.paid_at)}</p>}
-                  {e.label !== 'PAGO' && b.id && (
-                    <div className="pt-1"><ConfirmPaymentButton source="sienge" id={b.id} /></div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Resumo de parcelas */}
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <h3 className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-2"><Layers className="w-3.5 h-3.5 text-gray-400" /> Resumo de parcelas</h3>
+            {parcelas.length === 0 ? (
+              <p className="text-xs text-gray-400">Sem parcelas registradas.</p>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  <span className="px-2 py-1 rounded-lg bg-gray-50 border border-gray-100 text-gray-700">
+                    <strong>{parcAbertas.length}</strong> em aberto
+                  </span>
+                  <span className="px-2 py-1 rounded-lg bg-gray-50 border border-gray-100 text-gray-700">
+                    Total: <strong>{formatCurrency(totalAberto)}</strong>
+                  </span>
+                  {parcPagas > 0 && (
+                    <span className="px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-100 text-emerald-700">
+                      <strong>{parcPagas}</strong> paga(s)
+                    </span>
                   )}
                 </div>
-              )
-            })}
-            {sglBoletos.map((b: any) => {
-              const e = estado(b.status, b.contasrecebervencimento)
-              return (
-                <div key={'g'+b.id} className="rounded-xl border border-orange-100 p-3 bg-orange-50/50 space-y-1.5">
-                  {b.unidadeempreendimento && <p className="text-[10px] font-medium text-orange-700 uppercase truncate flex items-center gap-1"><Building2 className="w-3 h-3" />{b.unidadeempreendimento}</p>}
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-gray-800 truncate">{b.contasreceberparcela || 'Parcela'}</span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', e.cls)}>{e.label}</span>
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-600">SGL</span>
-                    </div>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.contasrecebervencimento)}</span>
-                    {sglAmount(b.contasrecebervalor) > 0 && <span className="font-semibold text-gray-800">{formatCurrency(sglAmount(b.contasrecebervalor))}</span>}
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    {b.linkboleto
-                      ? <a href={b.linkboleto} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-orange-600 hover:underline"><ExternalLink className="w-3 h-3" />Ver boleto</a>
-                      : <span />}
-                    {e.label !== 'PAGO' && <ConfirmPaymentButton source="sgl" id={b.id} />}
-                  </div>
-                </div>
-              )
-            })}
+                {tipos.length > 0 && (
+                  <p className="text-[11px] text-gray-500">Parcelas: {tipos.slice(0, 8).join(', ')}{tipos.length > 8 ? '…' : ''}</p>
+                )}
+              </div>
+            )}
           </div>
         </section>
 
@@ -174,6 +195,43 @@ export default function ClientDetail({ cliente, boletosSienge, boletosSgl, regua
               ))}
             </div>
           )}
+
+          {/* Histórico de comprovantes */}
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <h3 className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-2"><FileCheck2 className="w-3.5 h-3.5 text-gray-400" /> Comprovantes enviados</h3>
+            {comprovantes.length === 0 ? (
+              <p className="text-xs text-gray-400">Nenhum comprovante recebido.</p>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {comprovantes.map((c) => {
+                  const vb = verdictBadge(c.verdict)
+                  return (
+                    <div key={c.message_id} className="flex items-start gap-2 text-xs">
+                      <FileCheck2 className="w-3.5 h-3.5 text-violet-400 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-gray-500">{dtTime(c.created_at)}</span>
+                          <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', vb.cls)}>{vb.label}</span>
+                          {c.sienge_status === 'pago' && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">PAGO</span>}
+                        </div>
+                        {c.verdict && <p className="text-[11px] text-gray-500 line-clamp-2">{c.verdict}</p>}
+                        <div className="flex items-center gap-3 mt-0.5">
+                          {c.media_url && (
+                            <a href={c.media_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-emerald-600 hover:underline">
+                              <ExternalLink className="w-3 h-3" /> Ver arquivo
+                            </a>
+                          )}
+                          {c.conversation_id && (
+                            <Link href={`/conversations/${c.conversation_id}`} className="text-[11px] text-gray-400 hover:text-gray-600">na conversa →</Link>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </section>
       </div>
 
