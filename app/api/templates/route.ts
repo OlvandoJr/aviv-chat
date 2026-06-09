@@ -21,14 +21,25 @@ async function requireAdminOrManager() {
   return user
 }
 
+// Qualquer atendente logado (para LISTAR templates e poder enviá-los na conversa).
+async function requireAttendant() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data: me } = await supabase.from('chat_attendants').select('id').eq('id', user.id).maybeSingle()
+  return me ? user : null
+}
+
 // ── GET — listar templates (opcionalmente sincronizar status) ─────────────────
 export async function GET(req: NextRequest) {
-  const user = await requireAdminOrManager()
-  if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
-
   const { searchParams } = new URL(req.url)
   const inboxId = searchParams.get('inboxId')
   const sync    = searchParams.get('sync') === '1'
+
+  // Sincronizar (consulta a Meta + grava) é restrito a admin/manager.
+  // Apenas listar é liberado para qualquer atendente (precisa enviar template na conversa).
+  const user = sync ? await requireAdminOrManager() : await requireAttendant()
+  if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
   // ── Buscar templates do banco ─────────────────────────────────────────────
   let dbQuery = admin
