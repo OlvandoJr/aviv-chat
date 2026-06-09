@@ -299,16 +299,18 @@ Deno.serve(async (req) => {
         function: {
           name: 'enviar_segunda_via_boleto',
           description:
-            'Gera a 2ª via do boleto escolhido, envia o PDF ao cliente como documento e retorna a linha digitável. ' +
-            'Use os IDs (receivable_bill_id e installment_id) do boleto exatamente como aparecem na lista "BOLETOS CADASTRADOS" do contexto. ' +
+            'Envia ao cliente o boleto (PDF como documento) e retorna a linha digitável para pagamento. ' +
+            'Identifique o boleto escolhido pela sua VENCIMENTO (campo vencimento_id, formato AAAA-MM-DD) exatamente como aparece na lista "BOLETOS CADASTRADOS" do contexto. ' +
             'Se houver MAIS DE UM boleto em aberto, primeiro liste-os (vencimento e valor) e pergunte qual o cliente deseja — só chame esta função após o cliente escolher. ' +
-            'Se houver apenas UM, pode chamar diretamente quando o cliente pedir o boleto.',
+            'Se houver apenas UM, pode chamar diretamente quando o cliente pedir o boleto. ' +
+            'NUNCA ofereça pagar parcelas futuras/antecipação por aqui — para isso, escale para atendente.',
           parameters: {
             type: 'object',
-            required: ['receivable_bill_id', 'installment_id'],
+            required: [],
             properties: {
-              receivable_bill_id: { type: 'number', description: 'ID do título (receivable_bill_id) do boleto escolhido.' },
-              installment_id:     { type: 'number', description: 'ID da parcela (installment_id) do boleto escolhido.' },
+              vencimento:         { type: 'string', description: 'Vencimento do boleto escolhido no formato AAAA-MM-DD (campo vencimento_id da lista). Use SEMPRE que possível.' },
+              receivable_bill_id: { type: 'number', description: 'Opcional — ID do título Sienge, se a lista exibir [IDs: ...].' },
+              installment_id:     { type: 'number', description: 'Opcional — ID da parcela Sienge, se a lista exibir [IDs: ...].' },
             },
           },
         },
@@ -368,15 +370,29 @@ Deno.serve(async (req) => {
     let boletoSource        = ''   // 'sienge' | 'sgl'
 
     if (includeBoletos) {
-      const { data } = await supabase
-        .from('sienge_boletos')
-        .select('parcela_descricao, due_date, amount, status, receivable_bill_id, installment_id')
-        .eq('phone_norm', normalizePhone(contactWaId))   // comparação normalizada
-        .not('status', 'in', '("pago","cancelado")')
+      // Fonte PRIMÁRIA: boletos EMITIDOS no banco (lote de 2ª via) — valor real (com
+      // juros/multa) + linha digitável + PDF no Storage. Sienge vira só fallback.
+      const { data: emit } = await supabase
+        .from('vw_boleto_chat')
+        .select('emitido_id, client_id, customer_name, customer_cpf, parcela_descricao, due_date, amount, status, linha_digitavel, pdf_path, receivable_bill_id, installment_id')
+        .eq('phone_norm', normalizePhone(contactWaId))
         .order('due_date', { ascending: true })
         .limit(10)
-      boletos = data || []
-      if (boletos.length > 0) boletoSource = 'sienge'
+      if (emit && emit.length > 0) {
+        boletos = emit.map((b: any) => ({ ...b, customer_id: b.client_id, source: 'emitido' }))
+        boletoSource = 'emitido'
+      } else {
+        // Fallback: sienge_boletos (telefone sem boleto emitido carregado)
+        const { data } = await supabase
+          .from('sienge_boletos')
+          .select('parcela_descricao, due_date, amount, status, receivable_bill_id, installment_id')
+          .eq('phone_norm', normalizePhone(contactWaId))   // comparação normalizada
+          .not('status', 'in', '("pago","cancelado")')
+          .order('due_date', { ascending: true })
+          .limit(10)
+        boletos = data || []
+        if (boletos.length > 0) boletoSource = 'sienge'
+      }
     }
 
     // ── 5b. Campos a capturar (contact attribute defs) ────────────────────────
@@ -545,12 +561,13 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Boletos (Sienge ou SGL)
+    // Boletos (emitido / Sienge / SGL)
     if (boletos.length > 0) {
-      const sourceLabel = boletoSource === 'sgl' ? 'SGL' : 'Sienge'
+      const sourceLabel = boletoSource === 'sgl' ? 'SGL' : boletoSource === 'emitido' ? 'Banco' : 'Sienge'
       customerContext += `\nBOLETOS CADASTRADOS (${sourceLabel}):\n`
 
       for (const b of boletos) {
+        const vIso    = b.due_date ? String(b.due_date).slice(0, 10) : ''
         const dueDate = new Date(b.due_date).toLocaleDateString('pt-BR')
         const amount  = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(b.amount || 0)
         const statusLabel =
@@ -560,10 +577,12 @@ Deno.serve(async (req) => {
           b.status === 'cancelado'            ? '❌ Cancelado'            :
                                                '🔵 Em aberto'
 
-        // IDs para a IA acionar a ferramenta de 2ª via (boletos do Sienge)
-        const ids = (b.receivable_bill_id && b.installment_id)
-          ? ` [IDs: receivable_bill_id=${b.receivable_bill_id}, installment_id=${b.installment_id}]`
-          : ''
+        // Identificador para a IA acionar a 2ª via: emitido → vencimento; Sienge → IDs
+        const ids = boletoSource === 'emitido'
+          ? ` [vencimento_id=${vIso}]`
+          : (b.receivable_bill_id && b.installment_id)
+            ? ` [IDs: receivable_bill_id=${b.receivable_bill_id}, installment_id=${b.installment_id}]`
+            : ''
         customerContext += `- ${b.parcela_descricao || 'Parcela'}: ${amount} | Vencimento: ${dueDate} | ${statusLabel}${ids}\n`
 
         // Incluir link do boleto no contexto (SGL sempre tem link)
@@ -573,7 +592,26 @@ Deno.serve(async (req) => {
       }
 
       // Instrução de uso conforme a origem do boleto
-      if (boletoSource === 'sienge') {
+      if (boletoSource === 'emitido') {
+        customerContext += boletos.length > 1
+          ? '\nHá MAIS DE UM boleto em aberto. Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja. Após a escolha, chame enviar_segunda_via_boleto com o vencimento_id correspondente (AAAA-MM-DD). O sistema já tem o PDF e a linha digitável no banco — não invente valores.\n'
+          : '\nQuando o cliente pedir o boleto, chame enviar_segunda_via_boleto com o vencimento_id deste boleto (AAAA-MM-DD). O sistema já tem o PDF e a linha digitável no banco.\n'
+        customerContext += 'IMPORTANTE: ofereça SOMENTE o(s) boleto(s) acima (o do mês carregado). NÃO ofereça pagar parcelas futuras nem antecipação. Se o cliente quiser ANTECIPAR/QUITAR parcelas futuras, NÃO tente resolver — diga que vai encaminhar para um atendente e use ESCALAR_HUMANO.\n'
+
+        // ── Gate de identidade (Fase 4) ──────────────────────────────────────
+        // recentTpl = o disparo partiu de nós (template nas últimas 24h) → cliente já conhecido.
+        // Sem template (mensagem avulsa) → confirmar nome completo + CPF ANTES de enviar o boleto.
+        if (!recentTpl) {
+          const confName = (boletos[0] as any)?.customer_name || ''
+          const confCpf  = (boletos[0] as any)?.customer_cpf || ''
+          customerContext += '\nVERIFICAÇÃO DE IDENTIDADE (mensagem avulsa — o cliente nos procurou): ' +
+            'ANTES de enviar qualquer boleto, peça ao cliente o NOME COMPLETO e o CPF e confira com os dados do cadastro. ' +
+            'NÃO envie o boleto enquanto não confirmar. NUNCA revele o nome ou o CPF do cadastro — o cliente é que deve informar. ' +
+            'Se o nome informado bater com o cadastro (ignore acentos/maiúsculas; aceite nome contido) e, havendo CPF no cadastro, o CPF também bater, prossiga e envie o boleto. ' +
+            'Se não bater após 2 tentativas, não envie e ofereça atendente (ESCALAR_HUMANO).\n' +
+            `DADOS DO CADASTRO PARA CONFERÊNCIA (NÃO revele ao cliente): nome="${confName}"${confCpf ? `, cpf="${confCpf}"` : ' (CPF não disponível — confira só o nome)'}.\n`
+        }
+      } else if (boletoSource === 'sienge') {
         customerContext += boletos.length > 1
           ? '\nHá MAIS DE UM boleto em aberto. Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja. Após a escolha, chame a função enviar_segunda_via_boleto com os IDs correspondentes.\n'
           : '\nQuando o cliente pedir o boleto, chame a função enviar_segunda_via_boleto com os IDs deste boleto.\n'
@@ -787,24 +825,10 @@ Deno.serve(async (req) => {
           } else if (toolName === 'atualizar_conversa') {
             toolResult = await handleAtualizarConversa(toolArgs, conversationId, updateDefs)
           } else if (toolName === 'enviar_segunda_via_boleto') {
-            const via = await siengeSegundaVia(toolArgs.receivable_bill_id, toolArgs.installment_id)
-            if (via && (via.url || via.digitavel)) {
-              let pdfOk = false
-              if (via.url) {
-                pdfOk = await enviarBoletoPDF(
-                  phoneNumberId, accessToken, contactWaId, conversationId,
-                  via.url, `Boleto ${toolArgs.receivable_bill_id}-${toolArgs.installment_id}`,
-                  agent?.name, agent?.avatar_emoji,
-                )
-              }
-              toolResult = JSON.stringify({
-                sucesso: true, pdf_enviado: pdfOk,
-                linha_digitavel: via.digitavel || null,
-                instrucao: 'Confirme ao cliente que o boleto foi enviado e informe a linha digitável (se houver) para pagamento.',
-              })
-            } else {
-              toolResult = JSON.stringify({ sucesso: false, erro: 'Não foi possível gerar a 2ª via agora. Peça para o cliente aguardar ou ofereça atendente.' })
-            }
+            toolResult = await handleEnviarBoleto(
+              toolArgs, boletos, phoneNumberId, accessToken, contactWaId, conversationId,
+              agent?.name, agent?.avatar_emoji,
+            )
           } else if (apiToolFns[toolName]) {
             const apiTool   = apiToolFns[toolName]
             const cpfAttr   = Object.values(capturedAttrs).find((a: any) => a.fieldType === 'cpf_cnpj') as any
@@ -1439,6 +1463,73 @@ async function runWriteOpsText(datasources: any[], baseVars: Record<string, stri
       console.error('runWriteOpsText error:', e)
     }
   }
+}
+
+// ── Normaliza "20/06/2026" | "2026-06-20" → "2026-06-20" ──────────────────────
+function toISODateStr(v: unknown): string {
+  const s = String(v ?? '').trim()
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}`
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/)
+  if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` }
+  return s
+}
+
+// ── Envia o boleto ao cliente: PRIMEIRO do banco (boleto emitido: PDF no Storage
+// + linha digitável), e só usa o Sienge (2ª via) como fallback quando não há
+// boleto emitido carregado. Resolve o alvo por vencimento ou pelos IDs do Sienge.
+async function handleEnviarBoleto(
+  args: any, boletos: any[],
+  phoneNumberId: string, accessToken: string, waId: string, conversationId: string,
+  agentName?: string | null, agentEmoji?: string | null,
+): Promise<string> {
+  // 1. Resolver qual boleto o cliente escolheu
+  let target: any = null
+  if (args.receivable_bill_id && args.installment_id) {
+    target = boletos.find((b) =>
+      Number(b.receivable_bill_id) === Number(args.receivable_bill_id) &&
+      Number(b.installment_id) === Number(args.installment_id))
+  }
+  if (!target && args.vencimento) {
+    const v = toISODateStr(args.vencimento)
+    target = boletos.find((b) => String(b.due_date).slice(0, 10) === v)
+  }
+  if (!target && boletos.length === 1) target = boletos[0]
+  if (!target) {
+    return JSON.stringify({ sucesso: false, erro: 'Não identifiquei qual boleto. Liste os boletos (vencimento e valor) e peça para o cliente escolher.' })
+  }
+
+  const parcela = target.parcela_descricao || 'Boleto'
+
+  // 2. Boleto EMITIDO no banco → PDF do Storage + linha digitável (sem tocar no Sienge)
+  if (target.pdf_path || target.linha_digitavel) {
+    let pdfOk = false
+    if (target.pdf_path) {
+      const { data: signed } = await supabase.storage.from('boletos').createSignedUrl(target.pdf_path, 600)
+      if (signed?.signedUrl) {
+        pdfOk = await enviarBoletoPDF(phoneNumberId, accessToken, waId, conversationId, signed.signedUrl, parcela, agentName, agentEmoji)
+      }
+    }
+    return JSON.stringify({
+      sucesso: true, pdf_enviado: pdfOk,
+      linha_digitavel: target.linha_digitavel || null,
+      instrucao: 'Confirme ao cliente que o boleto foi enviado em PDF e informe a linha digitável para pagamento.',
+    })
+  }
+
+  // 3. Fallback Sienge (cliente sem boleto emitido carregado)
+  if (target.receivable_bill_id && target.installment_id) {
+    const via = await siengeSegundaVia(target.receivable_bill_id, target.installment_id)
+    if (via && (via.url || via.digitavel)) {
+      let pdfOk = false
+      if (via.url) pdfOk = await enviarBoletoPDF(phoneNumberId, accessToken, waId, conversationId, via.url, parcela, agentName, agentEmoji)
+      return JSON.stringify({
+        sucesso: true, pdf_enviado: pdfOk,
+        linha_digitavel: via.digitavel || null,
+        instrucao: 'Confirme ao cliente que o boleto foi enviado e informe a linha digitável para pagamento.',
+      })
+    }
+  }
+  return JSON.stringify({ sucesso: false, erro: 'Não foi possível enviar o boleto agora. Ofereça atendente.' })
 }
 
 // ── 2ª via do boleto no Sienge (link expira ~5min; linha digitável não) ───────
