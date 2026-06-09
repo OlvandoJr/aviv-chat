@@ -47,9 +47,12 @@ export default function ConversationActions({ conversation, attendants, onUpdate
 
   async function updateStatus(status: 'open' | 'resolved' | 'archived') {
     setLoading(true)
+    // Resolver/arquivar encerra também a pendência de validação de comprovante.
+    const patch: Record<string, unknown> = { status }
+    if (status !== 'open') patch.receipt_validation = false
     const { data } = await supabase
       .from('chat_conversations')
-      .update({ status })
+      .update(patch)
       .eq('id', conversation.id)
       .select('*, contact:chat_contacts(*), assignee:chat_attendants(id,name,avatar_url)')
       .single()
@@ -75,9 +78,11 @@ export default function ConversationActions({ conversation, attendants, onUpdate
   async function updateHandledBy(handledBy: HandledBy) {
     setLoading(true)
     const patch: Record<string, unknown> = { handled_by: handledBy }
-    // Ao assumir como humano, atribuir automaticamente ao atendente logado
-    if (handledBy === 'human' && currentAttendantId) {
-      patch.assignee_id = currentAttendantId
+    // Ao assumir como humano, atribuir automaticamente ao atendente logado e
+    // encerrar a pendência de validação de comprovante (o atendente está cuidando).
+    if (handledBy === 'human') {
+      patch.receipt_validation = false
+      if (currentAttendantId) patch.assignee_id = currentAttendantId
     }
     const { data } = await supabase
       .from('chat_conversations')
