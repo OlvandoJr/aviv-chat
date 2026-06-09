@@ -398,6 +398,48 @@ async function interpretAudio(messageId: string, sub: any) {
 const BOLETO_SELECT =
   'id, receivable_bill_id, installment_id, customer_name, customer_cpf, due_date, amount, parcela_descricao'
 
+// ── Boleto EMITIDO (banco) — fonte PRIMÁRIA de validação ──────────────────────
+// Usa o valor REAL do boleto (com juros/multa), não o valor da parcela do Sienge.
+// Assim o valor do comprovante bate com o do boleto e some a divergência falsa.
+function mapEmitido(b: any) {
+  return {
+    id:                 null,                 // sem id local de sienge_boletos garantido
+    emitido_id:         b.emitido_id,
+    client_id:          b.client_id,
+    receivable_bill_id: b.receivable_bill_id,
+    installment_id:     b.installment_id,
+    customer_name:      b.customer_name,
+    customer_cpf:       b.customer_cpf,
+    parcela_descricao:  b.parcela_descricao,
+    amount:             b.amount,             // VALOR REAL DO BOLETO
+    due_date:           b.due_date,
+    _source:            'emitido',
+  }
+}
+
+async function getBoletoEmitido(waId: string, cpfCnpj?: string): Promise<any | null> {
+  const sel = 'emitido_id, client_id, customer_name, customer_cpf, parcela_descricao, due_date, amount, receivable_bill_id, installment_id'
+  // 1. Por telefone
+  const { data: byPhone } = await supabase
+    .from('vw_boleto_chat').select(sel)
+    .eq('phone_norm', normalizePhone(waId))
+    .order('due_date', { ascending: true }).limit(1).maybeSingle()
+  if (byPhone) { console.log('Boleto emitido por telefone:', byPhone.parcela_descricao); return mapEmitido(byPhone) }
+
+  // 2. Por CPF (quando o comprovante traz CPF e há match Sienge na view)
+  if (cpfCnpj) {
+    const d = cpfCnpj.replace(/\D/g, '')
+    if (d.length >= 11) {
+      const { data: byCpf } = await supabase
+        .from('vw_boleto_chat').select(sel)
+        .eq('customer_cpf', d)
+        .order('due_date', { ascending: true }).limit(1).maybeSingle()
+      if (byCpf) { console.log('Boleto emitido por CPF:', byCpf.parcela_descricao); return mapEmitido(byCpf) }
+    }
+  }
+  return null
+}
+
 async function getSiengeBoleto(waId: string, cpfCnpj?: string): Promise<any | null> {
   const baseQuery = () =>
     supabase
@@ -533,13 +575,18 @@ function buildSiengeContext(boleto: any): string {
   const amount  = (boleto.amount != null)
     ? new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(boleto.amount)
     : 'N/A'
+  const origemLabel = boleto._source === 'emitido' ? 'Banco (boleto emitido)' : origem
   return [
-    `DADOS DO BOLETO NA BASE (${origem}):`,
+    `DADOS DO BOLETO NA BASE (${origemLabel}):`,
     `- Pagador: ${boleto.customer_name || 'N/A'}`,
     `- CPF/CNPJ cadastrado: ${boleto.customer_cpf || 'N/A'}`,
     `- Parcela: ${boleto.parcela_descricao || 'N/A'}`,
     `- Valor esperado: ${amount}`,
     `- Vencimento: ${dueDate}`,
+    '',
+    'REGRAS DE CONFERÊNCIA:',
+    '- VALOR: este "Valor esperado" já é o valor REAL do boleto (com juros/multa). Considere PAGO quando o valor do comprovante for igual ou MAIOR que o esperado (acréscimos são normais). Pequenas diferenças para mais NÃO são divergência.',
+    '- PAGADOR: aceite nome PARCIAL/CONTIDO e ignore acentos/maiúsculas (ex.: "MARIA DA SILVA SANTOS" casa com "MARIA DA SILVA"). Terceiro pagando (nome diferente) é comum e NÃO invalida o pagamento — registre, mas não trate como divergência grave.',
   ].join('\n')
 }
 
@@ -596,7 +643,12 @@ async function updateBoletoDB(
     ...(siengeStatus === 'pago' ? { paid_at: new Date().toISOString() } : {}),
   }
 
-  // Comprovante registrado só quando há ID local do boleto.
+  // 1. Boleto EMITIDO (banco): marca o status em boletos_emitidos pela chave emitido.
+  if (boleto.emitido_id) {
+    await supabase.from('boletos_emitidos').update(patch).eq('id', boleto.emitido_id)
+  }
+
+  // 2. Comprovante registrado só quando há ID local do boleto Sienge.
   if (boleto.id) {
     try {
       await supabase.from('sienge_comprovantes').insert({
@@ -610,12 +662,12 @@ async function updateBoletoDB(
     } catch (_) { /* best-effort */ }
     await supabase.from('sienge_boletos').update(patch).eq('id', boleto.id)
   } else if (boleto.receivable_bill_id && boleto.installment_id) {
-    // Fallback (boleto veio da view unificada, sem id local): casa pela chave do Sienge.
+    // Fallback (boleto veio da view emitida/unificada, sem id local): casa pela chave do Sienge.
     await supabase.from('sienge_boletos').update(patch)
       .eq('receivable_bill_id', boleto.receivable_bill_id)
       .eq('installment_id', boleto.installment_id)
-  } else {
-    console.warn('updateBoletoDB: sem id nem receivable_bill_id/installment_id — pulando')
+  } else if (!boleto.emitido_id) {
+    console.warn('updateBoletoDB: sem id, emitido_id nem receivable_bill_id/installment_id — pulando')
   }
 }
 
@@ -670,14 +722,16 @@ async function analyzeImage(
   }
 
   // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ───────
-  let boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+  // Fonte PRIMÁRIA: boleto EMITIDO (valor real → sem divergência). Não consulta o
+  // Sienge (preserva cota): o "pago" vem do webhook. Sienge/SGL só como fallback.
+  let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj)
   let siengeStatus: 'pago' | 'pendente' | null = null
-  if (boleto) {
-    siengeStatus = await checkSiengePayment(boleto)
-  } else {
-    boleto = await getBoletoUnificado(waId)   // cliente legado SGL / fallback por telefone
+  if (!boleto) {
+    boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+    if (boleto) siengeStatus = await checkSiengePayment(boleto)
+    else boleto = await getBoletoUnificado(waId)   // cliente legado SGL / fallback por telefone
   }
-  // Marca o boleto (comprovante_recebido/pago) por id OU por receivable_bill_id+installment_id
+  // Marca o boleto (comprovante_recebido/pago) em boletos_emitidos e/ou sienge_boletos
   if (boleto) await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'image')
 
   // ── Passo 2: validação completa com veredicto ─────────────────────────────
@@ -811,14 +865,15 @@ async function analyzePdf(
     }
 
     // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ──
-    let boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+    // Fonte PRIMÁRIA: boleto EMITIDO (valor real → sem divergência). Sienge/SGL só fallback.
+    let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj)
     let siengeStatus: 'pago' | 'pendente' | null = null
-    if (boleto) {
-      siengeStatus = await checkSiengePayment(boleto)
-    } else {
-      boleto = await getBoletoUnificado(waId)   // cliente legado SGL / fallback por telefone
+    if (!boleto) {
+      boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
+      if (boleto) siengeStatus = await checkSiengePayment(boleto)
+      else boleto = await getBoletoUnificado(waId)   // cliente legado SGL / fallback por telefone
     }
-    // Marca o boleto (comprovante_recebido/pago) por id OU receivable_bill_id+installment_id
+    // Marca o boleto (comprovante_recebido/pago) em boletos_emitidos e/ou sienge_boletos
     if (boleto) await updateBoletoDB(boleto, siengeStatus, messageId, waId, 'document')
 
     // ── Passo 2: validação completa com veredicto (GPT-4o lê o PDF) ─────
