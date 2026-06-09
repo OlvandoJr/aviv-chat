@@ -74,12 +74,15 @@ export async function POST(req: NextRequest) {
   if (!pdfResp.ok) return NextResponse.json({ error: 'Falha ao baixar o PDF' }, { status: 500 })
   const pdfBytes = new Uint8Array(await pdfResp.arrayBuffer())
 
-  // 2) Subir em chat-media (público → URL permanente p/ o WhatsApp e o histórico)
+  // 2) Subir em chat-media (privado). URL canônica p/ histórico (renderizada via proxy)
+  //    + signed URL p/ a Meta buscar o documento.
   const path = `chat/${conversationId}/boleto-${Date.now()}.pdf`
   const { error: upErr } = await admin.storage
     .from('chat-media').upload(path, pdfBytes, { contentType: 'application/pdf', upsert: true })
   if (upErr) return NextResponse.json({ error: 'Falha ao preparar o arquivo' }, { status: 500 })
   const { data: { publicUrl } } = admin.storage.from('chat-media').getPublicUrl(path)
+  const { data: signedSend } = await admin.storage.from('chat-media').createSignedUrl(path, 3600)
+  const sendLink = signedSend?.signedUrl || publicUrl
 
   // 3) Enviar como documento via WhatsApp
   const vencBR = b.vencimento ? new Date(b.vencimento).toLocaleDateString('pt-BR', { timeZone: 'UTC' }) : ''
@@ -91,7 +94,7 @@ export async function POST(req: NextRequest) {
       headers: { Authorization: `Bearer ${inbox.access_token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messaging_product: 'whatsapp', to: toWaId, type: 'document',
-        document: { link: publicUrl, filename },
+        document: { link: sendLink, filename },
       }),
     }
   )

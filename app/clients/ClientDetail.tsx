@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { cn, formatCurrency, getInitials, formatHour } from '@/lib/utils'
+import { cn, formatCurrency, getInitials, formatHour, mediaSrc } from '@/lib/utils'
 import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
 import BoletoActions        from '@/components/clients/BoletoActions'
 
@@ -217,7 +217,7 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
                         {c.verdict && <p className="text-[11px] text-gray-500 line-clamp-2">{c.verdict}</p>}
                         <div className="flex items-center gap-3 mt-0.5">
                           {c.media_url && (
-                            <a href={c.media_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-emerald-600 hover:underline">
+                            <a href={mediaSrc(c.media_url)} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[11px] text-emerald-600 hover:underline">
                               <ExternalLink className="w-3 h-3" /> Ver arquivo
                             </a>
                           )}

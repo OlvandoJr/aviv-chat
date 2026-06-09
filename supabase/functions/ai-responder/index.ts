@@ -1569,6 +1569,9 @@ async function enviarBoletoPDF(
       .upload(path, pdfBytes, { contentType: 'application/pdf', upsert: true })
     if (upErr) { console.error('Storage upload PDF erro:', upErr.message); return false }
     const { data: { publicUrl } } = supabase.storage.from('chat-media').getPublicUrl(path)
+    // URL ASSINADA p/ a Meta buscar o documento (bucket privado).
+    const { data: signed } = await supabase.storage.from('chat-media').createSignedUrl(path, 3600)
+    const sendLink = signed?.signedUrl || publicUrl
 
     // 3. Enviar como documento via WhatsApp (por link → não precisa reupload)
     const filename = `Boleto ${parcela}.pdf`.replace(/[\/\\]/g, '-')
@@ -1581,7 +1584,7 @@ async function enviarBoletoPDF(
           messaging_product: 'whatsapp',
           to:                waId,
           type:              'document',
-          document:          { link: publicUrl, filename },
+          document:          { link: sendLink, filename },
         }),
       }
     )

@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { formatHour, formatDaySeparator, dayKey, formatCurrency, getInitials, cn } from '@/lib/utils'
+import { formatHour, formatDaySeparator, dayKey, formatCurrency, getInitials, cn, mediaSrc } from '@/lib/utils'
 import MessageInput from './MessageInput'
 import ContactPanel from './ContactPanel'
 import ConversationActions from './ConversationActions'
@@ -406,10 +406,10 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
         <div>
           {msg.media_url ? (
             <img
-              src={msg.media_url}
+              src={mediaSrc(msg.media_url)}
               alt="Imagem"
               className="rounded-lg max-w-full max-h-64 object-cover cursor-zoom-in"
-              onClick={() => setLightboxSrc(msg.media_url!)}
+              onClick={() => setLightboxSrc(mediaSrc(msg.media_url))}
             />
           ) : (
             <div className={cn('flex items-center gap-2 py-1 text-sm', isOut ? 'text-emerald-100' : 'text-gray-400')}>
@@ -426,10 +426,10 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
         <div>
           {msg.media_url ? (
             <img
-              src={msg.media_url}
+              src={mediaSrc(msg.media_url)}
               alt="Figurinha"
               className="w-28 h-28 object-contain cursor-zoom-in"
-              onClick={() => setLightboxSrc(msg.media_url!)}
+              onClick={() => setLightboxSrc(mediaSrc(msg.media_url))}
             />
           ) : (
             <span className="text-3xl">🖼</span>
@@ -440,7 +440,7 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
         <div>
           {msg.media_url ? (
             <video
-              src={msg.media_url}
+              src={mediaSrc(msg.media_url)}
               controls
               className="rounded-lg max-w-full max-h-64"
               preload="metadata"
@@ -460,7 +460,7 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
         <div className="flex items-center gap-2 py-1 min-w-[180px]">
           <Mic className="w-3.5 h-3.5 shrink-0 opacity-60" />
           {msg.media_url ? (
-            <AudioPlayer src={msg.media_url} isOut={isOut} />
+            <AudioPlayer src={mediaSrc(msg.media_url)} isOut={isOut} />
           ) : (
             <span className={cn('text-sm', isOut ? 'text-emerald-100' : 'text-gray-400')}>Áudio</span>
           )}
@@ -593,7 +593,7 @@ function DocumentCard({ message: msg, isOut }: { message: Message; isOut: boolea
       </div>
       {msg.media_url && (
         <a
-          href={msg.media_url}
+          href={mediaSrc(msg.media_url)}
           target="_blank"
           rel="noreferrer"
           download={msg.media_filename || true}
