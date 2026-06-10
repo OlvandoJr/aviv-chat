@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Debounce do bot ("espera, junta e responde").**
+  - `ai-responder` espera 8s e, se chegou mensagem nova do cliente (contagem de `in`), aborta — só a última invocação responde, lendo o histórico inteiro. Acaba a resposta múltipla a mensagens em sequência. Também re-checa `handled_by` pós-espera.
 - **2026-06-09 — Troca de senha obrigatória no 1º acesso.**
   - Criar usuário e resetar senha marcam `must_change_password` no metadata do Auth.
   - `middleware.ts` redireciona para **`/change-password`** enquanto a flag estiver ligada; a tela define a senha e limpa a flag.

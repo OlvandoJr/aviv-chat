@@ -90,6 +90,37 @@ Deno.serve(async (req) => {
       })
     }
 
+    // ── 1a. DEBOUNCE ("espera, junta e responde") ─────────────────────────────
+    // Cada mensagem do cliente aciona o ai-responder. Esperamos DEBOUNCE_MS e, se
+    // tiver chegado mensagem NOVA do cliente nesse intervalo, abortamos — a invocação
+    // da mensagem mais recente é que responde, lendo todo o histórico de uma vez.
+    // (last-writer-wins; usa CONTAGEM de mensagens 'in' pra ser imune à precisão do timestamp.)
+    {
+      const DEBOUNCE_MS = 8000
+      const inCount = async () => {
+        const { count } = await supabase
+          .from('chat_messages').select('id', { count: 'exact', head: true })
+          .eq('conversation_id', conversationId).eq('direction', 'in')
+        return count || 0
+      }
+      const before = await inCount()
+      await new Promise((r) => setTimeout(r, DEBOUNCE_MS))
+      const after = await inCount()
+      if (after > before) {
+        return new Response(JSON.stringify({ skipped: true, reason: 'debounced (newer message arrived)' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      // Humano pode ter assumido durante a espera → não responder por cima dele.
+      const { data: fresh } = await supabase
+        .from('chat_conversations').select('handled_by').eq('id', conversationId).single()
+      if (fresh && (fresh.handled_by === 'human' || fresh.handled_by === 'pending_human')) {
+        return new Response(JSON.stringify({ skipped: true, reason: 'human took over during debounce' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     // ── 1b. Credenciais da inbox ──────────────────────────────────────────────
     let phoneNumberId = WA_PHONE_NUMBER_ID
     let accessToken   = WA_ACCESS_TOKEN
