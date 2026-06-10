@@ -14,6 +14,7 @@ export default async function AttendantsPage() {
   const { data: attendants } = await supabase
     .from('chat_attendants')
     .select('*')
+    .is('deleted_at', null)
     .order('created_at', { ascending: false })
 
   return (
@@ -25,6 +26,7 @@ export default async function AttendantsPage() {
       <AttendantsClient
         initialAttendants={attendants || []}
         currentUserRole={(me?.role as any) || 'agent'}
+        currentUserId={user!.id}
       />
     </div>
   )

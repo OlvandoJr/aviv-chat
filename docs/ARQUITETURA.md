@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Usuários: excluir + resetar senha.**
+  - Excluir = soft-delete (`chat_attendants.deleted_at`, migration 036) + revoga login no Auth; preserva histórico. Se há conversas abertas, pede **transferir** (mesma equipe) ou **arquivar**.
+  - Resetar senha gera senha forte e exibe uma vez. `DELETE`/`PATCH(action)` em `app/api/attendants`.
 - **2026-06-09 — Segurança + resiliência (auditoria sênior).**
   - `chat-media` virou **bucket privado**; mídia/comprovantes servidos por proxy autenticado `/api/media` (signed URL); Meta/OpenAI recebem signed URLs direto.
   - **`auto-return-bot`** (cron horário): conversa com humano que deixou o cliente esperando 4–22h volta ao bot, que responde/re-escala.
