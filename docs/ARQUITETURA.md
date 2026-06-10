@@ -197,6 +197,7 @@ scripts/
 | **`import-boletos`** | (legado n8n) | Recebia boletos extraídos do Drive. **Substituído** por `/api/boletos/import`. Mantido como fallback. |
 | **`sienge-webhook`** | Sienge (push) | `RECEIPT_PROCESSED`/`UPDATE_…` → marca `sienge_boletos.status='pago'` + `paid_at`; auditoria em `sienge_webhook_events`. Protegido por `SIENGE_WEBHOOK_TOKEN`. |
 | **`test-api-call`** | App (`/apis`) | Testa uma `chat_api_configs` (usa `_shared/apiExec.ts`). |
+| **`auto-return-bot`** | Cron (horário, min 15) | Devolve ao bot conversas em que o atendente assumiu e deixou o cliente esperando entre **4h e 22h** (dentro da janela da Meta) → flip `handled_by='bot'` + invoca `ai-responder` (responde ou re-escala). Evita conversa abandonada morrer em silêncio. |
 | **`analyze-comprovante`**, **`send-reminders`**, **`list-models`** | App/cron | Utilitários de apoio. |
 
 **Compartilhados (`_shared/`):**
@@ -349,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Segurança + resiliência (auditoria sênior).**
+  - `chat-media` virou **bucket privado**; mídia/comprovantes servidos por proxy autenticado `/api/media` (signed URL); Meta/OpenAI recebem signed URLs direto.
+  - **`auto-return-bot`** (cron horário): conversa com humano que deixou o cliente esperando 4–22h volta ao bot, que responde/re-escala.
 - **2026-06-09 — Boletos: banco como fonte de verdade + Central reformulada.**
   - Upload do ZIP no sistema (`/boletos` + `/api/boletos/import`, `pdf-parse@1.1.1`) — fim do Drive/n8n. Bucket `boletos`.
   - Views `vw_boleto_chat`, `vw_boletos_central`, `vw_comprovantes`; `vw_clientes_boletos` passou a usar o valor do boleto (fix do disparo de campanha que saía com valor da parcela).
