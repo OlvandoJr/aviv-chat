@@ -1,7 +1,7 @@
 'use client'
 
 import { useState }                 from 'react'
-import { Plus, UserCheck, UserX, Pencil, X, Check } from 'lucide-react'
+import { Plus, UserCheck, UserX, Pencil, X, Check, Trash2, KeyRound, Copy, Loader2, AlertTriangle } from 'lucide-react'
 import { Button }                   from '@/components/ui/button'
 import { Input }                    from '@/components/ui/input'
 import { Badge }                    from '@/components/ui/badge'
@@ -27,6 +27,18 @@ const ROLE_BADGE: Record<AttendantRole, string> = {
 interface Props {
   initialAttendants: Attendant[]
   currentUserRole:   AttendantRole
+  currentUserId:     string
+}
+
+type TeamOption = { id: string; name: string; sector: string | null }
+type DeleteState = {
+  attendant: Attendant
+  openCount: number
+  team: TeamOption[]
+  mode: 'transfer' | 'archive'
+  transferTo: string
+  loading: boolean
+  error: string | null
 }
 
 type CreateForm = {
@@ -38,13 +50,74 @@ type EditForm = {
   name: string; sector: string; role: AttendantRole; is_active: boolean
 }
 
-export default function AttendantsClient({ initialAttendants, currentUserRole }: Props) {
+export default function AttendantsClient({ initialAttendants, currentUserRole, currentUserId }: Props) {
   const [attendants, setAttendants] = useState(initialAttendants)
   const [showForm,   setShowForm]   = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState<string | null>(null)
   const [editingId,  setEditingId]  = useState<string | null>(null)
   const [editForm,   setEditForm]   = useState<EditForm | null>(null)
+  const [del,        setDel]        = useState<DeleteState | null>(null)
+  const [resetInfo,  setResetInfo]  = useState<{ name: string; password: string } | null>(null)
+  const [busyId,     setBusyId]     = useState<string | null>(null)
+
+  // Quem pode excluir/resetar este usuário: nunca a si mesmo; gerente só mexe em agentes.
+  function canManage(a: Attendant): boolean {
+    if (a.id === currentUserId) return false
+    if (currentUserRole === 'manager') return a.role === 'agent'
+    return currentUserRole === 'admin'
+  }
+
+  // ── Reset de senha ───────────────────────────────────────────────────────────
+  async function handleReset(a: Attendant) {
+    if (!window.confirm(`Gerar uma nova senha para ${a.name}? A senha atual deixará de funcionar.`)) return
+    setBusyId(a.id); setError(null)
+    try {
+      const resp = await fetch('/api/attendants', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: a.id, action: 'reset_password' }),
+      })
+      const result = await resp.json()
+      if (!resp.ok) { setError(result.error || 'Erro ao resetar senha'); return }
+      setResetInfo({ name: a.name || a.email, password: result.password })
+    } finally { setBusyId(null) }
+  }
+
+  // ── Excluir: 1ª chamada sem ação → se houver conversas abertas, abre o modal ──
+  async function startDelete(a: Attendant) {
+    if (!window.confirm(`Excluir ${a.name}? O acesso será revogado. O histórico de mensagens é preservado.`)) return
+    setBusyId(a.id); setError(null)
+    try {
+      const resp = await fetch('/api/attendants', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: a.id }),
+      })
+      const result = await resp.json()
+      if (resp.ok && result.needsAction) {
+        setDel({ attendant: a, openCount: result.openCount, team: result.team || [], mode: 'transfer', transferTo: result.team?.[0]?.id || '', loading: false, error: null })
+        return
+      }
+      if (!resp.ok) { setError(result.error || 'Erro ao excluir'); return }
+      setAttendants((prev) => prev.filter((x) => x.id !== a.id))
+    } finally { setBusyId(null) }
+  }
+
+  async function confirmDelete() {
+    if (!del) return
+    setDel({ ...del, loading: true, error: null })
+    const payload: any = { id: del.attendant.id, action: del.mode }
+    if (del.mode === 'transfer') {
+      if (!del.transferTo) { setDel({ ...del, loading: false, error: 'Selecione para quem transferir.' }); return }
+      payload.transferTo = del.transferTo
+    }
+    const resp = await fetch('/api/attendants', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    })
+    const result = await resp.json()
+    if (!resp.ok) { setDel({ ...del, loading: false, error: result.error || 'Erro ao excluir' }); return }
+    setAttendants((prev) => prev.filter((x) => x.id !== del.attendant.id))
+    setDel(null)
+  }
 
   const [form, setForm] = useState<CreateForm>({
     name: '', email: '', password: '', role: 'agent', sector: '',
@@ -122,6 +195,95 @@ export default function AttendantsClient({ initialAttendants, currentUserRole }:
 
   return (
     <div className="space-y-4">
+      {/* ── Modal: excluir com conversas abertas ─────────────────────────────── */}
+      {del && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !del.loading && setDel(null)}>
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">Excluir {del.attendant.name}</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Este usuário tem <strong>{del.openCount}</strong> conversa(s) em aberto. Escolha o que fazer com elas antes de excluir.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className={`flex items-start gap-2 rounded-xl border p-3 cursor-pointer ${del.mode === 'transfer' ? 'border-emerald-300 bg-emerald-50/50' : 'border-gray-200'}`}>
+                <input type="radio" checked={del.mode === 'transfer'} onChange={() => setDel({ ...del, mode: 'transfer' })} className="mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800">Transferir para outro usuário</p>
+                  {del.team.length === 0 ? (
+                    <p className="text-[11px] text-amber-600 mt-1">Nenhum usuário disponível para transferência.</p>
+                  ) : (
+                    <select
+                      value={del.transferTo}
+                      onChange={(e) => setDel({ ...del, transferTo: e.target.value })}
+                      disabled={del.mode !== 'transfer'}
+                      className="mt-2 w-full h-8 rounded-md border border-gray-200 bg-white px-2 text-sm disabled:opacity-50"
+                    >
+                      {del.team.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}{t.sector ? ` · ${t.sector}` : ''}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </label>
+
+              <label className={`flex items-start gap-2 rounded-xl border p-3 cursor-pointer ${del.mode === 'archive' ? 'border-emerald-300 bg-emerald-50/50' : 'border-gray-200'}`}>
+                <input type="radio" checked={del.mode === 'archive'} onChange={() => setDel({ ...del, mode: 'archive' })} className="mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Arquivar as conversas</p>
+                  <p className="text-[11px] text-gray-500">As conversas em aberto serão arquivadas.</p>
+                </div>
+              </label>
+            </div>
+
+            {del.error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{del.error}</p>}
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setDel(null)} disabled={del.loading}>Cancelar</Button>
+              <Button
+                size="sm"
+                onClick={confirmDelete}
+                disabled={del.loading || (del.mode === 'transfer' && !del.transferTo)}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                {del.loading ? 'Excluindo...' : 'Excluir usuário'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: nova senha gerada ─────────────────────────────────────────── */}
+      {resetInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setResetInfo(null)}>
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-amber-500" />
+              <h3 className="text-sm font-semibold text-gray-900">Nova senha de {resetInfo.name}</h3>
+            </div>
+            <p className="text-xs text-gray-500">Copie e envie ao usuário agora — ela <strong>não será exibida novamente</strong>.</p>
+            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+              <code className="flex-1 text-sm font-mono text-gray-900 select-all">{resetInfo.password}</code>
+              <button
+                onClick={() => navigator.clipboard?.writeText(resetInfo.password)}
+                className="p-1 rounded text-gray-400 hover:text-gray-700" title="Copiar"
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex justify-end">
+              <Button size="sm" onClick={() => setResetInfo(null)}>Fechar</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Botão adicionar */}
       <div className="flex justify-end">
         <Button onClick={() => setShowForm(!showForm)} size="sm">
@@ -276,6 +438,26 @@ export default function AttendantsClient({ initialAttendants, currentUserRole }:
                     >
                       {a.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
                     </button>
+                    {canManage(a) && (
+                      <>
+                        <button
+                          onClick={() => handleReset(a)}
+                          disabled={busyId === a.id}
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-amber-600 hover:bg-amber-50 transition-colors disabled:opacity-50"
+                          title="Resetar senha"
+                        >
+                          {busyId === a.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => startDelete(a)}
+                          disabled={busyId === a.id}
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+                          title="Excluir usuário"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               )

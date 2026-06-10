@@ -72,8 +72,16 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão para editar usuários' }, { status: 403 })
   }
 
-  const { id, name, sector, role, is_active } = await req.json()
+  const { id, name, sector, role, is_active, action } = await req.json()
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+
+  // ── Reset de senha: gera nova senha forte e devolve para exibir ─────────────
+  if (action === 'reset_password') {
+    const pwd = genPassword()
+    const { error: pErr } = await admin.auth.admin.updateUserById(id, { password: pwd })
+    if (pErr) return NextResponse.json({ error: pErr.message }, { status: 400 })
+    return NextResponse.json({ ok: true, password: pwd })
+  }
 
   // Gerente não pode mudar role para admin ou manager
   if (caller.role === 'manager' && role && role !== 'agent') {
@@ -96,4 +104,91 @@ export async function PATCH(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
   return NextResponse.json({ attendant })
+}
+
+// ── DELETE — excluir usuário (soft-delete + revoga login) ─────────────────────
+// Body: { id, action?, transferTo? }
+//  - sem action: se houver conversas ABERTAS atribuídas, retorna { needsAction, openCount, team }
+//  - action='transfer' + transferTo: reatribui as abertas; action='archive': arquiva as abertas
+export async function DELETE(req: NextRequest) {
+  const caller = await getCallerRole()
+  if (!caller) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+  if (caller.role !== 'admin' && caller.role !== 'manager') {
+    return NextResponse.json({ error: 'Sem permissão para excluir usuários' }, { status: 403 })
+  }
+
+  const { id, action, transferTo } = await req.json()
+  if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+  if (id === caller.userId) {
+    return NextResponse.json({ error: 'Você não pode excluir o próprio usuário.' }, { status: 400 })
+  }
+
+  const { data: target } = await admin
+    .from('chat_attendants').select('id, name, role, sector').eq('id', id).single()
+  if (!target) return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 })
+
+  // Gerente só exclui Atendentes
+  if (caller.role === 'manager' && target.role !== 'agent') {
+    return NextResponse.json({ error: 'Gerentes podem excluir apenas Atendentes' }, { status: 403 })
+  }
+
+  // Conversas ABERTAS atribuídas a este usuário
+  const { count: openCount } = await admin
+    .from('chat_conversations')
+    .select('id', { count: 'exact', head: true })
+    .eq('assignee_id', id).eq('status', 'open')
+
+  if ((openCount || 0) > 0 && action !== 'transfer' && action !== 'archive') {
+    // Opções de transferência: ativos do MESMO setor (fallback: todos ativos)
+    let team: any[] = []
+    if (target.sector) {
+      const { data } = await admin.from('chat_attendants')
+        .select('id, name, sector').eq('is_active', true).is('deleted_at', null)
+        .eq('sector', target.sector).neq('id', id)
+      team = data || []
+    }
+    if (team.length === 0) {
+      const { data } = await admin.from('chat_attendants')
+        .select('id, name, sector').eq('is_active', true).is('deleted_at', null).neq('id', id)
+      team = data || []
+    }
+    return NextResponse.json({ needsAction: true, openCount, team })
+  }
+
+  // Tratar as conversas abertas conforme a ação
+  if ((openCount || 0) > 0) {
+    if (action === 'transfer') {
+      if (!transferTo) return NextResponse.json({ error: 'Selecione para quem transferir' }, { status: 400 })
+      const { error: tErr } = await admin.from('chat_conversations')
+        .update({ assignee_id: transferTo })
+        .eq('assignee_id', id).eq('status', 'open')
+      if (tErr) return NextResponse.json({ error: tErr.message }, { status: 400 })
+    } else if (action === 'archive') {
+      const { error: aErr } = await admin.from('chat_conversations')
+        .update({ status: 'archived' })
+        .eq('assignee_id', id).eq('status', 'open')
+      if (aErr) return NextResponse.json({ error: aErr.message }, { status: 400 })
+    }
+  }
+
+  // Soft-delete (preserva histórico) + revoga o login no Auth (libera o e-mail)
+  const { error: dErr } = await admin.from('chat_attendants')
+    .update({ deleted_at: new Date().toISOString(), is_active: false }).eq('id', id)
+  if (dErr) return NextResponse.json({ error: dErr.message }, { status: 400 })
+
+  await admin.auth.admin.deleteUser(id).catch(() => { /* best-effort: login revogado */ })
+
+  return NextResponse.json({ ok: true })
+}
+
+// Senha forte e legível (sem caracteres ambíguos)
+function genPassword(): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+  const lower = 'abcdefghijkmnpqrstuvwxyz'
+  const dig   = '23456789'
+  const all   = upper + lower + dig
+  const rnd   = (set: string) => set[Math.floor(Math.random() * set.length)]
+  let p = rnd(upper) + rnd(lower) + rnd(dig) + '@'
+  for (let i = 0; i < 8; i++) p += rnd(all)
+  return p
 }
