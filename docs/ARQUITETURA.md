@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Troca de senha obrigatória no 1º acesso.**
+  - Criar usuário e resetar senha marcam `must_change_password` no metadata do Auth.
+  - `middleware.ts` redireciona para **`/change-password`** enquanto a flag estiver ligada; a tela define a senha e limpa a flag.
 - **2026-06-09 — Usuários: excluir + resetar senha.**
   - Excluir = soft-delete (`chat_attendants.deleted_at`, migration 036) + revoga login no Auth; preserva histórico. Se há conversas abertas, pede **transferir** (mesma equipe) ou **arquivar**.
   - Resetar senha gera senha forte e exibe uma vez. `DELETE`/`PATCH(action)` em `app/api/attendants`.
