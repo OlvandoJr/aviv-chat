@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
     email,
     password,
     email_confirm: true,
+    user_metadata: { must_change_password: true },   // troca obrigatória no 1º acesso
   })
   if (authError || !authData.user) {
     return NextResponse.json({ error: authError?.message || 'Erro ao criar usuário' }, { status: 400 })
@@ -78,7 +79,10 @@ export async function PATCH(req: NextRequest) {
   // ── Reset de senha: gera nova senha forte e devolve para exibir ─────────────
   if (action === 'reset_password') {
     const pwd = genPassword()
-    const { error: pErr } = await admin.auth.admin.updateUserById(id, { password: pwd })
+    const { error: pErr } = await admin.auth.admin.updateUserById(id, {
+      password: pwd,
+      user_metadata: { must_change_password: true },   // força nova troca no próximo acesso
+    })
     if (pErr) return NextResponse.json({ error: pErr.message }, { status: 400 })
     return NextResponse.json({ ok: true, password: pwd })
   }
