@@ -413,16 +413,25 @@ Deno.serve(async (req) => {
         boletos = emit.map((b: any) => ({ ...b, customer_id: b.client_id, source: 'emitido' }))
         boletoSource = 'emitido'
       } else {
-        // Fallback: sienge_boletos (telefone sem boleto emitido carregado)
-        const { data } = await supabase
-          .from('sienge_boletos')
-          .select('parcela_descricao, due_date, amount, status, receivable_bill_id, installment_id')
-          .eq('phone_norm', normalizePhone(contactWaId))   // comparação normalizada
-          .not('status', 'in', '("pago","cancelado")')
-          .order('due_date', { ascending: true })
-          .limit(10)
-        boletos = data || []
-        if (boletos.length > 0) boletoSource = 'sienge'
+        // Sem boleto emitido → tenta SGL (boleto com LINK real) ANTES das parcelas
+        // Sienge. Cliente pode estar nas duas bases; sienge_boletos são só PARCELAS
+        // (sem boleto gerado) e a 2ª via via Sienge falha — o SGL tem link de verdade.
+        const sgl = await loadSglBoletos(contactWaId)
+        if (sgl.length > 0) {
+          boletos = sgl
+          boletoSource = 'sgl'
+        } else {
+          // Último recurso: parcelas Sienge (2ª via via API, pode não ter boleto gerado)
+          const { data } = await supabase
+            .from('sienge_boletos')
+            .select('parcela_descricao, due_date, amount, status, receivable_bill_id, installment_id')
+            .eq('phone_norm', normalizePhone(contactWaId))
+            .not('status', 'in', '("pago","cancelado")')
+            .order('due_date', { ascending: true })
+            .limit(10)
+          boletos = data || []
+          if (boletos.length > 0) boletoSource = 'sienge'
+        }
       }
     }
 
@@ -526,55 +535,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 5c. Fallback SGL: mensagens_cobranca (quando Sienge não retornou) ─────
-    // NÃO modifica o esquema da tabela — apenas leitura + UPDATE de status quando necessário.
-    let sglBoletos: any[] = []
-
-    if (boletos.length === 0 && contactWaId) {
-      const sglCols =
-        'id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, ' +
-        'unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, ' +
-        'contasrecebervalor, linkboleto, status, created_at'
-
-      // Busca por telefone normalizado (cobre formatos com/sem 9º dígito, DDI, 0 no DDD)
-      const { data: sglRows } = await supabase
-        .from('mensagens_cobranca')
-        .select(sglCols)
-        .eq('phone_norm', normalizePhone(contactWaId))
-        .order('created_at', { ascending: false })
-        .limit(5)
-
-      sglBoletos = sglRows || []
-
-      // Fallback: telefone exato (caso algum registro antigo não normalize)
-      if (sglBoletos.length === 0) {
-        const { data: exact } = await supabase
-          .from('mensagens_cobranca')
-          .select(sglCols)
-          .eq('phone', contactWaId)
-          .order('created_at', { ascending: false })
-          .limit(5)
-        sglBoletos = exact || []
-      }
-
-      if (sglBoletos.length > 0) {
-        boletoSource = 'sgl'
-        console.log(`SGL boleto found for ${contactWaId}: ${sglBoletos.length} registro(s)`)
-        // Converter para formato compatível com o contexto do bot
-        boletos = sglBoletos.map(b => ({
-          parcela_descricao: [
-            b.contasreceberparcela,
-            b.unidadeempreendimento,
-            [b.unidadequadraandar, b.unidadeloteapartamento].filter(Boolean).join(' — '),
-          ].filter(Boolean).join(' | '),
-          due_date:   b.contasrecebervencimento,
-          amount:     parseSglAmount(b.contasrecebervalor),
-          status:     mapSglStatus(b.status),
-          link_boleto: b.linkboleto,   // campo extra — só existe em SGL
-          source:     'sgl',
-        }))
-      }
-    }
+    // (5c) SGL agora é tentado no bloco 5, ANTES das parcelas Sienge — ver loadSglBoletos.
 
     // ── 6. Construir contexto do cliente ──────────────────────────────────────
     const customerName = (contact?.name as string) || 'Cliente'
@@ -1051,6 +1012,40 @@ function parseSglAmount(value: string | null): number {
   if (!value) return 0
   // Remove separadores de milhar (.) e substitui vírgula decimal por ponto
   return parseFloat(value.replace(/\./g, '').replace(',', '.')) || 0
+}
+
+// ── Carrega o(s) boleto(s) SGL (mensagens_cobranca) do cliente, deduplicado por ──
+// parcela. Boleto SGL tem LINK real de pagamento → preferido sobre parcelas Sienge.
+async function loadSglBoletos(waId: string): Promise<any[]> {
+  if (!waId) return []
+  const cols = 'id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, status, created_at'
+  let { data } = await supabase.from('mensagens_cobranca').select(cols)
+    .eq('phone_norm', normalizePhone(waId)).order('created_at', { ascending: false }).limit(20)
+  let rows = data || []
+  if (rows.length === 0) {
+    const { data: exact } = await supabase.from('mensagens_cobranca').select(cols)
+      .eq('phone', waId).order('created_at', { ascending: false }).limit(20)
+    rows = exact || []
+  }
+  if (rows.length === 0) return []
+  const seen = new Set<string>()
+  const uniq: any[] = []
+  for (const b of rows) {
+    const k = b.contasreceberparcela || String(b.id)
+    if (seen.has(k)) continue
+    seen.add(k); uniq.push(b)
+  }
+  return uniq.slice(0, 10).map((b: any) => ({
+    parcela_descricao: [
+      b.contasreceberparcela, b.unidadeempreendimento,
+      [b.unidadequadraandar, b.unidadeloteapartamento].filter(Boolean).join(' — '),
+    ].filter(Boolean).join(' | '),
+    due_date:    b.contasrecebervencimento,
+    amount:      parseSglAmount(b.contasrecebervalor),
+    status:      mapSglStatus(b.status),
+    link_boleto: b.linkboleto,
+    source:      'sgl',
+  }))
 }
 
 // ── Mapear status SGL para o padrão interno ───────────────────────────────────
