@@ -350,6 +350,11 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-11 — Régua: disparo "no dia do carregamento".**
+  - Flag na régua (`/regua`): liga um passo especial (sempre o **Disparo 1**, sem o campo "Dias do vencimento") que cobra o cliente **no mesmo dia em que o boleto entra no sistema** (upload do ZIP ou captura via `sienge-webhook`).
+  - Schema: `cobranca_regua_step.on_load` (migration 042) + `vw_cobranca_boletos.loaded_date` (data BRT de `boletos_emitidos.created_at`; upsert não muda `created_at` → re-upload não redispara).
+  - Edge `cobranca-regua`: passo `on_load` mira `loaded_date = hoje` e o horário é "**a partir de**" — cron horário roda o passo em toda passada com hora >= `send_time` (boleto que entra à tarde dispara no mesmo dia), e a UNIQUE do log deduplica 1 envio por boleto (`offset_days=999` é sentinela desses passos).
+  - API `POST/PATCH /api/regua` + `preview` aceitam `onLoad`; preview mostra "N boleto(s) carregado(s) hoje".
 - **2026-06-11 — Captura automática do boleto Sienge (`PAYMENT_SLIP_REGISTERED`).**
   - `sienge-webhook` ganhou `handlePaymentSlip`: ao receber o evento de boleto/carnê registrado (gated SÓ pelo header `x-sienge-event`, p/ não colidir com `RECEIPT_PROCESSED`), resolve `client_id`+`vencimento`+`valor` (`sienge_boletos` → fallback Sienge 1x) → busca a 2ª via (`fetchSegundaVia`, novo helper em `_shared/sienge.ts`: `payment-slip-notification` → `urlReport`+`digitableNumber`) → baixa o PDF → bucket `boletos` (`{client_id}/{venc}.pdf`) → **upsert idempotente** em `boletos_emitidos` `(client_id,vencimento)` com `lote='sienge-webhook'`, preservando status se já `pago/cancelado`. Convive com o ZIP (o que chegar por último vence). Boletos que não vêm no ZIP entram sozinhos, com PDF + linha digitável. **Sem migration.**
   - **Hook registrado via API** (`POST /hooks`, id `560c92b8`) usando edge function one-off (credenciais Sienge são secrets do edge; função apagada após o uso). **Validado end-to-end** com simulação de título real (bill 141/inst 1 → boleto capturado com PDF + linha digitável). Título sem cobrança registrada → Sienge 422 "cobrança não existente" (esperado; no fluxo real o evento só dispara quando o slip existe). Shape do payload real será confirmado no 1º evento via `sienge_webhook_events`.
