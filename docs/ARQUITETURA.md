@@ -350,6 +350,10 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-11 — Contratos do Sienge (empreendimento/unidade) + webhooks de cadastro.**
+  - Tabela `sienge_contratos` (migration 039) + view `vw_cliente_contrato`; edge `sienge-sync-contratos` (pagina `GET /sales-contracts`, 133). Traz empreendimento + unidade (Quadra/Lote) + vínculo cliente/título.
+  - Views de boleto (`vw_boletos_central`, `vw_cobranca_boletos`) repontadas: empreendimento/quadra/lote agora vêm do **contrato** (fallback `sienge_boletos`), parseando "Quadra X / Lote Y" — migration 040. Clientes novos já mostram unidade.
+  - **Webhooks de cadastro**: `sienge-webhook` passou a rotear `customer_*` e `sales_contract_*` (push, tempo real) → upsert em `sienge_clientes`/`sienge_contratos`. Sync completo virou **mensal** (migration 041) só como reconciliação. Helpers em `_shared/sienge.ts`.
 - **2026-06-11 — Sync de clientes direto do Sienge + ZIP formato novo.**
   - Edge `sienge-sync-clientes` (cron diário 05:00 BRT): pagina `GET /customers` e faz upsert do CADASTRO completo em `sienge_clientes` (111 → **1.226** clientes) + backfill de telefone nos boletos emitidos. Substitui o caminho do n8n que derivava clientes das parcelas — com boleto vindo do ZIP e baixa via webhook, só o cadastro importa.
   - Import do ZIP aceita **2 formatos** de nome: `"{clientId} - {nome} - {lote}"` (lote CAIXA) e `"{nome}_{título}_{parcela}_{ddmmaaaa}"` (avulso — resolve o cliente pelo NOME no cadastro; vencimento do filename como fallback; linha digitável com fallback genérico de 47 dígitos além do layout CAIXA).
