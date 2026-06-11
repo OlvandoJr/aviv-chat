@@ -13,7 +13,7 @@ export default async function BoletosLayout({ children }: { children: React.Reac
     .eq('id', user.id)
     .single()
 
-  if (attendant?.role !== 'admin' && attendant?.role !== 'manager') redirect('/conversations')
+  // Carregar boletos é liberado para qualquer usuário logado (operação do dia a dia).
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">

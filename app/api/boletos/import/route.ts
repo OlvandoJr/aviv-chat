@@ -84,9 +84,7 @@ interface Falha { arquivo: string; motivo: string }
 export async function POST(req: NextRequest) {
   const caller = await getCaller()
   if (!caller) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
-  if (caller.role !== 'admin' && caller.role !== 'manager') {
-    return NextResponse.json({ error: 'Permissão insuficiente' }, { status: 403 })
-  }
+  // Carregar boletos é operação do dia a dia — liberado para qualquer atendente logado.
 
   // ── Receber o ZIP ──────────────────────────────────────────────────────────
   const form = await req.formData()

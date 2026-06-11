@@ -42,6 +42,7 @@ export default function Sidebar({ attendant }: SidebarProps) {
         <nav className="flex flex-col gap-1 flex-1 px-2 overflow-y-auto overflow-x-hidden">
           <NavItem href="/conversations" icon={<MessageSquare className="w-5 h-5" />} label="Conversas" active={pathname.startsWith('/conversations')} />
           <NavItem href="/calendar"      icon={<CalendarDays  className="w-5 h-5" />} label="Calendário" active={pathname.startsWith('/calendar')} />
+          <NavItem href="/boletos"       icon={<Receipt       className="w-5 h-5" />} label="Carregar Boletos" active={pathname.startsWith('/boletos')} />
 
           {isAdmin && (
             <>
@@ -53,7 +54,6 @@ export default function Sidebar({ attendant }: SidebarProps) {
           {isManager && (
             <>
               <NavItem href="/clients"             icon={<UsersRound     className="w-5 h-5" />} label="Central de Clientes" active={pathname.startsWith('/clients')} />
-              <NavItem href="/boletos"             icon={<Receipt        className="w-5 h-5" />} label="Carregar Boletos"    active={pathname.startsWith('/boletos')} />
               <NavItem href="/agents"              icon={<Bot            className="w-5 h-5" />} label="Agentes IA"          active={pathname.startsWith('/agents')} />
               <NavItem href="/templates"           icon={<LayoutTemplate className="w-5 h-5" />} label="Templates"           active={pathname.startsWith('/templates')} />
               <NavItem href="/campaigns"           icon={<Megaphone      className="w-5 h-5" />} label="Campanhas"           active={pathname.startsWith('/campaigns')} />
