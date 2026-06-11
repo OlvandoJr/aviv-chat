@@ -66,10 +66,23 @@ Deno.serve(async (req) => {
     // Registros novos
     const { data: rows } = await admin
       .from('mensagens_cobranca')
-      .select('id, phone, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, app_dispatch_attempts')
+      .select('id, phone, phone_norm, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, app_dispatch_attempts')
       .is('app_dispatched_at', null)
       .order('created_at', { ascending: true })
       .limit(limit)
+
+    // ── Supressão: parcelas que já receberam comprovante (ou foram pagas) não cobram ──
+    // (chave telefone+parcela; cobre o lag até o SGL registrar a baixa)
+    const suppressed = new Set<string>()
+    const phones = [...new Set((rows || []).map((r: any) => r.phone_norm).filter(Boolean))]
+    if (phones.length) {
+      const { data: done } = await admin
+        .from('mensagens_cobranca')
+        .select('phone_norm, contasreceberparcela')
+        .in('phone_norm', phones)
+        .in('status', ['comprovante_recebido', 'comprovante_confirmado', 'pago', 'baixado'])
+      for (const d of done || []) suppressed.add(`${d.phone_norm}||${d.contasreceberparcela}`)
+    }
 
     const inboxCache: Record<string, any> = {}
     const tplCache: Record<string, TemplateRow | null> = {}
@@ -82,8 +95,17 @@ Deno.serve(async (req) => {
       const m = mapByClass[classificacao]
       const waId = String(r.phone || '').replace(/\D/g, '')
 
+      // Parcela já com comprovante/baixa → não cobra (sai da régua)
+      const suprimida = suppressed.has(`${r.phone_norm}||${r.contasreceberparcela}`)
+
       if (dryRun) {
-        if (result.samples.length < 25) result.samples.push({ phone: waId, nome: r.pessoanomecompleto, venc: r.contasrecebervencimento, classificacao, template: m ? 'sim' : 'NÃO ENVIA' })
+        if (result.samples.length < 25) result.samples.push({ phone: waId, nome: r.pessoanomecompleto, venc: r.contasrecebervencimento, classificacao, template: suprimida ? 'SUPRIMIDO (comprovante)' : (m ? 'sim' : 'NÃO ENVIA') })
+        continue
+      }
+
+      if (suprimida) {
+        await markDispatched(r.id)
+        result.skipped++
         continue
       }
 

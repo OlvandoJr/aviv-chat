@@ -221,28 +221,62 @@ function parseMoney(s: any): number {
   return parseFloat(c) || 0
 }
 
-// Acha a parcela SGL (mensagens_cobranca) que o comprovante quita, casando pelo
-// valor extraído (parcela mais próxima); se não houver valor, a mais vencida em aberto.
-async function resolveSglParcelaId(waId: string, extracted: any): Promise<string> {
+// Normaliza vencimento "15/05/2026" | "2026-05-15" → "2026-05-15"
+function normVenc(s: unknown): string {
+  const t = String(s ?? '').trim()
+  let m = t.match(/(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}`
+  m = t.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/)
+  if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` }
+  return ''
+}
+
+// Acha a parcela SGL (mensagens_cobranca) que o comprovante quita — casa por
+// VENCIMENTO do comprovante, senão por VALOR mais próximo, senão a mais vencida.
+// Se doUpdate, marca TODAS as linhas dessa parcela como comprovante_recebido
+// (→ aparece "Comprovante" no painel/Central e sai da régua SGL).
+async function markSglComprovante(waId: string, extracted: any, doUpdate: boolean): Promise<string> {
   const { data } = await supabase
     .from('mensagens_cobranca')
-    .select('id, contasrecebervalor, contasrecebervencimento, status, created_at')
+    .select('id, contasreceberparcela, contasrecebervalor, contasrecebervencimento, status')
     .eq('phone_norm', normalizePhone(waId))
     .order('contasrecebervencimento', { ascending: true })
   if (!data?.length) return ''
+
   const quitado = (st: any) => ['pago', 'comprovante_confirmado', 'comprovante_recebido', 'baixado'].includes(String(st || '').toLowerCase())
   const abertos = data.filter((r: any) => !quitado(r.status))
   const pool = abertos.length ? abertos : data
-  const alvo = parseMoney(extracted?.valor)
-  if (alvo > 0) {
-    let best: any = null, bestDiff = Infinity
-    for (const r of pool) {
-      const diff = Math.abs(parseMoney(r.contasrecebervalor) - alvo)
-      if (diff < bestDiff) { best = r; bestDiff = diff }
+
+  // 1) casa pelo VENCIMENTO do comprovante
+  let match: any = null
+  const venc = normVenc(extracted?.vencimento)
+  if (venc) match = pool.find((r: any) => normVenc(r.contasrecebervencimento) === venc)
+  // 2) senão pelo VALOR mais próximo
+  if (!match) {
+    const alvo = parseMoney(extracted?.valor)
+    if (alvo > 0) {
+      let best: any = null, bestDiff = Infinity
+      for (const r of pool) { const d = Math.abs(parseMoney(r.contasrecebervalor) - alvo); if (d < bestDiff) { best = r; bestDiff = d } }
+      match = best
     }
-    if (best) return String(best.id)
   }
-  return String(pool[0]?.id ?? '')
+  // 3) senão a mais vencida em aberto
+  if (!match) match = pool[0]
+  if (!match) return ''
+
+  if (doUpdate) {
+    const parc = match.contasreceberparcela
+    const patch = { status: 'comprovante_recebido', updated_at: new Date().toISOString() }
+    if (parc) {
+      await supabase.from('mensagens_cobranca').update(patch)
+        .eq('phone_norm', normalizePhone(waId))
+        .eq('contasreceberparcela', parc)
+        .not('status', 'in', '("pago","comprovante_confirmado","baixado")')
+    } else {
+      await supabase.from('mensagens_cobranca').update(patch).eq('id', match.id)
+    }
+    console.log('SGL comprovante → parcela marcada:', parc || match.id, 'venc', match.contasrecebervencimento)
+  }
+  return String(match.id)
 }
 
 // Monta os placeholders disponíveis para as operações de escrita
@@ -791,7 +825,7 @@ async function analyzeImage(
   await supabase.from('chat_conversations').update({ receipt_validation: needsHuman }).eq('id', convId)
 
   // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ─────
-  const sglMsgId = await resolveSglParcelaId(waId, extractedData)
+  const sglMsgId = await markSglComprovante(waId, extractedData, !boleto || boleto._source === 'sgl')
   await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
 }
 
@@ -940,7 +974,7 @@ async function analyzePdf(
     await supabase.from('chat_conversations').update({ receipt_validation: needsHuman }).eq('id', convId)
 
     // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ───
-    const sglMsgId = await resolveSglParcelaId(waId, extractedData)
+    const sglMsgId = await markSglComprovante(waId, extractedData, !boleto || boleto._source === 'sgl')
     await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
 
   } finally {
