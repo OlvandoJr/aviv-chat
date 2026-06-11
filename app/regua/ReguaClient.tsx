@@ -37,7 +37,7 @@ export function offsetBadge(n: number): string {
 }
 
 type VarMap = Record<string, { type: 'static' | 'column'; value: string; format?: string }>
-type StepDraft = { offsetDays: number; sendTime: string; templateId: string; mapping: VarMap }
+type StepDraft = { offsetDays: number; sendTime: string; templateId: string; mapping: VarMap; onLoad?: boolean }
 type Editing = {
   id?: string; name: string; inboxId: string
   filter: { source: string; empreendimento: string }
@@ -58,7 +58,7 @@ export default function ReguaClient({ initial, inboxes, templates }: Props) {
   function editRule(r: any): Editing {
     const steps = [...(r.steps || [])].sort((a, b) => a.sort_order - b.sort_order).map((s: any) => ({
       offsetDays: s.offset_days, sendTime: String(s.send_time).slice(0, 5),
-      templateId: s.template_id, mapping: s.variable_mapping || {},
+      templateId: s.template_id, mapping: s.variable_mapping || {}, onLoad: !!s.on_load,
     }))
     return {
       id: r.id, name: r.name, inboxId: r.inbox_id,
@@ -108,15 +108,17 @@ export default function ReguaClient({ initial, inboxes, templates }: Props) {
       ) : (
         <div className="space-y-2">
           {initial.map((r) => {
-            const steps = [...(r.steps || [])].sort((a, b) => a.offset_days - b.offset_days)
+            const steps = [...(r.steps || [])].sort((a, b) =>
+              Number(!!b.on_load) - Number(!!a.on_load) || a.offset_days - b.offset_days)
             return (
               <div key={r.id} className="bg-white border border-gray-100 rounded-xl px-5 py-4 flex items-center justify-between">
                 <div className="min-w-0">
                   <span className="font-medium text-gray-900">{r.name}</span>
                   <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                     {steps.map((s: any) => (
-                      <span key={s.id} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-                        {offsetBadge(s.offset_days)} · {String(s.send_time).slice(0, 5)} · {s.template?.name || '—'}
+                      <span key={s.id} className={cn('text-[10px] font-medium px-2 py-0.5 rounded-full',
+                        s.on_load ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600')}>
+                        {s.on_load ? 'Carga' : offsetBadge(s.offset_days)} · {String(s.send_time).slice(0, 5)} · {s.template?.name || '—'}
                       </span>
                     ))}
                     {steps.length === 0 && <span className="text-xs text-gray-400">sem disparos</span>}
@@ -165,6 +167,14 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
     setE(s => ({ ...s, steps: s.steps.filter((_, i) => i !== idx) }))
   }
 
+  // Flag "disparar no dia do carregamento": liga/desliga o passo on_load (sempre o Disparo 1)
+  const hasOnLoad = e.steps.some(st => st.onLoad)
+  function toggleOnLoad() {
+    setE(s => s.steps.some(st => st.onLoad)
+      ? { ...s, steps: s.steps.filter(st => !st.onLoad) }
+      : { ...s, steps: [{ onLoad: true, offsetDays: 999, sendTime: '09:00', templateId: '', mapping: {} }, ...s.steps] })
+  }
+
   function varsFor(templateId: string): number[] {
     const t = templates.find(x => x.id === templateId)
     if (!t) return []
@@ -197,7 +207,7 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
             ? { type: 'static', value: m.value }
             : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
         }
-        return { offsetDays: Number(st.offsetDays), sendTime: st.sendTime, templateId: st.templateId, variableMapping: cleanMapping }
+        return { offsetDays: Number(st.offsetDays), sendTime: st.sendTime, templateId: st.templateId, variableMapping: cleanMapping, onLoad: !!st.onLoad }
       })
       const payload = { name: e.name, inboxId: e.inboxId, audienceFilter: e.filter, steps }
       const r = await fetch(e.id ? `/api/regua/${e.id}` : '/api/regua', {
@@ -249,6 +259,16 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
                   className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm" placeholder="contém (opcional)" />
               </div>
             </div>
+            <div className="flex items-center justify-between bg-emerald-50/60 border border-emerald-100 rounded-xl px-3 py-2.5">
+              <div>
+                <span className="text-xs font-medium text-gray-700 block">Disparar no dia do carregamento</span>
+                <span className="text-[11px] text-gray-500">Envia a cobrança no mesmo dia em que o boleto entra no sistema (upload do ZIP ou captura automática).</span>
+              </div>
+              <button onClick={toggleOnLoad} title={hasOnLoad ? 'Ativado' : 'Desativado'}
+                className={cn('relative w-9 h-5 rounded-full transition-colors shrink-0 ml-3', hasOnLoad ? 'bg-emerald-500' : 'bg-gray-300')}>
+                <span className={cn('absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all', hasOnLoad ? 'left-[18px]' : 'left-0.5')} />
+              </button>
+            </div>
           </div>
 
           {/* Disparos */}
@@ -262,7 +282,8 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
             {e.steps.map((st, idx) => (
               <StepCard key={idx} idx={idx} step={st} templates={inboxTemplates}
                 vars={varsFor(st.templateId)} filter={e.filter}
-                onChange={(p) => patchStep(idx, p)} onRemove={() => removeStep(idx)} canRemove={e.steps.length > 1} />
+                onChange={(p) => patchStep(idx, p)} onRemove={() => removeStep(idx)}
+                canRemove={!st.onLoad && e.steps.length > 1} />
             ))}
           </div>
 
@@ -302,7 +323,7 @@ function StepCard({ idx, step, templates, vars, filter, onChange, onRemove, canR
     const r = await fetch('/api/regua/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ offsetDays: step.offsetDays, filter }),
+      body: JSON.stringify({ offsetDays: step.offsetDays, onLoad: !!step.onLoad, filter }),
     })
     const j = await r.json()
     setLoading(false)
@@ -312,18 +333,22 @@ function StepCard({ idx, step, templates, vars, filter, onChange, onRemove, canR
   return (
     <div className="border border-gray-200 rounded-xl p-4 space-y-3 bg-gray-50/50">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-700">Disparo {idx + 1} — {offsetLabel(Number(step.offsetDays))}</span>
+        <span className="text-xs font-semibold text-gray-700">
+          Disparo {idx + 1} — {step.onLoad ? 'No dia do carregamento' : offsetLabel(Number(step.offsetDays))}
+        </span>
         {canRemove && <button onClick={onRemove} className="text-gray-400 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className={cn('grid gap-3', step.onLoad ? 'grid-cols-2' : 'grid-cols-3')}>
+        {!step.onLoad && (
+          <div>
+            <label className="text-[11px] text-gray-500 mb-1 block">Dias do vencimento</label>
+            <input type="number" value={step.offsetDays} onChange={ev => { onChange({ offsetDays: Number(ev.target.value) }); setPreview(null) }}
+              className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+          </div>
+        )}
         <div>
-          <label className="text-[11px] text-gray-500 mb-1 block">Dias do vencimento</label>
-          <input type="number" value={step.offsetDays} onChange={ev => { onChange({ offsetDays: Number(ev.target.value) }); setPreview(null) }}
-            className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
-        </div>
-        <div>
-          <label className="text-[11px] text-gray-500 mb-1 block">Horário</label>
+          <label className="text-[11px] text-gray-500 mb-1 block">{step.onLoad ? 'Horário (a partir de)' : 'Horário'}</label>
           <input type="time" value={step.sendTime} onChange={ev => onChange({ sendTime: ev.target.value })}
             className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
         </div>
@@ -373,7 +398,11 @@ function StepCard({ idx, step, templates, vars, filter, onChange, onRemove, canR
         <Eye className="w-3.5 h-3.5" /> {loading ? 'Calculando…' : 'Quem receberia hoje?'}
       </button>
       {preview && (
-        <p className="text-xs text-gray-600"><strong>{preview.total}</strong> cliente(s) com vencimento em {preview.targetDue}.</p>
+        <p className="text-xs text-gray-600">
+          <strong>{preview.total}</strong> {step.onLoad
+            ? 'boleto(s) carregado(s) hoje no sistema.'
+            : `cliente(s) com vencimento em ${preview.targetDue}.`}
+        </p>
       )}
     </div>
   )

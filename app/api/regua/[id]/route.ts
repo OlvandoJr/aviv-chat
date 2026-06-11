@@ -34,7 +34,9 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       if (b.steps.length) {
         const rows = b.steps.map((s: any, i: number) => ({
           regua_id:         id,
-          offset_days:      Number(s.offsetDays) || 0,
+          // on_load usa offset 999 (sentinela) só p/ a UNIQUE do log deduplicar
+          on_load:          !!s.onLoad,
+          offset_days:      s.onLoad ? 999 : Number(s.offsetDays) || 0,
           send_time:        s.sendTime || '09:00',
           template_id:      s.templateId,
           variable_mapping: s.variableMapping || {},

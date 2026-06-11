@@ -5,6 +5,12 @@
  * template aos boletos cujo vencimento está a `offset_days` de hoje (BRT):
  *   alvo = hoje(BRT) - offset_days   (offset -3 dispara 3 dias antes do vencimento)
  *
+ * Passo com `on_load=true` (disparo no dia do carregamento): audiência são os
+ * boletos que ENTRARAM hoje no sistema (loaded_date = hoje BRT — ZIP ou
+ * sienge-webhook). O horário é "a partir de": como o cron é horário, o passo roda
+ * em toda passada com hora >= send_time, e a UNIQUE do log garante 1 envio por
+ * boleto (offset_days=999 é sentinela de dedup desses passos).
+ *
  * Invocação:
  *  - cron horário (sem body) → roda os passos cujo send_time bate com a hora atual
  *  - manual: { reguaId?, force?, dryRun? }
@@ -39,7 +45,7 @@ Deno.serve(async (req) => {
     const now = brtNow()
     const hour = now.getHours()
 
-    const sel = 'id, name, inbox_id, audience_filter, active, steps:cobranca_regua_step(id, offset_days, send_time, template_id, variable_mapping, sort_order)'
+    const sel = 'id, name, inbox_id, audience_filter, active, steps:cobranca_regua_step(id, offset_days, send_time, template_id, variable_mapping, sort_order, on_load)'
     let q = admin.from('cobranca_regua').select(sel).eq('active', true)
     if (reguaId) q = admin.from('cobranca_regua').select(sel).eq('id', reguaId)
 
@@ -47,15 +53,19 @@ Deno.serve(async (req) => {
     const out: unknown[] = []
 
     for (const regua of reguas || []) {
-      const steps = [...(regua.steps || [])].sort((a: any, b: any) => a.offset_days - b.offset_days)
+      const steps = [...(regua.steps || [])].sort((a: any, b: any) =>
+        Number(b.on_load || false) - Number(a.on_load || false) || a.offset_days - b.offset_days)
       // inbox uma vez por régua
       const { data: inbox } = await admin.from('chat_inboxes')
         .select('phone_number_id, access_token').eq('id', regua.inbox_id).single()
 
       for (const step of steps) {
         const ruleHour = parseInt(String(step.send_time).slice(0, 2))
-        if (!force && !dryRun && ruleHour !== hour) {
-          out.push({ regua: regua.name, offset: step.offset_days, skipped: 'fora do horário', ruleHour, hour })
+        // on_load roda em toda passada com hora >= send_time (boleto pode entrar a
+        // qualquer hora; o log deduplica). Passo de offset roda só na hora exata.
+        const foraDoHorario = step.on_load ? hour < ruleHour : ruleHour !== hour
+        if (!force && !dryRun && foraDoHorario) {
+          out.push({ regua: regua.name, offset: step.on_load ? 'carga' : step.offset_days, skipped: 'fora do horário', ruleHour, hour })
           continue
         }
         out.push(await runStep(regua, step, inbox, now, dryRun))
@@ -75,12 +85,14 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
   target.setDate(target.getDate() - (step.offset_days || 0))
   const targetDue = isoDate(target)
   const runDate = isoDate(now)
-  const label = { regua: regua.name, offset: step.offset_days, targetDue }
+  const label = step.on_load
+    ? { regua: regua.name, offset: 'carga', loadedDate: runDate }
+    : { regua: regua.name, offset: step.offset_days, targetDue }
 
-  // Audiência: boletos vencendo na data-alvo (filtro do fluxo pai)
+  // Audiência: on_load = boletos carregados HOJE; offset = vencendo na data-alvo.
   let vq = admin.from('vw_cobranca_boletos')
     .select('phone_norm, source, customer_name, customer_phone, empreendimento, quadra, lote, parcela, due_date, amount, link_boleto')
-    .eq('due_date', targetDue)
+  vq = step.on_load ? vq.eq('loaded_date', runDate) : vq.eq('due_date', targetDue)
   const af = regua.audience_filter || {}
   if (af.source && af.source !== 'both') vq = vq.eq('source', af.source)
   if (af.empreendimento) vq = vq.ilike('empreendimento', `%${af.empreendimento}%`)

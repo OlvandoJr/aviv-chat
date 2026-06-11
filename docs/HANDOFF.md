@@ -15,7 +15,7 @@
   - Edge: `npx --no-install supabase functions deploy <nome> --project-ref jpxlczmbxfcnujemlxzq`
     (+ `--no-verify-jwt` para as protegidas por token: `sienge-webhook`).
   - Migrations: MCP `apply_migration` / `execute_sql` (project_id acima). Sempre criar o arquivo
-    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **041**).
+    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **042**).
 - **PR + merge SOZINHO (gh NÃO está instalado):** reutilizar o token do Keychain:
   ```bash
   TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill 2>/dev/null | sed -n 's/^password=//p')
@@ -68,6 +68,10 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
   só parcelas, 2ª via via API é fallback raro).
 
 ## 3. OUTROS PONTOS NO AR (recentes)
+- **Régua: disparo "no dia do carregamento"** (flag na régua → Disparo 1 sem campo de dias; cobra no
+  dia em que o boleto ENTRA — ZIP ou sienge-webhook). `cobranca_regua_step.on_load` +
+  `vw_cobranca_boletos.loaded_date` (migration 042); horário é "a partir de" (cron horário, dedup
+  pelo log com sentinela `offset_days=999`).
 - **Bucket `chat-media` PRIVADO** + proxy autenticado `/api/media` (signed URL). Meta/OpenAI recebem
   signed URLs direto. `mediaSrc()` em `lib/utils.ts`.
 - **Debounce do bot (8s)** no `ai-responder` (espera, junta e responde; conta msgs `in`).
@@ -145,9 +149,10 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
 - `mensagens_cobranca` é log de eventos (1 linha por cobrança), não registro de parcela.
 
 ## 7. MIGRATIONS (últimas) e EDGE FUNCTIONS
-- Migrations até **041** (029 bucket boletos, 030 vw_boleto_chat, 031 receipt_validation, 032
+- Migrations até **042** (029 bucket boletos, 030 vw_boleto_chat, 031 receipt_validation, 032
   vw_clientes_boletos valor, 033 central, 034 chat-media privado, 035 cron auto-return, 036 attendant
-  soft-delete, 037 boleto_lotes, 038→041 sync clientes/contratos + crons mensais + views contrato).
+  soft-delete, 037 boleto_lotes, 038→041 sync clientes/contratos + crons mensais + views contrato,
+  042 régua on_load + loaded_date).
 - Edge functions: ai-responder, process-media, whatsapp-webhook, send-message, dispatch-campaign,
   cobranca-regua, sgl-dispatch, import-boletos (legado), sienge-webhook, sienge-sync-clientes,
   sienge-sync-contratos, auto-return-bot, test-api-call, analyze-comprovante, send-reminders, list-models.

@@ -17,15 +17,16 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
-    const { offsetDays = 0, filter = {} } = await req.json()
+    const { offsetDays = 0, onLoad = false, filter = {} } = await req.json()
 
     const todayBrt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
-    todayBrt.setDate(todayBrt.getDate() - Number(offsetDays))
+    if (!onLoad) todayBrt.setDate(todayBrt.getDate() - Number(offsetDays))
     const targetDue = todayBrt.toISOString().slice(0, 10)
 
+    // onLoad: boletos que ENTRARAM hoje no sistema; offset: vencendo na data-alvo
     let q = admin.from('vw_cobranca_boletos')
       .select('customer_name, customer_phone, parcela, due_date, amount, empreendimento, source')
-      .eq('due_date', targetDue)
+    q = onLoad ? q.eq('loaded_date', targetDue) : q.eq('due_date', targetDue)
     if (filter.source && filter.source !== 'both') q = q.eq('source', filter.source)
     if (filter.empreendimento) q = q.ilike('empreendimento', `%${filter.empreendimento}%`)
 

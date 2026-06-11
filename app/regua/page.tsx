@@ -8,7 +8,7 @@ export default async function ReguaPage() {
 
   const [{ data: regras }, { data: inboxes }, { data: templates }] = await Promise.all([
     supabase.from('cobranca_regua')
-      .select('*, inbox:chat_inboxes(name), steps:cobranca_regua_step(id, offset_days, send_time, template_id, variable_mapping, sort_order, template:chat_wa_templates(name))')
+      .select('*, inbox:chat_inboxes(name), steps:cobranca_regua_step(id, offset_days, send_time, template_id, variable_mapping, sort_order, on_load, template:chat_wa_templates(name))')
       .order('created_at', { ascending: false }),
     supabase.from('chat_inboxes').select('id, name').eq('is_active', true).order('name'),
     supabase.from('chat_wa_templates')
