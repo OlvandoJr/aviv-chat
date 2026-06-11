@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-11 — Sync de clientes direto do Sienge + ZIP formato novo.**
+  - Edge `sienge-sync-clientes` (cron diário 05:00 BRT): pagina `GET /customers` e faz upsert do CADASTRO completo em `sienge_clientes` (111 → **1.226** clientes) + backfill de telefone nos boletos emitidos. Substitui o caminho do n8n que derivava clientes das parcelas — com boleto vindo do ZIP e baixa via webhook, só o cadastro importa.
+  - Import do ZIP aceita **2 formatos** de nome: `"{clientId} - {nome} - {lote}"` (lote CAIXA) e `"{nome}_{título}_{parcela}_{ddmmaaaa}"` (avulso — resolve o cliente pelo NOME no cadastro; vencimento do filename como fallback; linha digitável com fallback genérico de 47 dígitos além do layout CAIXA).
 - **2026-06-09 — Ordem de busca de boleto: emitido → SGL → Sienge.**
   - O bot procurava Sienge antes do SGL; cliente em ambas as bases (parcelas Sienge futuras sem boleto gerado) travava na 2ª via Sienge e nunca chegava ao SGL (que tinha o link real). Reordenado: `loadSglBoletos` é tentado antes das parcelas `sienge_boletos`. SGL deduplicado por parcela.
 - **2026-06-09 — Webhook Sienge propaga baixa para `boletos_emitidos` + fallback.**

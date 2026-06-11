@@ -71,12 +71,21 @@ function cleanWaId(tel: unknown): string | null {
 }
 
 // ── Parser do PDF — MESMOS regexes do node "Parsear boletos" do n8n ───────────
+// (linha digitável: CAIXA "104-0..." primeiro — paridade com o n8n; fallback genérico
+//  de 47 dígitos para boletos avulsos de outros layouts/bancos)
 function parseBoletoText(text: string) {
-  const ld   = (text.match(/104-0[\d.\-\s]+\d/) || [])[0] || null
+  const ld   = (text.match(/104-0[\d.\-\s]+\d/) || [])[0]
+    || (text.match(/\d{5}[.\s]?\d{5}\s?\d{5}[.\s]?\d{6}\s?\d{5}[.\s]?\d{6}\s?\d\s?\d{14}/) || [])[0]
+    || null
   const venc = (text.match(/Vencimento\s*([0-3]?\d\/[01]?\d\/\d{4})/) || [])[1] || null
   const val  = (text.match(/Valor do Documento\s*([\d.]+,\d{2})/) || [])[1] || null
   const nn   = (text.match(/Nosso N[uú]mero\s*([\d/\-]+)/) || [])[1] || null
   return { linhaDigitavel: ld, vencimento: venc, valor: val, nossoNumero: nn }
+}
+
+// Normaliza nome p/ casar com o cadastro (sem acentos, caixa baixa, espaços únicos)
+function normName(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
 interface Falha { arquivo: string; motivo: string }
@@ -119,13 +128,28 @@ export async function POST(req: NextRequest) {
   for (const entry of entries) {
     const baseName = entry.name.split('/').pop() || entry.name      // tira pasta
     const noExt    = baseName.replace(/\.pdf$/i, '')
-    const parts    = noExt.split(' - ')
-    const clientId = Number((parts[0] || '').trim())
-    const nome     = (parts[1] || '').trim()
-    const lote     = (parts[2] || '').trim()
 
-    if (isNaN(clientId)) {
-      falhas.push({ arquivo: baseName, motivo: 'client_id não identificado no nome do arquivo' })
+    // Formato A (lote CAIXA/n8n): "{clientId} - {nome} - {lote}.pdf"
+    // Formato B (avulso):         "{nome}_{título}_{parcela}_{ddmmaaaa}.pdf" → cliente por NOME
+    let clientId = NaN
+    let nome = ''
+    let lote = ''
+    let vencFallback: string | null = null
+
+    const partsA = noExt.split(' - ')
+    const idA    = Number((partsA[0] || '').trim())
+    const mB     = noExt.match(/^(.+?)_(\d+)_(\d+)_(\d{8})$/)
+
+    if (!isNaN(idA)) {
+      clientId = idA
+      nome     = (partsA[1] || '').trim()
+      lote     = (partsA[2] || '').trim()
+    } else if (mB) {
+      nome = mB[1].trim()
+      lote = mB[2]                                    // nº do título como referência
+      vencFallback = `${mB[4].slice(0, 2)}/${mB[4].slice(2, 4)}/${mB[4].slice(4)}`  // ddmmaaaa
+    } else {
+      falhas.push({ arquivo: baseName, motivo: 'nome do arquivo fora dos formatos aceitos ("id - nome - lote" ou "nome_titulo_parcela_data")' })
       continue
     }
 
@@ -134,6 +158,7 @@ export async function POST(req: NextRequest) {
       const pdfBuf = Buffer.from(await entry.async('nodebuffer'))
       text = (await pdfParse(pdfBuf)).text || ''
       const f = parseBoletoText(text)
+      if (!f.vencimento && vencFallback) f.vencimento = vencFallback
       if (!f.vencimento) {
         falhas.push({ arquivo: baseName, motivo: 'vencimento não encontrado no PDF' })
         continue
@@ -146,6 +171,32 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       falhas.push({ arquivo: baseName, motivo: 'falha ao ler o PDF: ' + String(err) })
     }
+  }
+
+  // ── Formato B: resolver o cliente pelo NOME no cadastro (sienge_clientes) ────
+  if (parsed.some((p) => isNaN(p.clientId))) {
+    const { data: clientes } = await admin.from('sienge_clientes').select('client_id, nome')
+    const byName = new Map<string, number[]>()
+    for (const c of clientes || []) {
+      const k = normName(c.nome || '')
+      if (k) byName.set(k, [...(byName.get(k) || []), c.client_id])
+    }
+    for (const p of parsed) {
+      if (!isNaN(p.clientId)) continue
+      const ids = byName.get(normName(p.nome)) || []
+      if (ids.length === 1) {
+        p.clientId = ids[0]
+      } else {
+        falhas.push({
+          arquivo: p.baseName,
+          motivo: ids.length === 0
+            ? `cliente "${p.nome}" não encontrado no cadastro Sienge`
+            : `nome "${p.nome}" ambíguo no cadastro (${ids.length} clientes)`,
+        })
+      }
+    }
+    // descarta os que não resolveram
+    for (let i = parsed.length - 1; i >= 0; i--) if (isNaN(parsed[i].clientId)) parsed.splice(i, 1)
   }
 
   // ── Telefone por client_id (sienge_clientes) ─────────────────────────────────
