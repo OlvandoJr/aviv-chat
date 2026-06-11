@@ -193,6 +193,30 @@ export async function POST(req: NextRequest) {
     })
   }
 
+  const semTelefone = rows.filter((r) => !r.telefone).length
+  const valorTotal  = rows.reduce((s, r) => s + (Number(r.valor) || 0), 0)
+  const loteRemessa = rows.find((r) => r.lote)?.lote || null
+
+  // ── Registra o LOTE (carregamento) e carimba upload_id em cada boleto ────────
+  let loteId: string | null = null
+  if (rows.length) {
+    const { data: me } = await admin.from('chat_attendants').select('name').eq('id', caller.id).maybeSingle()
+    const { data: lote } = await admin.from('boleto_lotes').insert({
+      uploaded_by:      caller.id,
+      uploaded_by_name: me?.name || null,
+      filename:         file.name || null,
+      lote:             loteRemessa,
+      recebidos:        entries.length,
+      gravados:         rows.length,
+      com_pdf:          comPdf,
+      sem_telefone:     semTelefone,
+      falhas:           falhas.length,
+      valor_total:      valorTotal,
+    }).select('id').single()
+    loteId = lote?.id || null
+    if (loteId) for (const r of rows) r.upload_id = loteId
+  }
+
   // ── Upsert em boletos_emitidos ───────────────────────────────────────────────
   let gravados = 0
   if (rows.length) {
@@ -203,9 +227,9 @@ export async function POST(req: NextRequest) {
     gravados = count ?? rows.length
   }
 
-  const semTelefone = rows.filter((r) => !r.telefone).length
   return NextResponse.json({
     ok: true,
+    lote_id:     loteId,
     recebidos:   entries.length,
     gravados,
     com_pdf:     comPdf,
