@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Comprovante SGL marca a parcela + sai da régua.**
+  - `process-media`: comprovante de cliente SGL agora atualiza `mensagens_cobranca.status='comprovante_recebido'` (casa a parcela por **vencimento → valor**), aparecendo como "Comprovante" no painel/Central.
+  - `sgl-dispatch`: pula novas cobranças de parcela que já tem comprovante/baixa (chave telefone+parcela) — parcela paga sai da régua; outras parcelas em aberto seguem normais.
 - **2026-06-09 — Boletos organizados em lotes.**
   - Tabela `boleto_lotes` (data, usuário, arquivo, contagens, valor total) + `boletos_emitidos.upload_id` (migration 037). `/api/boletos/import` registra um lote por upload; a tela `/boletos` lista lotes que expandem para os boletos. Backfill dos boletos existentes.
 - **2026-06-09 — Debounce do bot ("espera, junta e responde").**
