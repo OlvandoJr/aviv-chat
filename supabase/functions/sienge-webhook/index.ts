@@ -2,13 +2,16 @@
 // public.sienge_boletos. Eventos tratados:
 //   • RECEIPT_PROCESSED               { billId, installmentId }   → baixa/recebimento
 //   • UPDATE_RECEIVABLE_BILL_SITUATION { receivableBillId:[int], situation:string }
+//   • PAYMENT_SLIP_REGISTERED         (header x-sienge-event)      → captura a 2ª via
+//       (PDF + linha digitável) e faz upsert em boletos_emitidos — convive com o ZIP.
+//   • customer_* / sales_contract_*   (header x-sienge-event)      → cadastro (push)
 //
 // Push (NÃO consome a cota REST). Por padrão confiamos no evento de baixa e marcamos
 // 'pago' direto — nenhuma chamada à API do Sienge. A confirmação de balanceDue
 // (distinguir recebimento total de adiantamento parcial) é OPCIONAL e só roda se
 // SIENGE_WEBHOOK_CONFIRM=true. Protegido por token (verify_jwt=false).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { mapCustomer, mapContrato } from '../_shared/sienge.ts'
+import { mapCustomer, mapContrato, fetchSegundaVia } from '../_shared/sienge.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -135,6 +138,108 @@ async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: strin
   return { event: ev || 'customer', matched: count || 0, note: error ? 'erro: ' + error.message : 'cliente upsert' }
 }
 
+// ── Webhook PAYMENT_SLIP_REGISTERED (boleto/carnê registrado no banco) ───────────
+// Captura a 2ª via (PDF + linha digitável) do Sienge e faz upsert em boletos_emitidos
+// — a MESMA chave (client_id, vencimento) e bucket do ZIP, então os dois caminhos
+// convivem (o que chegar por último vence). Idempotente. Gated ESTRITAMENTE pelo
+// header x-sienge-event (não colide com RECEIPT_PROCESSED, que tem o mesmo {billId}).
+// Retorna null se NÃO for esse evento (segue a lógica de baixa).
+const slipBoletoPath = (clientId: number, venc: string) => `${clientId}/${venc}.pdf`
+
+// Resolve client_id + vencimento + valor da parcela: base local primeiro, Sienge 1x se faltar.
+async function resolveTitulo(billId: number, instId: number): Promise<
+  { customer_id: number; due_date: string; amount: number | null; customer_name: string | null } | null
+> {
+  const { data } = await supabase.from('sienge_boletos')
+    .select('customer_id, due_date, amount, customer_name')
+    .eq('receivable_bill_id', billId).eq('installment_id', instId).maybeSingle()
+  if (data?.customer_id && data?.due_date) return data as any
+
+  // Fallback (consome cota): busca o título + a parcela no Sienge uma vez.
+  try {
+    const auth = siengeAuth()
+    const bResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}`, { headers: { Authorization: auth } })
+    if (!bResp.ok) return null
+    const bill = await bResp.json()
+    const b = bill?.results?.[0] || bill || {}
+    const customerId = Number(b.customerId ?? b.clientId ?? 0) || null
+    if (!customerId) return null
+    const iResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}/installments`, { headers: { Authorization: auth } })
+    if (!iResp.ok) return null
+    const inst = ((await iResp.json()).results || []).find((i: any) => Number(i.installmentId) === instId)
+    if (!inst?.dueDate) return null
+    const amount = Number(inst.originalAmount ?? inst.value ?? inst.grossAmount ?? inst.balanceDue ?? 0) || null
+    return { customer_id: customerId, due_date: inst.dueDate, amount, customer_name: b.customerName ?? b.name ?? null }
+  } catch (e) {
+    console.error('resolveTitulo error:', e)
+    return null
+  }
+}
+
+async function handlePaymentSlip(body: any, hookEvent = ''): Promise<{ event: string; matched: number; note: string } | null> {
+  const ev = String(hookEvent || body?.event || body?.eventType || body?.type || '').toLowerCase()
+  const isSlip = /payment[_-]?slip|boleto.*regist|slip.*regist|carne.*regist/.test(ev)
+  if (!isSlip) return null
+  const evName = hookEvent || 'PAYMENT_SLIP_REGISTERED'
+
+  // Extração defensiva do id do título e da parcela (o shape exato é confirmado no 1º evento).
+  const ps = body?.paymentSlip ?? body
+  const billId = Number(body?.billReceivableId ?? body?.receivableBillId ?? body?.billId ?? ps?.billReceivableId ?? ps?.receivableBillId ?? body?.id ?? 0) || 0
+  const instId = Number(body?.installmentId ?? body?.installment ?? ps?.installmentId ?? 0) || 0
+  if (!billId || !instId) return { event: evName, matched: 0, note: `sem billReceivableId/installmentId (bill=${billId} inst=${instId})` }
+
+  // Quem é o cliente e qual o vencimento (define a chave do boleto emitido).
+  const tit = await resolveTitulo(billId, instId)
+  if (!tit) return { event: evName, matched: 0, note: `título ${billId}/${instId} não resolvido (base + Sienge)` }
+
+  // 2ª via: PDF (urlReport) + linha digitável.
+  const via = await fetchSegundaVia(billId, instId)
+  if (!via?.url) return { event: evName, matched: 0, note: `2ª via sem urlReport (bill=${billId} inst=${instId})` }
+
+  // Baixa o PDF e sobe no bucket privado `boletos` (mesma convenção do ZIP).
+  let pdfPath: string | null = slipBoletoPath(tit.customer_id, tit.due_date)
+  try {
+    const pdfResp = await fetch(via.url)
+    if (!pdfResp.ok) return { event: evName, matched: 0, note: `download do PDF falhou (${pdfResp.status})` }
+    const pdfBytes = new Uint8Array(await pdfResp.arrayBuffer())
+    const { error: upErr } = await supabase.storage.from('boletos')
+      .upload(pdfPath, pdfBytes, { contentType: 'application/pdf', upsert: true })
+    if (upErr) { console.error('slip upload PDF:', upErr.message); pdfPath = null }
+  } catch (e) {
+    console.error('slip download PDF:', e); pdfPath = null
+  }
+
+  // Telefone do cadastro (mesma fonte do ZIP).
+  const { data: cli } = await supabase.from('sienge_clientes')
+    .select('telefone, nome').eq('client_id', tit.customer_id).maybeSingle()
+
+  // Não rebaixar um boleto já pago/cancelado: preserva o status nesse caso.
+  const { data: existing } = await supabase.from('boletos_emitidos')
+    .select('status').eq('client_id', tit.customer_id).eq('vencimento', tit.due_date).maybeSingle()
+  const preservaStatus = existing && ['pago', 'cancelado'].includes(String(existing.status))
+
+  const row: Record<string, any> = {
+    client_id:       tit.customer_id,
+    customer_name:   tit.customer_name || cli?.nome || null,
+    vencimento:      tit.due_date,
+    valor:           via.valor ?? tit.amount ?? null,
+    linha_digitavel: (via.digitavel || '').replace(/\s+/g, ' ').trim() || null,
+    telefone:        cli?.telefone || null,
+    lote:            'sienge-webhook',
+    pdf_path:        pdfPath,
+    updated_at:      new Date().toISOString(),
+  }
+  if (!preservaStatus) row.status = 'aberto'
+
+  const { error, count } = await supabase.from('boletos_emitidos')
+    .upsert(row, { onConflict: 'client_id,vencimento', count: 'exact' })
+  if (error) return { event: evName, matched: 0, note: 'erro upsert: ' + error.message }
+  return {
+    event: evName, matched: count || 1,
+    note: `boleto capturado (client ${tit.customer_id}, venc ${tit.due_date}${pdfPath ? '' : ', SEM pdf'}${preservaStatus ? ', status preservado' : ''})`,
+  }
+}
+
 function classifySituation(s: string): 'pago' | 'cancelado' | null {
   const t = (s || '').toLowerCase()
   if (/cancel/.test(t)) return 'cancelado'
@@ -186,6 +291,20 @@ Deno.serve(async (req) => {
       })
     } catch (_) { /* auditoria best-effort */ }
     return ok({ ok: true, event: cad.event, matched: cad.matched, note: cad.note || undefined })
+  }
+
+  // ── PAYMENT_SLIP_REGISTERED — captura a 2ª via do boleto recém-registrado ─────
+  const slip = await handlePaymentSlip(body, hookEvent)
+  if (slip) {
+    try {
+      await supabase.from('sienge_webhook_events').insert({
+        event: slip.event,
+        receivable_bill_id: Number(body?.billReceivableId ?? body?.receivableBillId ?? body?.billId ?? 0) || null,
+        installment_id:     Number(body?.installmentId ?? 0) || null,
+        payload: body, headers, matched: slip.matched, note: slip.note,
+      })
+    } catch (_) { /* auditoria best-effort */ }
+    return ok({ ok: true, event: slip.event, matched: slip.matched, note: slip.note || undefined })
   }
 
   // Identifica o evento pela forma do payload (ou por body.event, se vier).
