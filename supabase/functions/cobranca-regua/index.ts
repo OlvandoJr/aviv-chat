@@ -6,10 +6,15 @@
  *   alvo = hoje(BRT) - offset_days   (offset -3 dispara 3 dias antes do vencimento)
  *
  * Passo com `on_load=true` (disparo no dia do carregamento): audiência são os
- * boletos que ENTRARAM hoje no sistema (loaded_date = hoje BRT — ZIP ou
- * sienge-webhook). O horário é "a partir de": como o cron é horário, o passo roda
- * em toda passada com hora >= send_time, e a UNIQUE do log garante 1 envio por
- * boleto (offset_days=999 é sentinela de dedup desses passos).
+ * boletos cuja data EFETIVA de disparo é hoje (load_dispatch_date na view:
+ * carregado até 18h BRT → mesmo dia; depois → dia seguinte; sáb/dom → segunda).
+ * O horário é "a partir de": como o cron é horário, o passo roda em toda passada
+ * com hora >= send_time, e a UNIQUE do log garante 1 envio por boleto
+ * (offset_days=999 é sentinela de dedup desses passos).
+ *
+ * REGRA LEGAL (dias úteis): nada dispara em sábado/domingo. O run é pulado no
+ * fim de semana (force=true é o único override) e, na SEGUNDA, os passos de
+ * offset cobrem também os alvos que cairiam no sábado e no domingo.
  *
  * Invocação:
  *  - cron horário (sem body) → roda os passos cujo send_time bate com a hora atual
@@ -44,6 +49,12 @@ Deno.serve(async (req) => {
 
     const now = brtNow()
     const hour = now.getHours()
+    const dow = now.getDay()   // 0=dom … 6=sáb (BRT)
+
+    // Regra legal: cobrança não sai em sábado/domingo (posterga p/ segunda).
+    if ((dow === 0 || dow === 6) && !force) {
+      return json({ ok: true, skipped: 'fim de semana — disparos postergados para segunda' })
+    }
 
     const sel = 'id, name, inbox_id, audience_filter, active, steps:cobranca_regua_step(id, offset_days, send_time, template_id, variable_mapping, sort_order, on_load)'
     let q = admin.from('cobranca_regua').select(sel).eq('active', true)
@@ -81,18 +92,25 @@ Deno.serve(async (req) => {
 
 // deno-lint-ignore no-explicit-any
 async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boolean) {
-  const target = new Date(now)
-  target.setDate(target.getDate() - (step.offset_days || 0))
-  const targetDue = isoDate(target)
   const runDate = isoDate(now)
-  const label = step.on_load
-    ? { regua: regua.name, offset: 'carga', loadedDate: runDate }
-    : { regua: regua.name, offset: step.offset_days, targetDue }
 
-  // Audiência: on_load = boletos carregados HOJE; offset = vencendo na data-alvo.
+  // Alvos do passo de offset: hoje; na SEGUNDA inclui também os alvos que cairiam
+  // no sábado e no domingo (regra legal — disparos postergados).
+  const targetDues: string[] = []
+  const backDays = now.getDay() === 1 ? [2, 1, 0] : [0]
+  for (const back of backDays) {
+    const t = new Date(now)
+    t.setDate(t.getDate() - back - (step.offset_days || 0))
+    targetDues.push(isoDate(t))
+  }
+  const label = step.on_load
+    ? { regua: regua.name, offset: 'carga', dispatchDate: runDate }
+    : { regua: regua.name, offset: step.offset_days, targetDues }
+
+  // Audiência: on_load = data efetiva de disparo (carga) é hoje; offset = vencendo na(s) data(s)-alvo.
   let vq = admin.from('vw_cobranca_boletos')
     .select('phone_norm, source, customer_name, customer_phone, empreendimento, quadra, lote, parcela, due_date, amount, link_boleto')
-  vq = step.on_load ? vq.eq('loaded_date', runDate) : vq.eq('due_date', targetDue)
+  vq = step.on_load ? vq.eq('load_dispatch_date', runDate) : vq.in('due_date', targetDues)
   const af = regua.audience_filter || {}
   if (af.source && af.source !== 'both') vq = vq.eq('source', af.source)
   if (af.empreendimento) vq = vq.ilike('empreendimento', `%${af.empreendimento}%`)

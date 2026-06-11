@@ -7,7 +7,11 @@
  * sgl_regua_map e envia pelo nosso núcleo. Como o SGL só insere para quem está em
  * aberto, herdamos a inteligência de pagamento dele.
  *
- * Invocação: cron (~5 min) sem body. Manual: { dryRun?: boolean, limit?: number }.
+ * Invocação: cron (~5 min) sem body. Manual: { dryRun?: boolean, limit?: number, force?: boolean }.
+ *
+ * REGRA LEGAL (dias úteis): não envia em sábado/domingo — a fila acumula e a
+ * segunda processa. A classificação usa a data de ENTRADA do registro (created_at
+ * BRT), preservando o template certo (ex.: vencida_3_dias) no envio postergado.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import {
@@ -28,8 +32,17 @@ const BATCH = 80
 const DELAY_MS = 120
 const MAX_ATTEMPTS = 5   // após N falhas de envio, desiste (marca tratado) para não loopar
 
-function brtTodayStr(): string {
+function brtNow(): Date {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
+}
+function brtTodayStr(): string {
+  return brtNow().toISOString().slice(0, 10)
+}
+// Data BRT de um timestamp do banco — classificação usa o dia em que o registro
+// ENTROU (o SGL grava no dia em que mandou cobrar), não o dia do processamento.
+// Igual no fluxo normal (poller ~5min); correto quando seguramos o fim de semana.
+function brtDateOf(ts: string): string {
+  return new Date(new Date(ts).toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
     .toISOString().slice(0, 10)
 }
 
@@ -52,8 +65,16 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}))
     const dryRun = !!body?.dryRun
+    const force = !!body?.force
     const limit = Math.min(Number(body?.limit) || BATCH, 500)
-    const todayStr = brtTodayStr()
+
+    // Regra legal: cobrança não sai em sábado/domingo. Os registros acumulam
+    // (app_dispatched_at IS NULL) e a segunda-feira processa a fila normalmente.
+    const dow = brtNow().getDay()
+    if ((dow === 0 || dow === 6) && !force) {
+      return new Response(JSON.stringify({ ok: true, skipped: 'fim de semana — cobrança postergada para segunda' }),
+        { headers: { 'Content-Type': 'application/json' } })
+    }
 
     // Mapa classificacao → {template, inbox, mapping}
     const { data: maps } = await admin
@@ -66,7 +87,7 @@ Deno.serve(async (req) => {
     // Registros novos
     const { data: rows } = await admin
       .from('mensagens_cobranca')
-      .select('id, phone, phone_norm, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, app_dispatch_attempts')
+      .select('id, phone, phone_norm, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, app_dispatch_attempts, created_at')
       .is('app_dispatched_at', null)
       .order('created_at', { ascending: true })
       .limit(limit)
@@ -90,7 +111,7 @@ Deno.serve(async (req) => {
 
     for (const r of rows || []) {
       result.processed++
-      const classificacao = classify(r.contasrecebervencimento, todayStr)
+      const classificacao = classify(r.contasrecebervencimento, r.created_at ? brtDateOf(r.created_at) : brtTodayStr())
       result.byClass[classificacao] = (result.byClass[classificacao] || 0) + 1
       const m = mapByClass[classificacao]
       const waId = String(r.phone || '').replace(/\D/g, '')
@@ -169,7 +190,7 @@ Deno.serve(async (req) => {
       await SLEEP(DELAY_MS)
     }
 
-    return json({ ok: true, dryRun, today: todayStr, ...result })
+    return json({ ok: true, dryRun, today: brtTodayStr(), ...result })
   } catch (err) {
     console.error('sgl-dispatch error:', err)
     return json({ error: String(err) }, 500)

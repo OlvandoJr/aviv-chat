@@ -20,13 +20,26 @@ export async function POST(req: NextRequest) {
     const { offsetDays = 0, onLoad = false, filter = {} } = await req.json()
 
     const todayBrt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
-    if (!onLoad) todayBrt.setDate(todayBrt.getDate() - Number(offsetDays))
-    const targetDue = todayBrt.toISOString().slice(0, 10)
+    const dow = todayBrt.getDay()
 
-    // onLoad: boletos que ENTRARAM hoje no sistema; offset: vencendo na data-alvo
+    // Regra legal: sábado/domingo não dispara nada (posterga p/ segunda).
+    if (dow === 0 || dow === 6) {
+      return NextResponse.json({ ok: true, weekend: true, total: 0, targetDue: null, sample: [] })
+    }
+
+    // Alvos (mesma lógica do edge): hoje; na segunda inclui os alvos de sáb/dom.
+    const targetDues: string[] = []
+    for (const back of dow === 1 && !onLoad ? [2, 1, 0] : [0]) {
+      const t = new Date(todayBrt)
+      if (!onLoad) t.setDate(t.getDate() - back - Number(offsetDays))
+      targetDues.push(t.toISOString().slice(0, 10))
+    }
+    const targetDue = targetDues[targetDues.length - 1]
+
+    // onLoad: data efetiva de disparo da carga é hoje; offset: vencendo na(s) data(s)-alvo
     let q = admin.from('vw_cobranca_boletos')
       .select('customer_name, customer_phone, parcela, due_date, amount, empreendimento, source')
-    q = onLoad ? q.eq('loaded_date', targetDue) : q.eq('due_date', targetDue)
+    q = onLoad ? q.eq('load_dispatch_date', targetDue) : q.in('due_date', targetDues)
     if (filter.source && filter.source !== 'both') q = q.eq('source', filter.source)
     if (filter.empreendimento) q = q.ilike('empreendimento', `%${filter.empreendimento}%`)
 

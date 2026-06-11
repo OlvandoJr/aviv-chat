@@ -350,6 +350,11 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-11 — Regra legal de dias úteis (régua + SGL) + janela 18h na carga.**
+  - **Nenhuma cobrança automática sai em sábado/domingo.** `cobranca-regua` pula o run no fim de semana (`force=true` é o único override) e, na **segunda**, os passos de offset cobrem também os alvos que cairiam no sábado e no domingo (`.in('due_date', targetDues)`; a UNIQUE do log deduplica). `sgl-dispatch` idem: segura a fila no fim de semana (registros acumulam em `app_dispatched_at IS NULL`) e a segunda processa.
+  - **Disparo de carregamento com janela de 18h:** `vw_cobranca_boletos.load_dispatch_date` (migration 043) = carregado até 18h BRT → mesmo dia; após 18h → dia seguinte; sáb/dom → segunda. O passo `on_load` passou a usar essa coluna.
+  - **SGL classifica pela data de ENTRADA** (`created_at` BRT), não pela de processamento — sem isso, um registro de sábado (`vencida_3_dias`) processado na segunda viraria `vencida_5_dias` → sem mapa em `sgl_regua_map` → cobrança silenciosamente descartada.
+  - Preview da régua espelha as regras (fim de semana → "postergado para segunda").
 - **2026-06-11 — Régua: disparo "no dia do carregamento".**
   - Flag na régua (`/regua`): liga um passo especial (sempre o **Disparo 1**, sem o campo "Dias do vencimento") que cobra o cliente **no mesmo dia em que o boleto entra no sistema** (upload do ZIP ou captura via `sienge-webhook`).
   - Schema: `cobranca_regua_step.on_load` (migration 042) + `vw_cobranca_boletos.loaded_date` (data BRT de `boletos_emitidos.created_at`; upsert não muda `created_at` → re-upload não redispara).

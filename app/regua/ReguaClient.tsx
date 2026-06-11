@@ -92,6 +92,7 @@ export default function ReguaClient({ initial, inboxes, templates }: Props) {
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             Cada régua é um fluxo com vários disparos (ex: −3, no vencimento, +5, +10).
+            Disparos não saem em sábado/domingo — postergam para segunda.
           </p>
         </div>
         <button onClick={() => setEditing(newRule())}
@@ -262,7 +263,7 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
             <div className="flex items-center justify-between bg-emerald-50/60 border border-emerald-100 rounded-xl px-3 py-2.5">
               <div>
                 <span className="text-xs font-medium text-gray-700 block">Disparar no dia do carregamento</span>
-                <span className="text-[11px] text-gray-500">Envia a cobrança no mesmo dia em que o boleto entra no sistema (upload do ZIP ou captura automática).</span>
+                <span className="text-[11px] text-gray-500">Envia no mesmo dia para boletos carregados até 18h em dia útil; após 18h ou em fim de semana, no próximo dia útil.</span>
               </div>
               <button onClick={toggleOnLoad} title={hasOnLoad ? 'Ativado' : 'Desativado'}
                 className={cn('relative w-9 h-5 rounded-full transition-colors shrink-0 ml-3', hasOnLoad ? 'bg-emerald-500' : 'bg-gray-300')}>
@@ -308,7 +309,7 @@ function StepCard({ idx, step, templates, vars, filter, onChange, onRemove, canR
   onChange: (p: Partial<StepDraft>) => void; onRemove: () => void; canRemove: boolean
 }) {
   const supabase = createClient()
-  const [preview, setPreview] = useState<{ total: number; targetDue: string } | null>(null)
+  const [preview, setPreview] = useState<{ total: number; targetDue: string; weekend?: boolean } | null>(null)
   const [loading, setLoading] = useState(false)
   const tpl = templates.find(t => t.id === step.templateId) || null
 
@@ -399,9 +400,13 @@ function StepCard({ idx, step, templates, vars, filter, onChange, onRemove, canR
       </button>
       {preview && (
         <p className="text-xs text-gray-600">
-          <strong>{preview.total}</strong> {step.onLoad
-            ? 'boleto(s) carregado(s) hoje no sistema.'
-            : `cliente(s) com vencimento em ${preview.targetDue}.`}
+          {preview.weekend ? (
+            <>Fim de semana — disparos são postergados para segunda-feira.</>
+          ) : (
+            <><strong>{preview.total}</strong> {step.onLoad
+              ? 'boleto(s) com disparo de carga para hoje.'
+              : `cliente(s) com vencimento em ${preview.targetDue}.`}</>
+          )}
         </p>
       )}
     </div>
