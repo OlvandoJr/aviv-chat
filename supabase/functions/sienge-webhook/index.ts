@@ -8,6 +8,7 @@
 // (distinguir recebimento total de adiantamento parcial) é OPCIONAL e só roda se
 // SIENGE_WEBHOOK_CONFIRM=true. Protegido por token (verify_jwt=false).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mapCustomer, mapContrato } from '../_shared/sienge.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -86,6 +87,52 @@ async function syncReceiptFromSienge(billId: number, installmentId: number): Pro
   }
 }
 
+// ── Webhooks de CADASTRO (cliente / contrato) ────────────────────────────────
+// Mantém sienge_clientes / sienge_contratos frescos em tempo real (push). Defensivo
+// quanto ao payload: usa o objeto se vier completo, senão busca por id (1 req).
+// Retorna null se NÃO for evento de cadastro (segue a lógica de baixa).
+async function handleCadastro(body: any): Promise<{ event: string; matched: number; note: string } | null> {
+  const ev = String(body?.event ?? body?.eventType ?? body?.type ?? '').toLowerCase()
+  const isCustomer = /customer|cliente/.test(ev) || body?.customerId != null
+  const isContract = /sales[_-]?contract|contrato/.test(ev) || body?.salesContractId != null || Array.isArray(body?.salesContractUnits)
+  if (!isCustomer && !isContract) return null
+
+  const removed = /remov|delet|cancel/.test(ev)
+
+  if (isContract) {
+    const id = Number(body?.salesContractId ?? body?.id)
+    if (!id) return { event: ev || 'contract', matched: 0, note: 'sem id de contrato' }
+    if (removed) {
+      const { count } = await supabase.from('sienge_contratos').delete({ count: 'exact' }).eq('contract_id', id)
+      return { event: ev, matched: count || 0, note: 'contrato removido' }
+    }
+    let ct = body
+    if (!Array.isArray(body?.salesContractCustomers)) {
+      const r = await fetch(`${SIENGE_BASE}/sales-contracts/${id}`, { headers: { Authorization: siengeAuth() } })
+      if (r.ok) ct = await r.json().then((j) => j?.results?.[0] ?? j)
+    }
+    ct.id = ct.id ?? id
+    const { error, count } = await supabase.from('sienge_contratos').upsert(mapContrato(ct), { onConflict: 'contract_id', count: 'exact' })
+    return { event: ev || 'sales_contract', matched: count || 0, note: error ? 'erro: ' + error.message : 'contrato upsert' }
+  }
+
+  // cliente
+  const id = Number(body?.customerId ?? body?.id)
+  if (!id) return { event: ev || 'customer', matched: 0, note: 'sem id de cliente' }
+  if (removed) {
+    const { count } = await supabase.from('sienge_clientes').delete({ count: 'exact' }).eq('client_id', id)
+    return { event: ev, matched: count || 0, note: 'cliente removido' }
+  }
+  let cust = body
+  if (body?.phones == null && body?.cpf == null && body?.name == null) {
+    const r = await fetch(`${SIENGE_BASE}/customers/${id}`, { headers: { Authorization: siengeAuth() } })
+    if (r.ok) cust = await r.json().then((j) => j?.results?.[0] ?? j)
+  }
+  cust.id = cust.id ?? id
+  const { error, count } = await supabase.from('sienge_clientes').upsert(mapCustomer(cust), { onConflict: 'client_id', count: 'exact' })
+  return { event: ev || 'customer', matched: count || 0, note: error ? 'erro: ' + error.message : 'cliente upsert' }
+}
+
 function classifySituation(s: string): 'pago' | 'cancelado' | null {
   const t = (s || '').toLowerCase()
   if (/cancel/.test(t)) return 'cancelado'
@@ -124,6 +171,17 @@ Deno.serve(async (req) => {
   for (const [k, v] of req.headers.entries()) {
     if (/^(authorization|cookie)$/i.test(k)) { headers[k] = '***'; continue }
     headers[k] = v
+  }
+
+  // ── Eventos de CADASTRO (cliente/contrato) — push em tempo real ──────────────
+  const cad = await handleCadastro(body)
+  if (cad) {
+    try {
+      await supabase.from('sienge_webhook_events').insert({
+        event: cad.event, payload: body, headers, matched: cad.matched, note: cad.note,
+      })
+    } catch (_) { /* auditoria best-effort */ }
+    return ok({ ok: true, event: cad.event, matched: cad.matched, note: cad.note || undefined })
   }
 
   // Identifica o evento pela forma do payload (ou por body.event, se vier).
