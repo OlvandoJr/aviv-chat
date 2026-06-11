@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Boletos organizados em lotes.**
+  - Tabela `boleto_lotes` (data, usuário, arquivo, contagens, valor total) + `boletos_emitidos.upload_id` (migration 037). `/api/boletos/import` registra um lote por upload; a tela `/boletos` lista lotes que expandem para os boletos. Backfill dos boletos existentes.
 - **2026-06-09 — Debounce do bot ("espera, junta e responde").**
   - `ai-responder` espera 8s e, se chegou mensagem nova do cliente (contagem de `in`), aborta — só a última invocação responde, lendo o histórico inteiro. Acaba a resposta múltipla a mensagens em sequência. Também re-checa `handled_by` pós-espera.
 - **2026-06-09 — Troca de senha obrigatória no 1º acesso.**
