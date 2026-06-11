@@ -48,6 +48,44 @@ async function isFullyPaid(billId: number, installmentId: number): Promise<boole
   } catch { return null }
 }
 
+// FALLBACK (consome cota): quando o webhook de recebimento não casa nenhum boleto
+// na base (título não sincronizado), busca o título no Sienge UMA vez, faz upsert
+// em sienge_boletos como pago e devolve {customer_id, due_date} p/ propagar aos emitidos.
+async function syncReceiptFromSienge(billId: number, installmentId: number): Promise<any[] | null> {
+  try {
+    const auth = siengeAuth()
+    const bResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}`, { headers: { Authorization: auth } })
+    if (!bResp.ok) return null
+    const bill = await bResp.json()
+    const b = bill?.results?.[0] || bill || {}
+    const customerId = b.customerId ?? b.clientId ?? null
+    if (!customerId) return null
+
+    const iResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}/installments`, { headers: { Authorization: auth } })
+    if (!iResp.ok) return null
+    const inst = ((await iResp.json()).results || []).find((i: any) => Number(i.installmentId) === installmentId)
+    if (!inst?.dueDate) return null
+
+    const amount = inst.originalAmount ?? inst.value ?? inst.grossAmount ?? inst.balanceDue ?? null
+    const { data } = await supabase.from('sienge_boletos').upsert({
+      receivable_bill_id: billId,
+      installment_id:     installmentId,
+      customer_id:        customerId,
+      customer_name:      b.customerName ?? b.name ?? null,
+      due_date:           inst.dueDate,
+      amount,
+      parcela_descricao:  `Parcela ${installmentId}`,
+      status:             'pago',
+      paid_at:            new Date().toISOString(),
+      updated_at:         new Date().toISOString(),
+    }, { onConflict: 'receivable_bill_id,installment_id' }).select('id, customer_id, due_date')
+    return data || []
+  } catch (e) {
+    console.error('syncReceiptFromSienge error:', e)
+    return null
+  }
+}
+
 function classifySituation(s: string): 'pago' | 'cancelado' | null {
   const t = (s || '').toLowerCase()
   if (/cancel/.test(t)) return 'cancelado'
@@ -116,6 +154,20 @@ Deno.serve(async (req) => {
         if (error) note = `erro update: ${error.message}`
         matched = data?.length || 0
         await propagateToEmitidos(data || [], 'pago')
+
+        // Não casou → título não sincronizado: busca no Sienge 1x e grava.
+        if (matched === 0) {
+          const synced = await syncReceiptFromSienge(billId, installmentId)
+          if (synced && synced.length) {
+            matched = synced.length
+            note = 'sincronizado do Sienge (título não estava na base)'
+            await propagateToEmitidos(synced, 'pago')
+          } else if (synced === null) {
+            note = 'não casou e fallback Sienge falhou'
+          } else {
+            note = 'não casou (título não encontrado no Sienge)'
+          }
+        }
       }
     } else if (isSituation) {
       const novo = classifySituation(body.situation)

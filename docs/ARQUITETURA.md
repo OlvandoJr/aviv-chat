@@ -350,8 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
-- **2026-06-09 — Webhook Sienge propaga baixa para `boletos_emitidos`.**
+- **2026-06-09 — Webhook Sienge propaga baixa para `boletos_emitidos` + fallback.**
   - `sienge-webhook`: além de `sienge_boletos`, agora marca também o `boletos_emitidos` correspondente (casa por `client_id`+`vencimento`) como pago/cancelado — fecha o gap entre as duas bases. Backfill dos já pagos.
+  - Fallback: se o recebimento não casar nenhum boleto (título não sincronizado), busca o título no Sienge **1x** (cota), grava em `sienge_boletos` como pago e propaga. Só quando `matched=0`.
 - **2026-06-09 — Comprovante SGL marca a parcela + sai da régua.**
   - `process-media`: comprovante de cliente SGL agora atualiza `mensagens_cobranca.status='comprovante_recebido'` (casa a parcela por **vencimento → valor**), aparecendo como "Comprovante" no painel/Central.
   - `sgl-dispatch`: pula novas cobranças de parcela que já tem comprovante/baixa (chave telefone+parcela) — parcela paga sai da régua; outras parcelas em aberto seguem normais.
