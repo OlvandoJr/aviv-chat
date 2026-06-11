@@ -91,8 +91,10 @@ async function syncReceiptFromSienge(billId: number, installmentId: number): Pro
 // Mantém sienge_clientes / sienge_contratos frescos em tempo real (push). Defensivo
 // quanto ao payload: usa o objeto se vier completo, senão busca por id (1 req).
 // Retorna null se NÃO for evento de cadastro (segue a lógica de baixa).
-async function handleCadastro(body: any): Promise<{ event: string; matched: number; note: string } | null> {
-  const ev = String(body?.event ?? body?.eventType ?? body?.type ?? '').toLowerCase()
+async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: string; matched: number; note: string } | null> {
+  // O nome do evento vem no HEADER x-sienge-event (o body traz só o id, ex.: {customerId:1}).
+  const evRaw = hookEvent || body?.event || body?.eventType || body?.type || ''
+  const ev = String(evRaw).toLowerCase()
   const isCustomer = /customer|cliente/.test(ev) || body?.customerId != null
   const isContract = /sales[_-]?contract|contrato/.test(ev) || body?.salesContractId != null || Array.isArray(body?.salesContractUnits)
   if (!isCustomer && !isContract) return null
@@ -174,7 +176,9 @@ Deno.serve(async (req) => {
   }
 
   // ── Eventos de CADASTRO (cliente/contrato) — push em tempo real ──────────────
-  const cad = await handleCadastro(body)
+  // O Sienge manda o nome do evento no header x-sienge-event; o body traz só o id.
+  const hookEvent = req.headers.get('x-sienge-event') || req.headers.get('x-event') || ''
+  const cad = await handleCadastro(body, hookEvent)
   if (cad) {
     try {
       await supabase.from('sienge_webhook_events').insert({
