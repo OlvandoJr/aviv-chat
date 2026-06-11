@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-11 — Excluir lote de boletos (admin/manager).**
+  - `/boletos`: lixeira na linha do lote (visível só p/ admin/manager) → `DELETE /api/boletos/lotes/[id]` (valida o role de novo no servidor; agent recebe 403). Apaga os PDFs do bucket `boletos`, os `boletos_emitidos` do lote e o registro em `boleto_lotes`. Desfaz carregamento errado; re-upload do ZIP recria tudo (upsert idempotente). A baixa de pagamento vive em `sienge_boletos`, então excluir o boleto emitido não apaga histórico de pagamento.
 - **2026-06-11 — Regra legal de dias úteis (régua + SGL) + janela 18h na carga.**
   - **Nenhuma cobrança automática sai em sábado/domingo.** `cobranca-regua` pula o run no fim de semana (`force=true` é o único override) e, na **segunda**, os passos de offset cobrem também os alvos que cairiam no sábado e no domingo (`.in('due_date', targetDues)`; a UNIQUE do log deduplica). `sgl-dispatch` idem: segura a fila no fim de semana (registros acumulam em `app_dispatched_at IS NULL`) e a segunda processa.
   - **Disparo de carregamento com janela de 18h:** `vw_cobranca_boletos.load_dispatch_date` (migration 043) = carregado até 18h BRT → mesmo dia; após 18h → dia seguinte; sáb/dom → segunda. O passo `on_load` passou a usar essa coluna.
