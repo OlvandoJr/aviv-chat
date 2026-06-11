@@ -27,12 +27,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
     const { data: camp } = await admin
       .from('chat_campaigns')
-      .select('id, status, variable_mapping')
+      .select('id, status, variable_mapping, deleted_at')
       .eq('id', id)
       .single()
-    if (!camp) return NextResponse.json({ error: 'Campanha não encontrada' }, { status: 404 })
-    if (!['draft', 'paused'].includes(camp.status)) {
-      return NextResponse.json({ error: 'Só é possível editar audiência em rascunho/pausada' }, { status: 422 })
+    if (!camp || camp.deleted_at) return NextResponse.json({ error: 'Campanha não encontrada' }, { status: 404 })
+    if (!['draft', 'scheduled', 'paused'].includes(camp.status)) {
+      return NextResponse.json({ error: 'Só é possível editar audiência em rascunho/agendada/pausada' }, { status: 422 })
     }
 
     // ── Montar as linhas de origem ────────────────────────────────────────────

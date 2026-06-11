@@ -9,6 +9,7 @@ export default async function CampaignsPage() {
   const { data: campaigns } = await supabase
     .from('chat_campaigns')
     .select('id, name, status, total, sent, failed, scheduled_at, created_at, template:chat_wa_templates(name), inbox:chat_inboxes(name)')
+    .is('deleted_at', null)
     .order('created_at', { ascending: false })
 
   return (

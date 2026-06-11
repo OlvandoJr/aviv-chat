@@ -13,7 +13,7 @@ interface Tpl {
   header_type: string | null; header_text: string | null; body_text: string; footer_text?: string | null
   header_var_count: number; body_var_count: number
 }
-interface Props { inboxes: { id: string; name: string }[]; templates: Tpl[] }
+interface Props { inboxes: { id: string; name: string }[]; templates: Tpl[]; campaign?: any }
 
 function varNums(text: string): number[] {
   const s = new Set<number>()
@@ -26,21 +26,25 @@ function defaultFormat(col: string): 'currency' | 'date' | undefined {
   return undefined
 }
 
-export default function CampaignWizard({ inboxes, templates }: Props) {
+export default function CampaignWizard({ inboxes, templates, campaign }: Props) {
   const router = useRouter()
   const supabase = createClient()
+  const isEdit = !!campaign
 
-  const [name, setName]       = useState('')
-  const [inboxId, setInboxId] = useState(inboxes[0]?.id || '')
-  const [templateId, setTemplateId] = useState('')
-  const [mapping, setMapping] = useState<Record<string, { type: 'static' | 'column'; value: string; format?: string }>>({})
+  const toLocalInput = (iso: string | null) => iso ? new Date(iso).toISOString().slice(0, 16) : ''
+
+  const [name, setName]       = useState(campaign?.name || '')
+  const [inboxId, setInboxId] = useState(campaign?.inbox_id || inboxes[0]?.id || '')
+  const [templateId, setTemplateId] = useState(campaign?.template_id || '')
+  const [mapping, setMapping] = useState<Record<string, { type: 'static' | 'column'; value: string; format?: string }>>(campaign?.variable_mapping || {})
   const [filter, setFilter]   = useState<{ source: string; dueFrom: string; dueTo: string; empreendimento: string }>(
-    { source: 'both', dueFrom: '', dueTo: '', empreendimento: '' })
-  const [scheduledAt, setScheduledAt] = useState('')
+    { source: campaign?.audience?.filter?.source || 'both', dueFrom: campaign?.audience?.filter?.dueFrom || '',
+      dueTo: campaign?.audience?.filter?.dueTo || '', empreendimento: campaign?.audience?.filter?.empreendimento || '' })
+  const [scheduledAt, setScheduledAt] = useState(toLocalInput(campaign?.scheduled_at || null))
 
   const [busy, setBusy]   = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [draftId, setDraftId] = useState<string | null>(null)
+  const [draftId, setDraftId] = useState<string | null>(campaign?.id || null)
   const [audienceTotal, setAudienceTotal] = useState<number | null>(null)
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
@@ -83,14 +87,17 @@ export default function CampaignWizard({ inboxes, templates }: Props) {
           ? { type: 'static', value: m.value }
           : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
       }
+      const payload = { name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null }
       if (!id) {
-        const r = await fetch('/api/campaigns', {
-          method: 'POST', headers,
-          body: JSON.stringify({ name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null }),
-        })
+        const r = await fetch('/api/campaigns', { method: 'POST', headers, body: JSON.stringify(payload) })
         const j = await r.json()
         if (!r.ok) throw new Error(j.error || 'Falha ao criar campanha')
         id = j.id; setDraftId(id)
+      } else {
+        // Persiste alterações de configuração (nome/inbox/template/mapping/agendamento)
+        const r = await fetch(`/api/campaigns/${id}`, { method: 'PATCH', headers, body: JSON.stringify(payload) })
+        const j = await r.json()
+        if (!r.ok) throw new Error(j.error || 'Falha ao salvar a campanha')
       }
       const ra = await fetch(`/api/campaigns/${id}/audience`, {
         method: 'POST', headers,
@@ -126,7 +133,7 @@ export default function CampaignWizard({ inboxes, templates }: Props) {
         <ArrowLeft className="w-4 h-4" /> Campanhas
       </button>
       <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2 mb-6">
-        <Megaphone className="w-5 h-5 text-emerald-600" /> Nova campanha
+        <Megaphone className="w-5 h-5 text-emerald-600" /> {isEdit ? 'Editar campanha' : 'Nova campanha'}
       </h1>
 
       <div className="space-y-6">
@@ -228,7 +235,7 @@ export default function CampaignWizard({ inboxes, templates }: Props) {
             </div>
             <button onClick={calcAudience} disabled={busy}
               className="text-sm font-medium px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-50">
-              {busy ? 'Calculando…' : 'Calcular audiência'}
+              {busy ? 'Salvando…' : isEdit ? 'Salvar e calcular audiência' : 'Calcular audiência'}
             </button>
             {audienceTotal !== null && (
               <p className="text-sm text-gray-700">

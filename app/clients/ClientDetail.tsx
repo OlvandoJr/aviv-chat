@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink } from 'lucide-react'
+import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink, Megaphone } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { cn, formatCurrency, getInitials, formatHour, mediaSrc } from '@/lib/utils'
 import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
@@ -43,8 +43,8 @@ function verdictBadge(v: string | null) {
   return { label: 'Analisado', cls: 'bg-gray-100 text-gray-500' }
 }
 
-export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, boletosSgl, reguaLog, comprovantes, conversations, messages, windowOpen }: {
-  cliente: any; boletosEmitidos: any[]; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; comprovantes: any[]; conversations: any[]; messages: any[]; windowOpen: boolean
+export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, boletosSgl, reguaLog, comprovantes, campanhas = [], conversations, messages, windowOpen }: {
+  cliente: any; boletosEmitidos: any[]; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; comprovantes: any[]; campanhas?: any[]; conversations: any[]; messages: any[]; windowOpen: boolean
 }) {
   const o = ORIGEM[cliente.origem] || ORIGEM.contato
 
@@ -229,6 +229,33 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
                     </div>
                   )
                 })}
+              </div>
+            )}
+          </div>
+
+          {/* Campanhas recebidas */}
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <h3 className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-2"><Megaphone className="w-3.5 h-3.5 text-gray-400" /> Campanhas recebidas</h3>
+            {campanhas.length === 0 ? (
+              <p className="text-xs text-gray-400">Nenhuma campanha enviada a este cliente.</p>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {campanhas.map((c) => (
+                  <div key={c.message_id} className="flex items-start gap-2 text-xs">
+                    <Megaphone className="w-3.5 h-3.5 text-emerald-400 mt-0.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-medium text-gray-700">{c.campaign_name || 'Campanha'}</span>
+                        <span className="text-gray-400">{dtTime(c.created_at)}</span>
+                        {c.wa_status && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 uppercase">{c.wa_status}</span>}
+                      </div>
+                      {c.content && <p className="text-[11px] text-gray-500 whitespace-pre-wrap line-clamp-3 mt-0.5">{c.content}</p>}
+                      {c.conversation_id && (
+                        <Link href={`/conversations/${c.conversation_id}`} className="text-[11px] text-gray-400 hover:text-gray-600">na conversa →</Link>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>

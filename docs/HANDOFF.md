@@ -15,7 +15,7 @@
   - Edge: `npx --no-install supabase functions deploy <nome> --project-ref jpxlczmbxfcnujemlxzq`
     (+ `--no-verify-jwt` para as protegidas por token: `sienge-webhook`).
   - Migrations: MCP `apply_migration` / `execute_sql` (project_id acima). Sempre criar o arquivo
-    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **043**).
+    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **044**).
 - **PR + merge SOZINHO (gh NÃO está instalado):** reutilizar o token do Keychain:
   ```bash
   TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill 2>/dev/null | sed -n 's/^password=//p')
@@ -68,6 +68,12 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
   só parcelas, 2ª via via API é fallback raro).
 
 ## 3. OUTROS PONTOS NO AR (recentes)
+- **Campanhas: editar + excluir + histórico por cliente.** Editar reusa o `CampaignWizard`
+  (`/campaigns/[id]/edit`, `PATCH /api/campaigns/[id]`; config só em draft/scheduled/paused). Excluir =
+  **soft-delete** (`chat_campaigns.deleted_at`, migration 044) p/ não perder o nome no histórico;
+  `dispatch-campaign` ignora excluídas. Histórico na Central (seção "Campanhas recebidas") vem da view
+  `vw_campanhas_cliente` (chat_messages com `metadata.campaign_id` → contato pela conversa; o `wa_id` de
+  recipients NÃO casa por normalização). Campanhas é admin/manager (layout).
 - **Excluir lote de boletos** (`/boletos`, só admin/manager): lixeira na linha do lote →
   `DELETE /api/boletos/lotes/[id]` (role validado no servidor; 403 p/ agent). Apaga PDFs do bucket +
   boletos do lote + registro do lote. Re-upload recria (upsert idempotente).
@@ -161,7 +167,7 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
 - Migrations até **042** (029 bucket boletos, 030 vw_boleto_chat, 031 receipt_validation, 032
   vw_clientes_boletos valor, 033 central, 034 chat-media privado, 035 cron auto-return, 036 attendant
   soft-delete, 037 boleto_lotes, 038→041 sync clientes/contratos + crons mensais + views contrato,
-  042 régua on_load + loaded_date, 043 dias úteis + load_dispatch_date).
+  042 régua on_load + loaded_date, 043 dias úteis + load_dispatch_date, 044 campanha soft-delete + vw_campanhas_cliente).
 - Edge functions: ai-responder, process-media, whatsapp-webhook, send-message, dispatch-campaign,
   cobranca-regua, sgl-dispatch, import-boletos (legado), sienge-webhook, sienge-sync-clientes,
   sienge-sync-contratos, auto-return-bot, test-api-call, analyze-comprovante, send-reminders, list-models.
