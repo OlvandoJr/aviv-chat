@@ -4,7 +4,7 @@
 > aqui** (e marque a data na seção [Changelog](#15-changelog-de-decisões)). É a referência única para
 > um dev entender, replicar, ajustar e operar o sistema.
 
-Última atualização: **2026-06-09**
+Última atualização: **2026-06-11**
 
 ---
 
@@ -350,7 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
-- **2026-06-11 — Contratos do Sienge (empreendimento/unidade) + webhooks de cadastro.**
+- **2026-06-11 — Captura automática do boleto Sienge (`PAYMENT_SLIP_REGISTERED`).**
+  - `sienge-webhook` ganhou `handlePaymentSlip`: ao receber o evento de boleto/carnê registrado (gated SÓ pelo header `x-sienge-event`, p/ não colidir com `RECEIPT_PROCESSED`), resolve `client_id`+`vencimento`+`valor` (`sienge_boletos` → fallback Sienge 1x) → busca a 2ª via (`fetchSegundaVia`, novo helper em `_shared/sienge.ts`: `payment-slip-notification` → `urlReport`+`digitableNumber`) → baixa o PDF → bucket `boletos` (`{client_id}/{venc}.pdf`) → **upsert idempotente** em `boletos_emitidos` `(client_id,vencimento)` com `lote='sienge-webhook'`, preservando status se já `pago/cancelado`. Convive com o ZIP (o que chegar por último vence). Boletos que não vêm no ZIP entram sozinhos, com PDF + linha digitável. **Sem migration.** Falta o registro do hook no painel Sienge (ação do usuário); shape do payload é defensivo e confirmado no 1º evento via `sienge_webhook_events`.
   - Tabela `sienge_contratos` (migration 039) + view `vw_cliente_contrato`; edge `sienge-sync-contratos` (pagina `GET /sales-contracts`, 133). Traz empreendimento + unidade (Quadra/Lote) + vínculo cliente/título.
   - Views de boleto (`vw_boletos_central`, `vw_cobranca_boletos`) repontadas: empreendimento/quadra/lote agora vêm do **contrato** (fallback `sienge_boletos`), parseando "Quadra X / Lote Y" — migration 040. Clientes novos já mostram unidade.
   - **Webhooks de cadastro**: `sienge-webhook` passou a rotear `customer_*` e `sales_contract_*` (push, tempo real) → upsert em `sienge_clientes`/`sienge_contratos`. Sync completo virou **mensal** (migration 041) só como reconciliação. Helpers em `_shared/sienge.ts`.

@@ -84,36 +84,38 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
 
 ---
 
-## 4. ⭐ PRÓXIMA TAREFA (o que o usuário pediu para começar)
+## 4. ⭐ PRÓXIMA TAREFA — ✅ CÓDIGO NO AR (aguardando registro do hook + 1 evento real)
 **Capturar o boleto Sienge automaticamente, MANTENDO o upload manual do ZIP — os dois funcionam juntos.**
 
-- Existe o evento Sienge **`PAYMENT_SLIP_REGISTERED`** (boleto/carnê registrado no banco). Hoje ele vai
-  só pro n8n (hook `d4ff9cb7` → `bot-evo-n8n.../sienge-boleto-emitido`). Queremos **também** capturar.
-- **Plano:** registrar `PAYMENT_SLIP_REGISTERED` apontando para a nossa `sienge-webhook` (mesma URL/token).
-  No handler, ao receber o evento (provável payload `{billId, installmentId}` ou `{receivableBillId,...}`
-  — **CONFIRMAR pelo header/auditoria no 1º evento**, como fizemos com os outros):
-  1. Buscar a 2ª via no Sienge: `GET payment-slip-notification?billReceivableId={bill}&installmentId={inst}`
-     → `urlReport` (PDF) + `digitableNumber` (linha digitável). (1 req cota; evento é pontual.)
-  2. Resolver `client_id` + `vencimento`: por `sienge_contratos.receivable_bill_id` (tem o vínculo) e/ou
-     `sienge_boletos` (rbid+inst → customer_id+due_date); telefone via `sienge_clientes`.
-  3. Baixar o PDF → subir no bucket **`boletos`** → **upsert em `boletos_emitidos`** (mesma chave
-     `client_id,vencimento`, set `linha_digitavel`/`pdf_path`/`valor`). **Idempotente** → convive com o ZIP
-     (o que chegar por último vence; mesma chave). Marcar a origem (ex.: `lote='sienge-webhook'` ou um
-     campo). Auditar em `sienge_webhook_events`.
-- **Resultado:** boletos Sienge que NÃO vêm no ZIP (ex.: o caso do cliente 13009) entram **sozinhos**,
-  com PDF + linha digitável, e o bot consegue enviá-los. Resolve o buraco que vimos.
-- **Reuso:** `_shared/sienge.ts` (auth/base); lógica de download+upload de PDF já existe em
-  `enviarBoletoPDF` (`ai-responder`) e na rota `forward`; padrão de roteamento por header já no
-  `sienge-webhook` (`handleCadastro`). `siengeSegundaVia` (no `ai-responder`) já chama o
-  `payment-slip-notification` — mesma chamada serve aqui.
-- **Confirmar antes de codar:** o nome exato do header do evento e o shape do payload do
-  `PAYMENT_SLIP_REGISTERED` (registrar o hook, disparar/observar 1 evento em `sienge_webhook_events`).
+- **FEITO (deploy do `sienge-webhook` em 2026-06-11):** novo `handlePaymentSlip` no `sienge-webhook`
+  (gated ESTRITAMENTE pelo header `x-sienge-event` casando `payment_slip/boleto registrado`; não colide
+  com `RECEIPT_PROCESSED`). Fluxo: resolve `client_id`+`vencimento`+`valor` por `sienge_boletos`
+  (rbid+inst) → fallback Sienge 1x (`resolveTitulo`) → 2ª via `fetchSegundaVia` (`_shared/sienge.ts`,
+  `payment-slip-notification` → `urlReport`+`digitableNumber`) → baixa PDF → bucket `boletos`
+  (`{client_id}/{venc}.pdf`) → **upsert idempotente** `boletos_emitidos` `(client_id,vencimento)` com
+  `lote='sienge-webhook'`, **preservando status** se já estava `pago/cancelado`. Audita tudo (payload+
+  headers completos) em `sienge_webhook_events`.
+- **FALTA (bloqueio):** o registro do hook `PAYMENT_SLIP_REGISTERED` apontando p/ a nossa `sienge-webhook`
+  é **ação do usuário no painel** (ver §5). O código é defensivo quanto ao shape do payload
+  (`billReceivableId`/`receivableBillId`/`billId` + `installmentId`/`installment`); **no 1º evento real,
+  conferir em `sienge_webhook_events` se o id veio com outro nome** (ex.: `paymentSlipId` sozinho) e
+  ajustar a extração se a `note` disser "sem billReceivableId/installmentId".
+- **Como validar (1º evento):**
+  ```sql
+  select event, payload, headers, matched, note, created_at
+  from sienge_webhook_events where event ilike '%slip%' order by created_at desc limit 3;
+  ```
+  `matched>=1` + `note` com "boleto capturado" = funcionou. Conferir o boleto:
+  `select * from boletos_emitidos where lote='sienge-webhook' order by created_at desc limit 5;`
+- **Resultado esperado:** boletos Sienge que NÃO vêm no ZIP (ex.: cliente 13009) entram **sozinhos**,
+  com PDF + linha digitável, e o bot consegue enviá-los.
 
 ---
 
 ## 5. AÇÕES PENDENTES DO USUÁRIO (painel — não consigo fazer)
-- **Registrar `PAYMENT_SLIP_REGISTERED`** na nossa `sienge-webhook` (para a tarefa acima). Curl no padrão
-  dos outros (URL `.../functions/v1/sienge-webhook?token=avivwh_...` + `token` no body).
+- **⭐ Registrar `PAYMENT_SLIP_REGISTERED`** na nossa `sienge-webhook` (o código já está no ar — §4).
+  Mesmo padrão dos outros hooks: URL `.../functions/v1/sienge-webhook`, evento no header `x-sienge-event`,
+  token no `Authorization`. Depois dispara/observa 1 evento em `sienge_webhook_events` p/ validar o shape.
 - **Deletar o hook duplicado de baixa do n8n** (`48b9cf19` → `sienge-boleto-pago`) quando aposentar o n8n.
 - **Aposentar o n8n "Sienge A" (parcelas)** quando confortável (já fora do caminho crítico).
 - **Testar `SALES_CONTRACT_UPDATED`** (alterar um contrato no Sienge) — mecanismo idêntico ao de cliente.
@@ -125,8 +127,10 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
 - **Webhook Sienge:** evento no **header `x-sienge-event`**; body só com o id. Token aceito tanto em
   `?token=` quanto no body. Vários hooks na **mesma URL coexistem** (chave = id do hook).
 - **Hooks ativos hoje (3 nossos):** `69881d0c` (baixa: RECEIPT_PROCESSED + UPDATE_RECEIVABLE_BILL_SITUATION),
-  `ffe111bb` (CUSTOMER_*), `6235832a` (SALES_CONTRACT_*). Há vários hooks do CVCRM (`aviv.cvcrm.com.br`) —
-  **não mexer**.
+  `ffe111bb` (CUSTOMER_*), `6235832a` (SALES_CONTRACT_*). **Falta registrar** `PAYMENT_SLIP_REGISTERED`
+  (handler já no ar — §4/§5). Há vários hooks do CVCRM (`aviv.cvcrm.com.br`) — **não mexer**.
+- **PAYMENT_SLIP_REGISTERED** é gated SÓ pelo header (`payment_slip/boleto registrado`) — nunca pela forma
+  do payload, p/ não colidir com `RECEIPT_PROCESSED` (que tem o mesmo `{billId, installmentId}`).
 - **pdf-parse fixado em 1.1.1** (paridade n8n; v2 quebra o subpath). Import via `pdf-parse/lib/pdf-parse.js`.
 - **Cota Sienge Free é baixa** — nunca varrer boleto a boleto na API; preferir push/ZIP.
 - **`unaccent` não existe** no DB (usar `lower()` + normalização no código).
@@ -143,4 +147,4 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
 - Edge functions: ai-responder, process-media, whatsapp-webhook, send-message, dispatch-campaign,
   cobranca-regua, sgl-dispatch, import-boletos (legado), sienge-webhook, sienge-sync-clientes,
   sienge-sync-contratos, auto-return-bot, test-api-call, analyze-comprovante, send-reminders, list-models.
-  `_shared/`: whatsapp.ts, apiExec.ts, sienge.ts.
+  `_shared/`: whatsapp.ts, apiExec.ts, sienge.ts (agora exporta `fetchSegundaVia` — 2ª via reusável).

@@ -5,6 +5,30 @@ export const SIENGE_BASE = 'https://api.sienge.com.br/avivconstrutora/public/api
 export const siengeAuth = () =>
   `Basic ${btoa(`${Deno.env.get('SIENGE_USER')}:${Deno.env.get('SIENGE_PASSWORD')}`)}`
 
+// 2ª via do boleto/carnê: GET /payment-slip-notification → urlReport (PDF) + digitableNumber.
+// Mesma chamada usada pelo bot (ai-responder, siengeSegundaVia). Consome 1 req de cota.
+// Devolve também o objeto bruto (`raw`) p/ extrair valor/vencimento quando disponíveis.
+export async function fetchSegundaVia(
+  billId: number, instId: number,
+): Promise<{ url: string; digitavel: string; valor: number | null; raw: any } | null> {
+  try {
+    const url = `${SIENGE_BASE}/payment-slip-notification?billReceivableId=${billId}&installmentId=${instId}`
+    const r = await fetch(url, { headers: { Authorization: siengeAuth(), Accept: 'application/json' } })
+    if (!r.ok) {
+      console.error('fetchSegundaVia HTTP', r.status, await r.text().catch(() => ''))
+      return null
+    }
+    const j = await r.json()
+    const b = (j.results || [])[0] || j || {}
+    const valorRaw = b.documentValue ?? b.value ?? b.amount ?? b.totalAmount ?? null
+    const valor = valorRaw == null ? null : Number(valorRaw)
+    return { url: b.urlReport || '', digitavel: b.digitableNumber || '', valor: Number.isFinite(valor as number) ? valor : null, raw: b }
+  } catch (e) {
+    console.error('fetchSegundaVia error:', e)
+    return null
+  }
+}
+
 // Telefone do customer → dígitos com DDI 55 (prefere celular; remove 0 de tronco).
 export function bestPhone(c: any): string | null {
   const cands: string[] = []
