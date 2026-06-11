@@ -55,6 +55,19 @@ function classifySituation(s: string): 'pago' | 'cancelado' | null {
   return null   // situação não acionável → só audita
 }
 
+// Propaga o status para boletos_emitidos (fonte de verdade do boleto que enviamos),
+// casando pela chave do Sienge (customer_id + due_date). Mantém as duas bases alinhadas.
+async function propagateToEmitidos(rows: any[], novoStatus: 'pago' | 'cancelado') {
+  const patch: Record<string, any> = { status: novoStatus, updated_at: new Date().toISOString() }
+  if (novoStatus === 'pago') patch.paid_at = new Date().toISOString()
+  for (const sb of rows || []) {
+    if (!sb?.customer_id || !sb?.due_date) continue
+    await supabase.from('boletos_emitidos').update(patch)
+      .eq('client_id', sb.customer_id).eq('vencimento', sb.due_date)
+      .not('status', 'in', '("pago","cancelado")')
+  }
+}
+
 Deno.serve(async (req) => {
  try {
   const url = new URL(req.url)
@@ -99,9 +112,10 @@ Deno.serve(async (req) => {
       if (marcarPago) {
         const { data, error } = await supabase.from('sienge_boletos')
           .update({ status: 'pago', paid_at: new Date().toISOString(), updated_at: new Date().toISOString() }, { count: 'exact' })
-          .eq('receivable_bill_id', billId).eq('installment_id', installmentId).select('id')
+          .eq('receivable_bill_id', billId).eq('installment_id', installmentId).select('id, customer_id, due_date')
         if (error) note = `erro update: ${error.message}`
         matched = data?.length || 0
+        await propagateToEmitidos(data || [], 'pago')
       }
     } else if (isSituation) {
       const novo = classifySituation(body.situation)
@@ -112,9 +126,10 @@ Deno.serve(async (req) => {
         if (novo === 'pago') patch.paid_at = new Date().toISOString()
         const { data, error } = await supabase.from('sienge_boletos')
           .update(patch, { count: 'exact' })
-          .in('receivable_bill_id', body.receivableBillId.map(Number)).select('id')
+          .in('receivable_bill_id', body.receivableBillId.map(Number)).select('id, customer_id, due_date')
         if (error) note = `erro update: ${error.message}`
         matched = data?.length || 0
+        await propagateToEmitidos(data || [], novo)
       }
     } else {
       note = 'payload não reconhecido'
