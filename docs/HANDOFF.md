@@ -15,7 +15,7 @@
   - Edge: `npx --no-install supabase functions deploy <nome> --project-ref jpxlczmbxfcnujemlxzq`
     (+ `--no-verify-jwt` para as protegidas por token: `sienge-webhook`).
   - Migrations: MCP `apply_migration` / `execute_sql` (project_id acima). Sempre criar o arquivo
-    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **042**).
+    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **043**).
 - **PR + merge SOZINHO (gh NÃO está instalado):** reutilizar o token do Keychain:
   ```bash
   TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill 2>/dev/null | sed -n 's/^password=//p')
@@ -68,9 +68,15 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
   só parcelas, 2ª via via API é fallback raro).
 
 ## 3. OUTROS PONTOS NO AR (recentes)
+- **REGRA LEGAL (dias úteis):** nenhuma cobrança automática sai em sáb/dom. `cobranca-regua` pula o
+  run no fim de semana (`force=true` é o override) e na SEGUNDA os passos de offset cobrem também os
+  alvos de sáb/dom (`.in('due_date', targetDues)`; log deduplica). `sgl-dispatch` segura a fila no
+  fim de semana e **classifica pela data de ENTRADA do registro** (`created_at` BRT) — senão o envio
+  postergado mudaria de classificação e cairia fora do `sgl_regua_map` (descartado).
 - **Régua: disparo "no dia do carregamento"** (flag na régua → Disparo 1 sem campo de dias; cobra no
   dia em que o boleto ENTRA — ZIP ou sienge-webhook). `cobranca_regua_step.on_load` +
-  `vw_cobranca_boletos.loaded_date` (migration 042); horário é "a partir de" (cron horário, dedup
+  `vw_cobranca_boletos.load_dispatch_date` (migrations 042/043): carregado até 18h → mesmo dia;
+  após 18h → dia seguinte; sáb/dom → segunda. Horário é "a partir de" (cron horário, dedup
   pelo log com sentinela `offset_days=999`).
 - **Bucket `chat-media` PRIVADO** + proxy autenticado `/api/media` (signed URL). Meta/OpenAI recebem
   signed URLs direto. `mediaSrc()` em `lib/utils.ts`.
@@ -152,7 +158,7 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
 - Migrations até **042** (029 bucket boletos, 030 vw_boleto_chat, 031 receipt_validation, 032
   vw_clientes_boletos valor, 033 central, 034 chat-media privado, 035 cron auto-return, 036 attendant
   soft-delete, 037 boleto_lotes, 038→041 sync clientes/contratos + crons mensais + views contrato,
-  042 régua on_load + loaded_date).
+  042 régua on_load + loaded_date, 043 dias úteis + load_dispatch_date).
 - Edge functions: ai-responder, process-media, whatsapp-webhook, send-message, dispatch-campaign,
   cobranca-regua, sgl-dispatch, import-boletos (legado), sienge-webhook, sienge-sync-clientes,
   sienge-sync-contratos, auto-return-bot, test-api-call, analyze-comprovante, send-reminders, list-models.
