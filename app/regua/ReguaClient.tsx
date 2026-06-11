@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { CalendarClock, Plus, Trash2, Pencil, Eye, X } from 'lucide-react'
+import { CalendarClock, Plus, Trash2, Pencil, Eye, X, AlertTriangle } from 'lucide-react'
 import { AVAILABLE_COLUMNS, COLUMN_LABEL } from '@/lib/whatsapp/vars'
 import MappedPreview from '@/components/whatsapp/MappedPreview'
 import { cn } from '@/lib/utils'
@@ -34,6 +34,25 @@ export function offsetBadge(n: number): string {
   if (n < 0) return `−${-n}d`
   if (n === 0) return 'D0'
   return `+${n}d`
+}
+
+// Próximo disparo de uma carga feita AGORA — espelha vw_cobranca_boletos.load_dispatch_date:
+// até 18h (BRT) em dia útil → hoje; após 18h → dia seguinte; sáb/dom → segunda.
+// Retorna null se a carga de agora sai HOJE (sem aviso); senão, o motivo + data destino.
+function avisoCargaTardia(): { motivo: string; label: string } | null {
+  const brt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
+  const hoje = new Date(brt); hoje.setHours(0, 0, 0, 0)
+  const alvo = new Date(hoje)
+  if (brt.getHours() >= 18) alvo.setDate(alvo.getDate() + 1)
+  const dow = alvo.getDay()
+  if (dow === 6) alvo.setDate(alvo.getDate() + 2)        // sábado → segunda
+  else if (dow === 0) alvo.setDate(alvo.getDate() + 1)   // domingo → segunda
+  if (alvo.getTime() === hoje.getTime()) return null
+  const fimDeSemana = brt.getDay() === 0 || brt.getDay() === 6
+  return {
+    motivo: fimDeSemana ? 'é fim de semana' : 'já passou das 18h',
+    label: alvo.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit' }),
+  }
 }
 
 type VarMap = Record<string, { type: 'static' | 'column'; value: string; format?: string }>
@@ -170,6 +189,7 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
 
   // Flag "disparar no dia do carregamento": liga/desliga o passo on_load (sempre o Disparo 1)
   const hasOnLoad = e.steps.some(st => st.onLoad)
+  const aviso = useMemo(avisoCargaTardia, [])
   function toggleOnLoad() {
     setE(s => s.steps.some(st => st.onLoad)
       ? { ...s, steps: s.steps.filter(st => !st.onLoad) }
@@ -270,6 +290,12 @@ function RuleEditor({ editing, inboxes, templates, onClose, onSaved }: {
                 <span className={cn('absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all', hasOnLoad ? 'left-[18px]' : 'left-0.5')} />
               </button>
             </div>
+            {hasOnLoad && aviso && (
+              <div className="flex items-start gap-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" />
+                <span>Atenção: como agora <strong>{aviso.motivo}</strong>, os boletos carregados a partir de agora <strong>não disparam hoje</strong> — serão enviados em <strong>{aviso.label}</strong> (próximo dia útil), a partir do horário do Disparo 1.</span>
+              </div>
+            )}
           </div>
 
           {/* Disparos */}
