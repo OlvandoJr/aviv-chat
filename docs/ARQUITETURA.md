@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-09 — Ordem de busca de boleto: emitido → SGL → Sienge.**
+  - O bot procurava Sienge antes do SGL; cliente em ambas as bases (parcelas Sienge futuras sem boleto gerado) travava na 2ª via Sienge e nunca chegava ao SGL (que tinha o link real). Reordenado: `loadSglBoletos` é tentado antes das parcelas `sienge_boletos`. SGL deduplicado por parcela.
 - **2026-06-09 — Webhook Sienge propaga baixa para `boletos_emitidos` + fallback.**
   - `sienge-webhook`: além de `sienge_boletos`, agora marca também o `boletos_emitidos` correspondente (casa por `client_id`+`vencimento`) como pago/cancelado — fecha o gap entre as duas bases. Backfill dos já pagos.
   - Fallback: se o recebimento não casar nenhum boleto (título não sincronizado), busca o título no Sienge **1x** (cota), grava em `sienge_boletos` como pago e propaga. Só quando `matched=0`.
