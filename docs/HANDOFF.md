@@ -68,6 +68,9 @@ jornada). Detalhes completos em `docs/ARQUITETURA.md`.
   só parcelas, 2ª via via API é fallback raro).
 
 ## 3. OUTROS PONTOS NO AR (recentes)
+- **Excluir lote de boletos** (`/boletos`, só admin/manager): lixeira na linha do lote →
+  `DELETE /api/boletos/lotes/[id]` (role validado no servidor; 403 p/ agent). Apaga PDFs do bucket +
+  boletos do lote + registro do lote. Re-upload recria (upsert idempotente).
 - **REGRA LEGAL (dias úteis):** nenhuma cobrança automática sai em sáb/dom. `cobranca-regua` pula o
   run no fim de semana (`force=true` é o override) e na SEGUNDA os passos de offset cobrem também os
   alvos de sáb/dom (`.in('due_date', targetDues)`; log deduplica). `sgl-dispatch` segura a fila no
