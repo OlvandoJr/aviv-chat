@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock } from 'lucide-react'
+import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const STATUS_LABEL: Record<string, string> = {
@@ -45,6 +45,16 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
     router.refresh()
   }
 
+  async function excluir() {
+    if (!confirm(`Excluir a campanha "${camp.name}"?\n\nEla some da lista. O histórico de quem já recebeu fica preservado na ficha de cada cliente.`)) return
+    setBusy(true)
+    const r = await fetch(`/api/campaigns/${camp.id}`, { method: 'DELETE' })
+    if (!r.ok) { const j = await r.json().catch(() => ({})); alert(j.error || 'Falha ao excluir.'); setBusy(false); return }
+    router.push('/campaigns')
+  }
+
+  const editavel = ['draft', 'scheduled', 'paused'].includes(camp.status)
+
   const pct = camp.total ? Math.round(((camp.sent + camp.failed) / camp.total) * 100) : 0
 
   return (
@@ -78,6 +88,16 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
               <Play className="w-4 h-4" /> {camp.status === 'paused' ? 'Retomar' : 'Iniciar'}
             </button>
           )}
+          {editavel && (
+            <button onClick={() => router.push(`/campaigns/${camp.id}/edit`)} disabled={busy}
+              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">
+              <Pencil className="w-4 h-4" /> Editar
+            </button>
+          )}
+          <button onClick={excluir} disabled={busy} title="Excluir campanha"
+            className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50">
+            <Trash2 className="w-4 h-4" /> Excluir
+          </button>
         </div>
       </div>
 

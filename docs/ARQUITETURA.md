@@ -350,6 +350,10 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-11 — Campanhas: editar, excluir + histórico por cliente.**
+  - **Editar** (`/campaigns/[id]/edit`): reusa o `CampaignWizard` pré-preenchido (nome/inbox/template/mapping/agendamento/filtro). Persiste via `PATCH /api/campaigns/[id]` — nome sempre; config só em draft/scheduled/paused. Botão "Editar" no detalhe aparece só nesses status. Audience route passou a aceitar `scheduled` também.
+  - **Excluir = SOFT-DELETE** (`chat_campaigns.deleted_at`, migration 044): `DELETE /api/campaigns/[id]`. Some da lista/detalhe (filtro `deleted_at is null`) e o `dispatch-campaign` ignora excluídas (para uma campanha em andamento). **Não é hard-delete** de propósito: preserva o nome p/ o histórico do cliente.
+  - **Histórico por cliente** (Central, seção "Campanhas recebidas"): view `vw_campanhas_cliente` (migration 044) = `chat_messages` com `metadata.campaign_id` → conversa → contato, join campanha+template. Mostra nome da campanha, data/hora, status (sent/delivered/read) e a **mensagem real enviada**. Robusto: ancorado no contato pela conversa (o `wa_id` em `chat_campaign_recipients` tem inconsistência de normalização — trunk 0/9º dígito — então NÃO serve de chave).
 - **2026-06-11 — Excluir lote de boletos (admin/manager).**
   - `/boletos`: lixeira na linha do lote (visível só p/ admin/manager) → `DELETE /api/boletos/lotes/[id]` (valida o role de novo no servidor; agent recebe 403). Apaga os PDFs do bucket `boletos`, os `boletos_emitidos` do lote e o registro em `boleto_lotes`. Desfaz carregamento errado; re-upload do ZIP recria tudo (upsert idempotente). A baixa de pagamento vive em `sienge_boletos`, então excluir o boleto emitido não apaga histórico de pagamento.
 - **2026-06-11 — Regra legal de dias úteis (régua + SGL) + janela 18h na carga.**

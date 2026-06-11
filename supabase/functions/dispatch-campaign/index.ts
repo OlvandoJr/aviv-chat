@@ -31,24 +31,27 @@ Deno.serve(async (req) => {
     const onlyId: string | undefined = body?.campaignId
 
     // ── Selecionar campanhas a processar ──────────────────────────────────────
-    // scheduled vencidas → running
+    // scheduled vencidas → running (ignora excluídas)
     await admin
       .from('chat_campaigns')
       .update({ status: 'running', updated_at: new Date().toISOString() })
       .eq('status', 'scheduled')
+      .is('deleted_at', null)
       .lte('scheduled_at', new Date().toISOString())
 
     let q = admin.from('chat_campaigns')
       .select('id, inbox_id, template_id, status')
       .eq('status', 'running')
+      .is('deleted_at', null)
     if (onlyId) q = admin.from('chat_campaigns')
-      .select('id, inbox_id, template_id, status')
+      .select('id, inbox_id, template_id, status, deleted_at')
       .eq('id', onlyId)
 
     const { data: campaigns } = await q
     const results: any[] = []
 
     for (const camp of campaigns || []) {
+      if (camp.deleted_at) continue
       if (onlyId && camp.status !== 'running' && camp.status !== 'scheduled') continue
       results.push(await processCampaign(camp))
     }

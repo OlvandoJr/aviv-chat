@@ -30,15 +30,25 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
       .eq('phone_norm', phone).order('created_at', { ascending: false }).limit(50),
   ])
 
-  // Conversas + mensagens (da conversa mais recente)
+  // Conversas + mensagens (da conversa mais recente) + campanhas que o cliente recebeu
   let conversations: any[] = []
   let messages: any[] = []
+  let campanhas: any[] = []
   if (cliente.contact_id) {
-    const { data: convs } = await supabase
-      .from('chat_conversations')
-      .select('id, status, last_message_at, sector, handled_by')
-      .eq('contact_id', cliente.contact_id)
-      .order('last_message_at', { ascending: false, nullsFirst: false })
+    const [{ data: convs }, { data: camps }] = await Promise.all([
+      supabase
+        .from('chat_conversations')
+        .select('id, status, last_message_at, sector, handled_by')
+        .eq('contact_id', cliente.contact_id)
+        .order('last_message_at', { ascending: false, nullsFirst: false }),
+      supabase
+        .from('vw_campanhas_cliente')
+        .select('message_id, conversation_id, created_at, content, wa_status, campaign_id, campaign_name, template_name')
+        .eq('contact_id', cliente.contact_id)
+        .order('created_at', { ascending: false })
+        .limit(50),
+    ])
+    campanhas = camps || []
     conversations = convs || []
     if (conversations[0]) {
       const { data: msgs } = await supabase
@@ -75,6 +85,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
         boletosSgl={boletosSgl || []}
         reguaLog={reguaLog || []}
         comprovantes={comprovantes || []}
+        campanhas={campanhas}
         conversations={conversations}
         messages={messages}
         windowOpen={windowOpen}
