@@ -922,13 +922,43 @@ Deno.serve(async (req) => {
         .trim()
     }
 
+    // O modelo às vezes emite os campos de atualização como TEXTO JSON em vez de
+    // chamar a tool atualizar_conversa — ex.: {"status_cobranca":"comprovante_confirmado"}.
+    // Esse JSON vazava para o cliente. Aqui: aplica a intenção (reuso de
+    // handleAtualizarConversa) e remove o bloco da mensagem. Reconhece um objeto
+    // {…} (chaves citadas ou não) que contenha alguma chave interna conhecida.
+    const internalKeys = new Set<string>([
+      ...updateDefs.map((d: any) => String(d.key)),
+      'status', 'cw_status', 'status_cobranca',
+    ])
+    async function stripInternalJson(text: string): Promise<string> {
+      let out = text
+      for (const m of (text.match(/\{[^{}]*\}/g) || [])) {
+        if (![...internalKeys].some(k => m.includes(k))) continue
+        try {
+          const parsed = JSON.parse(m)
+          if (parsed && typeof parsed === 'object') {
+            await handleAtualizarConversa(parsed, conversationId, updateDefs)
+          }
+        } catch { /* pseudo-JSON (chaves sem aspas): só remove */ }
+        out = out.replace(m, '')
+      }
+      return out.replace(/\n{3,}/g, '\n\n').trim()
+    }
+
     // Usa o token formal → substitui pela mensagem amigável configurada
     // Usa frase do agente  → mantém a resposta original (já é amigável)
     // Em qualquer caso → filtra tokens internos que jamais devem ir ao cliente
     const rawMessage = botReply.includes('ESCALAR_HUMANO:')
       ? escalationMessage
       : botReply
-    const messageToSend = stripInternalTokens(rawMessage)
+    let messageToSend = await stripInternalJson(stripInternalTokens(rawMessage))
+    // Salvaguarda: se sobrou só o token (mensagem vazia), não manda balão vazio
+    if (!messageToSend) {
+      console.warn('ai-responder: resposta vazia após remover tokens internos — nada enviado', { conversationId })
+      return new Response(JSON.stringify({ ok: true, skipped: 'resposta vazia após sanitização', escalated: shouldEscalate }),
+        { headers: { 'Content-Type': 'application/json' } })
+    }
 
     if (shouldEscalate) {
       await supabase
