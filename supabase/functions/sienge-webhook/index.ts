@@ -128,11 +128,25 @@ async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: strin
     const { count } = await supabase.from('sienge_clientes').delete({ count: 'exact' }).eq('client_id', id)
     return { event: ev, matched: count || 0, note: 'cliente removido' }
   }
-  let cust = body
-  if (body?.phones == null && body?.cpf == null && body?.name == null) {
+
+  // Buscar o cadastro completo no Sienge. No instante do CUSTOMER_CREATED o cliente
+  // às vezes ainda NÃO está consultável (GET volta vazio) — daí o registro ficava
+  // com nome/telefone nulos. Tenta de novo com backoff curto antes de desistir.
+  let cust: any = (body?.name != null || body?.phones != null) ? body : null
+  for (let attempt = 0; attempt < 3 && !cust?.name; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1500))
     const r = await fetch(`${SIENGE_BASE}/customers/${id}`, { headers: { Authorization: siengeAuth() } })
-    if (r.ok) cust = await r.json().then((j) => j?.results?.[0] ?? j)
+    if (!r.ok) continue
+    const c = await r.json().then((j) => j?.results?.[0] ?? j).catch(() => null)
+    if (c && (c.name || Array.isArray(c.phones))) cust = c
   }
+
+  // Sem dados utilizáveis: NÃO grava nulos por cima (não clobber) nem cria stub
+  // enganoso. Registra honestamente; o sync diário reconcilia o cadastro.
+  if (!cust?.name) {
+    return { event: ev || 'customer', matched: 0, note: `cadastro Sienge indisponível p/ ${id} no momento do webhook — aguardando reconciliação (sync)` }
+  }
+
   cust.id = cust.id ?? id
   const { error, count } = await supabase.from('sienge_clientes').upsert(mapCustomer(cust), { onConflict: 'client_id', count: 'exact' })
   return { event: ev || 'customer', matched: count || 0, note: error ? 'erro: ' + error.message : 'cliente upsert' }

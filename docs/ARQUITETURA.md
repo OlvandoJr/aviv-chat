@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-16 — Fix: webhook CUSTOMER_CREATED gravava cliente-fantasma (nome/telefone nulos).**
+  - Estávamos **recebendo** os `CUSTOMER_CREATED` (hook `ffe111bb`) e o handler buscava `GET /customers/{id}`, mas no instante da criação o cliente às vezes ainda não está consultável (GET volta vazio) → fazia upsert de um registro com **nome/telefone nulos** e reportava "cliente upsert" (sucesso enganoso). Resultado: import de boleto avulso (resolve por nome) falhava com "cliente não encontrado" até o sync diário reconciliar. Caso real: cliente 13060 (Daniele).
+  - `sienge-webhook` (`handleCadastro`, ramo cliente): agora **tenta o GET até 3x com backoff de 1,5s**; se ainda não houver dados, **não grava nulos por cima** (não cria stub) e registra honestamente na auditoria (`note: cadastro Sienge indisponível … aguardando reconciliação`). Cobre `customer_created` e `customer_updated`.
 - **2026-06-12 — Fix: JSON de `status_cobranca` vazava para o cliente.**
   - O modelo às vezes emitia os campos de atualização de conversa como TEXTO (ex.: `{"status_cobranca":"comprovante_confirmado"}`) em vez de chamar a tool `atualizar_conversa` — e esse JSON ia junto na mensagem do WhatsApp (3 conversas afetadas; clientes leram). O `stripInternalTokens` só pegava `identificador_snake { … }`, não um JSON puro `{ … }`.
   - `ai-responder` ganhou `stripInternalJson`: detecta objeto `{…}` contendo chave interna conhecida (keys de `chat_conversation_update_defs` + `status`/`cw_status`), **aplica a intenção** via `handleAtualizarConversa` e **remove o bloco** antes de enviar. Salvaguarda: se a resposta ficar vazia após a limpeza, não envia balão vazio.
