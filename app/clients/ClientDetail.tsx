@@ -76,8 +76,12 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
   const tipos       = [...new Set(parcelas.map((p) => p.label).filter(Boolean))]
 
   // ── Timeline de cobrança ───────────────────────────────────────────────────
+  // Rótulo do disparo: 999 é o sentinela da carga (dia do carregamento); senão D±N.
+  const reguaDetalhe = (offset: number, due: string | null) =>
+    `${offset === 999 ? 'Carga' : `D${offset >= 0 ? '+' : ''}${offset}`} · venc ${dt(due)}`
   const timeline = [
-    ...reguaLog.map((r) => ({ when: r.run_date, canal: 'Régua Sienge', detalhe: `D${r.offset_days >= 0 ? '+' : ''}${r.offset_days} · venc ${dt(r.due_date)}`, status: r.status })),
+    // when = created_at (instante real do envio); run_date é só data → renderiza 21:00 por fuso
+    ...reguaLog.map((r) => ({ when: r.created_at || r.run_date, canal: 'Régua Sienge', detalhe: reguaDetalhe(r.offset_days, r.due_date), status: r.status })),
     ...boletosSgl.filter((m) => m.app_dispatched_at).map((m) => ({ when: m.app_dispatched_at, canal: 'SGL', detalhe: m.classificacao || '—', status: m.status })),
   ].sort((a, b) => new Date(b.when).getTime() - new Date(a.when).getTime())
 
