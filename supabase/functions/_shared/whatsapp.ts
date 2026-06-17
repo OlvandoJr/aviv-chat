@@ -75,18 +75,25 @@ export function resolveVariables(
 }
 
 // ── Envio ────────────────────────────────────────────────────────────────────
+// A Meta REJEITA parâmetro de template vazio/só-espaço (erro #131008 "Parameter of
+// type text is missing text value"). Qualquer variável que resolva p/ vazio (ex.:
+// parcela de boleto sem linha em sienge_boletos) derrubava o disparo inteiro. Trocamos
+// por um placeholder seguro p/ a mensagem sair — melhor "-" do que não enviar.
+const PARAM_VAZIO = '-'
+const paramText = (v: string) => ({ type: 'text', text: (v && v.trim() ? v : PARAM_VAZIO) })
+
 export function buildTemplateComponents(tpl: TemplateRow, variables: string[]): unknown[] {
   const components: unknown[] = []
   if (tpl.header_var_count > 0 && tpl.header_text) {
     components.push({
       type: 'header',
-      parameters: variables.slice(0, tpl.header_var_count).map((v) => ({ type: 'text', text: v })),
+      parameters: variables.slice(0, tpl.header_var_count).map(paramText),
     })
   }
   if (tpl.body_var_count > 0) {
     components.push({
       type: 'body',
-      parameters: variables.slice(tpl.header_var_count).map((v) => ({ type: 'text', text: v })),
+      parameters: variables.slice(tpl.header_var_count).map(paramText),
     })
   }
   return components
