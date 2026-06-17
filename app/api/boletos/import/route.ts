@@ -173,29 +173,56 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── Formato B: resolver o cliente pelo NOME no cadastro (sienge_clientes) ────
+  // ── Formato B: resolver o cliente — 1º pelo NOME (sienge_clientes), 2º pelo
+  // TÍTULO do nome do arquivo (sienge_contratos.receivable_bill_id → client_id).
+  // O título é vínculo direto e não depende do cadastro de clientes já ter
+  // sincronizado (cliente novo cujo cadastro ainda não chegou). ─────────────────
   if (parsed.some((p) => isNaN(p.clientId))) {
+    // 1) por nome
     const { data: clientes } = await admin.from('sienge_clientes').select('client_id, nome')
     const byName = new Map<string, number[]>()
     for (const c of clientes || []) {
       const k = normName(c.nome || '')
       if (k) byName.set(k, [...(byName.get(k) || []), c.client_id])
     }
+    const ambiguos = new Map<string, number>()   // baseName → qtd (só p/ mensagem)
     for (const p of parsed) {
       if (!isNaN(p.clientId)) continue
       const ids = byName.get(normName(p.nome)) || []
-      if (ids.length === 1) {
-        p.clientId = ids[0]
-      } else {
-        falhas.push({
-          arquivo: p.baseName,
-          motivo: ids.length === 0
-            ? `cliente "${p.nome}" não encontrado no cadastro Sienge`
-            : `nome "${p.nome}" ambíguo no cadastro (${ids.length} clientes)`,
-        })
+      if (ids.length === 1) p.clientId = ids[0]
+      else if (ids.length > 1) ambiguos.set(p.baseName, ids.length)
+    }
+
+    // 2) fallback por título (contrato) p/ quem não resolveu por nome
+    const titulos = [...new Set(
+      parsed.filter((p) => isNaN(p.clientId)).map((p) => Number(p.lote)).filter((n) => n > 0),
+    )]
+    if (titulos.length) {
+      const { data: contratos } = await admin
+        .from('sienge_contratos').select('receivable_bill_id, client_id').in('receivable_bill_id', titulos)
+      const byTitulo = new Map<number, Set<number>>()
+      for (const c of contratos || []) {
+        if (c.receivable_bill_id == null || c.client_id == null) continue
+        const set = byTitulo.get(c.receivable_bill_id) || new Set<number>()
+        set.add(c.client_id); byTitulo.set(c.receivable_bill_id, set)
+      }
+      for (const p of parsed) {
+        if (!isNaN(p.clientId)) continue
+        const set = byTitulo.get(Number(p.lote))
+        if (set && set.size === 1) p.clientId = [...set][0]
       }
     }
-    // descarta os que não resolveram
+
+    // 3) falha p/ quem não resolveu por nenhum dos dois
+    for (const p of parsed) {
+      if (!isNaN(p.clientId)) continue
+      falhas.push({
+        arquivo: p.baseName,
+        motivo: ambiguos.has(p.baseName)
+          ? `nome "${p.nome}" ambíguo no cadastro (${ambiguos.get(p.baseName)} clientes) e título ${p.lote} sem contrato`
+          : `cliente "${p.nome}" não encontrado por nome nem pelo título ${p.lote}`,
+      })
+    }
     for (let i = parsed.length - 1; i >= 0; i--) if (isNaN(parsed[i].clientId)) parsed.splice(i, 1)
   }
 

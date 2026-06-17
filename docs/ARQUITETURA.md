@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-17 — Import de boleto avulso: fallback por título.**
+  - `app/api/boletos/import/route.ts` (formato B `{nome}_{título}_{parcela}_{data}`): além de resolver o cliente por NOME em `sienge_clientes`, agora cai no **título** (`sienge_contratos.receivable_bill_id → client_id`) quando o nome não resolve (cliente novo cujo cadastro ainda não sincronizou, ou nome ambíguo). Validado: `receivable_bill_id` é único por cliente; caso Daniele (título 216 → 13060). Complementa o fix do webhook `CUSTOMER_CREATED`.
 - **2026-06-17 — Central: "Réguas inscritas" + próximo disparo na ficha do cliente.**
   - Card "Histórico de cobrança" ganhou a seção **Réguas inscritas**: lista as réguas ativas em que o cliente se enquadra (check verde) + **próximo disparo** (1 data/hora). Inscrição = mesma audiência da edge `cobranca-regua` (cliente em `vw_cobranca_boletos` batendo o `audience_filter`).
   - Helper `lib/regua/schedule.ts` (server): `matchAudiencia()` + `proximoDisparo()` espelham a lógica da edge — carga via `load_dispatch_date`, offset = **venc + offset_days** (offset −3 = 3 dias antes), regra de dia útil (sáb/dom → segunda), pula passos já no log e datas passadas; carga pendente de hoje conta como iminente. Formata a data pelos getters locais (números BRT) p/ não deslocar fuso em prod (UTC). Computado em `app/clients/[phone]/page.tsx` (sem migration).
