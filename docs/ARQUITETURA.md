@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-12 — Fix: JSON de `status_cobranca` vazava para o cliente.**
+  - O modelo às vezes emitia os campos de atualização de conversa como TEXTO (ex.: `{"status_cobranca":"comprovante_confirmado"}`) em vez de chamar a tool `atualizar_conversa` — e esse JSON ia junto na mensagem do WhatsApp (3 conversas afetadas; clientes leram). O `stripInternalTokens` só pegava `identificador_snake { … }`, não um JSON puro `{ … }`.
+  - `ai-responder` ganhou `stripInternalJson`: detecta objeto `{…}` contendo chave interna conhecida (keys de `chat_conversation_update_defs` + `status`/`cw_status`), **aplica a intenção** via `handleAtualizarConversa` e **remove o bloco** antes de enviar. Salvaguarda: se a resposta ficar vazia após a limpeza, não envia balão vazio.
 - **2026-06-11 — Campanhas: editar, excluir + histórico por cliente.**
   - **Editar** (`/campaigns/[id]/edit`): reusa o `CampaignWizard` pré-preenchido (nome/inbox/template/mapping/agendamento/filtro). Persiste via `PATCH /api/campaigns/[id]` — nome sempre; config só em draft/scheduled/paused. Botão "Editar" no detalhe aparece só nesses status. Audience route passou a aceitar `scheduled` também.
   - **Excluir = SOFT-DELETE** (`chat_campaigns.deleted_at`, migration 044): `DELETE /api/campaigns/[id]`. Some da lista/detalhe (filtro `deleted_at is null`) e o `dispatch-campaign` ignora excluídas (para uma campanha em andamento). **Não é hard-delete** de propósito: preserva o nome p/ o histórico do cliente.
