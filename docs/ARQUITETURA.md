@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-17 — Central: "Réguas inscritas" + próximo disparo na ficha do cliente.**
+  - Card "Histórico de cobrança" ganhou a seção **Réguas inscritas**: lista as réguas ativas em que o cliente se enquadra (check verde) + **próximo disparo** (1 data/hora). Inscrição = mesma audiência da edge `cobranca-regua` (cliente em `vw_cobranca_boletos` batendo o `audience_filter`).
+  - Helper `lib/regua/schedule.ts` (server): `matchAudiencia()` + `proximoDisparo()` espelham a lógica da edge — carga via `load_dispatch_date`, offset = **venc + offset_days** (offset −3 = 3 dias antes), regra de dia útil (sáb/dom → segunda), pula passos já no log e datas passadas; carga pendente de hoje conta como iminente. Formata a data pelos getters locais (números BRT) p/ não deslocar fuso em prod (UTC). Computado em `app/clients/[phone]/page.tsx` (sem migration).
 - **2026-06-16 — Fix: webhook CUSTOMER_CREATED gravava cliente-fantasma (nome/telefone nulos).**
   - Estávamos **recebendo** os `CUSTOMER_CREATED` (hook `ffe111bb`) e o handler buscava `GET /customers/{id}`, mas no instante da criação o cliente às vezes ainda não está consultável (GET volta vazio) → fazia upsert de um registro com **nome/telefone nulos** e reportava "cliente upsert" (sucesso enganoso). Resultado: import de boleto avulso (resolve por nome) falhava com "cliente não encontrado" até o sync diário reconciliar. Caso real: cliente 13060 (Daniele).
   - `sienge-webhook` (`handleCadastro`, ramo cliente): agora **tenta o GET até 3x com backoff de 1,5s**; se ainda não houver dados, **não grava nulos por cima** (não cria stub) e registra honestamente na auditoria (`note: cadastro Sienge indisponível … aguardando reconciliação`). Cobre `customer_created` e `customer_updated`.

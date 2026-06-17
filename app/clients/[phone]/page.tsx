@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { notFound }     from 'next/navigation'
 import ClientDetail     from '../ClientDetail'
+import { matchAudiencia, proximoDisparo, brtNow } from '@/lib/regua/schedule'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,7 +13,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
     .from('vw_central_clientes').select('*').eq('phone_norm', phone).maybeSingle()
   if (!cliente) notFound()
 
-  const [{ data: boletosEmitidos }, { data: boletosSienge }, { data: boletosSgl }, { data: reguaLog }, { data: comprovantes }] = await Promise.all([
+  const [{ data: boletosEmitidos }, { data: boletosSienge }, { data: boletosSgl }, { data: reguaLog }, { data: comprovantes }, { data: reguasAtivas }, { data: cobrancaBoletos }] = await Promise.all([
     supabase.from('vw_boletos_central')
       .select('emitido_id, customer_name, empreendimento, quadra, unidade_lote, parcela_descricao, due_date, amount, status, paid_at, pdf_path, linha_digitavel')
       .eq('phone_norm', phone).order('due_date', { ascending: false }).limit(40),
@@ -23,12 +24,34 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
       .select('id, pessoanomecompleto, unidadeempreendimento, unidadequadraandar, unidadeloteapartamento, contasreceberparcela, contasrecebervencimento, contasrecebervalor, linkboleto, status, classificacao, app_dispatched_at, created_at')
       .eq('phone_norm', phone).order('created_at', { ascending: false }).limit(60),
     supabase.from('cobranca_regua_log')
-      .select('offset_days, due_date, parcela, status, run_date, created_at')
+      .select('regua_id, offset_days, due_date, parcela, status, run_date, created_at')
       .eq('phone_norm', phone).order('run_date', { ascending: false }),
     supabase.from('vw_comprovantes')
       .select('message_id, conversation_id, created_at, type, media_url, media_filename, verdict, sienge_status')
       .eq('phone_norm', phone).order('created_at', { ascending: false }).limit(50),
+    supabase.from('cobranca_regua')
+      .select('id, name, audience_filter, steps:cobranca_regua_step(offset_days, send_time, on_load)')
+      .eq('active', true),
+    supabase.from('vw_cobranca_boletos')
+      .select('source, empreendimento, due_date, load_dispatch_date')
+      .eq('phone_norm', phone),
   ])
+
+  // Réguas em que o cliente está inscrito (mesma audiência da edge cobranca-regua)
+  // + próximo disparo previsto (carga/offset, pulando o que já saiu no log).
+  const agora = brtNow()
+  type ReguaInscrita = { id: string; name: string; proximoDisparoAt: string | null }
+  const reguasInscritas = (reguasAtivas || [])
+    .map((r: any): ReguaInscrita | null => {
+      const elegiveis = matchAudiencia(cobrancaBoletos || [], r.audience_filter || {})
+      if (elegiveis.length === 0) return null
+      return {
+        id: r.id,
+        name: r.name,
+        proximoDisparoAt: proximoDisparo(elegiveis, r.steps || [], r.id, reguaLog || [], agora),
+      }
+    })
+    .filter((r): r is ReguaInscrita => r !== null)
 
   // Conversas + mensagens (da conversa mais recente) + campanhas que o cliente recebeu
   let conversations: any[] = []
@@ -86,6 +109,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ p
         reguaLog={reguaLog || []}
         comprovantes={comprovantes || []}
         campanhas={campanhas}
+        reguasInscritas={reguasInscritas}
         conversations={conversations}
         messages={messages}
         windowOpen={windowOpen}

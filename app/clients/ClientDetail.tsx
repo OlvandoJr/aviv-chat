@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink, Megaphone } from 'lucide-react'
+import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink, Megaphone, CheckCircle2 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { cn, formatCurrency, getInitials, formatHour, mediaSrc } from '@/lib/utils'
 import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
@@ -43,8 +43,8 @@ function verdictBadge(v: string | null) {
   return { label: 'Analisado', cls: 'bg-gray-100 text-gray-500' }
 }
 
-export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, boletosSgl, reguaLog, comprovantes, campanhas = [], conversations, messages, windowOpen }: {
-  cliente: any; boletosEmitidos: any[]; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; comprovantes: any[]; campanhas?: any[]; conversations: any[]; messages: any[]; windowOpen: boolean
+export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, boletosSgl, reguaLog, comprovantes, campanhas = [], reguasInscritas = [], conversations, messages, windowOpen }: {
+  cliente: any; boletosEmitidos: any[]; boletosSienge: any[]; boletosSgl: any[]; reguaLog: any[]; comprovantes: any[]; campanhas?: any[]; reguasInscritas?: { id: string; name: string; proximoDisparoAt: string | null }[]; conversations: any[]; messages: any[]; windowOpen: boolean
 }) {
   const o = ORIGEM[cliente.origem] || ORIGEM.contato
 
@@ -181,6 +181,28 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
 
         {/* Histórico de cobrança */}
         <section className="bg-white border border-gray-100 rounded-xl p-5">
+          {/* Réguas inscritas + próximo disparo */}
+          <div className="mb-4 pb-4 border-b border-gray-100">
+            <h3 className="text-xs font-semibold text-gray-700 flex items-center gap-1.5 mb-2"><CheckCircle2 className="w-3.5 h-3.5 text-gray-400" /> Réguas inscritas</h3>
+            {reguasInscritas.length === 0 ? (
+              <p className="text-xs text-gray-400">Não inscrito em nenhuma régua de cobrança.</p>
+            ) : (
+              <div className="space-y-2">
+                {reguasInscritas.map((r) => (
+                  <div key={r.id} className="flex items-start gap-2 text-xs">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-700">{r.name}</p>
+                      <p className="text-[11px] text-gray-400">
+                        {r.proximoDisparoAt ? `Próximo disparo: ${r.proximoDisparoAt}` : 'Sem disparo futuro previsto'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-1.5 mb-3"><CalendarClock className="w-4 h-4 text-gray-400" /> Histórico de cobrança</h2>
           {timeline.length === 0 ? <p className="text-xs text-gray-400">Nenhuma cobrança enviada.</p> : (
             <div className="space-y-2 max-h-72 overflow-y-auto">
