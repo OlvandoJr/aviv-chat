@@ -350,6 +350,10 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Empreendimento correto POR BOLETO (não pelo contrato do cliente).**
+  - O empreendimento era derivado do contrato do cliente — errado quando o cliente tem mais de uma unidade/empreendimento (ou o contrato do boleto não está sincronizado). Caso: Paulo (client 1) contrato "Por do Sol", mas o boleto é "Jardim das Palmeiras"; a mensagem da régua saiu com "Por do Sol".
+  - `boletos_emitidos.empreendimento` (migration 047); o import grava o **Beneficiário lido do PDF** (regex `… SPE LTDA` + fallback rótulo). Views `vw_cobranca_boletos`, `vw_boletos_central`, `vw_clientes_boletos`, `vw_central_clientes` passam a usar `COALESCE(boleto, contrato, parcela)`. **Sem backfill** (só daqui pra frente; boletos antigos seguem no fallback do contrato até serem recarregados).
+  - **Régua/2ª via** (`vw_cobranca_boletos`, boleto-driven) já mostra o empreendimento certo por boleto. **Limitação**: a coluna da lista da Central (via `vw_clientes_boletos`, guiada por `sienge_boletos`) mostra 1 empreendimento por cliente — para clientes multi-empreendimento, o da parcela mais próxima.
 - **2026-06-18 — Central: coluna Empreendimento na tabela de clientes.**
   - `vw_central_clientes` (migration 046) expõe `empreendimento` (`vw_cliente_contrato.enterprise_name`, join já existente). Coluna adicionada na tabela `/clients` entre Contrato e Plataforma.
 - **2026-06-18 — Central de Clientes: lista em tabela profissional.**
