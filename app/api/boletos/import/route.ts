@@ -80,7 +80,13 @@ function parseBoletoText(text: string) {
   const venc = (text.match(/Vencimento\s*([0-3]?\d\/[01]?\d\/\d{4})/) || [])[1] || null
   const val  = (text.match(/Valor do Documento\s*([\d.]+,\d{2})/) || [])[1] || null
   const nn   = (text.match(/Nosso N[uú]mero\s*([\d/\-]+)/) || [])[1] || null
-  return { linhaDigitavel: ld, vencimento: venc, valor: val, nossoNumero: nn }
+  // Beneficiário (empreendimento) — fonte CORRETA do empreendimento do boleto
+  // (o contrato do cliente pode ser de outra unidade). Empreendimentos são
+  // "LOTEAMENTO … SPE LTDA"; fallback genérico após o rótulo "Beneficiário".
+  const benef = ((text.match(/([A-ZÀ-Ú0-9][A-ZÀ-Ú0-9 .,&/'`-]{3,70}?\s+SPE\s+LTDA)/) || [])[1]
+    || (text.match(/Benefici[aá]rio[:\s]+([A-ZÀ-Ú0-9][^\n]{3,70})/i) || [])[1] || '')
+    .replace(/\s+/g, ' ').trim() || null
+  return { linhaDigitavel: ld, vencimento: venc, valor: val, nossoNumero: nn, beneficiario: benef }
 }
 
 // Normaliza nome p/ casar com o cadastro (sem acentos, caixa baixa, espaços únicos)
@@ -119,7 +125,7 @@ export async function POST(req: NextRequest) {
   type Parsed = {
     clientId: number; nome: string; lote: string
     vencimento: string | null; valor: string | null
-    linhaDigitavel: string | null; nossoNumero: string | null
+    linhaDigitavel: string | null; nossoNumero: string | null; beneficiario: string | null
     pdfBuf: Buffer; baseName: string
   }
   const parsed: Parsed[] = []
@@ -265,6 +271,7 @@ export async function POST(req: NextRequest) {
       nosso_numero:    p.nossoNumero || null,
       telefone:        info.tel,
       lote:            p.lote || null,
+      empreendimento:  p.beneficiario || null,
       pdf_path:        pdfPath,
       status:          'aberto',
       updated_at:      new Date().toISOString(),
