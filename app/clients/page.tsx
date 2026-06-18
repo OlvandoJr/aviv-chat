@@ -13,7 +13,7 @@ export default async function ClientsPage() {
     .limit(2000)
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-8">
+    <div className="max-w-7xl mx-auto px-6 py-8">
       <ClientsClient initial={clientes || []} />
     </div>
   )
