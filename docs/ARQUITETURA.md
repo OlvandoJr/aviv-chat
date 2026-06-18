@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Central de Clientes: lista em tabela profissional.**
+  - `/clients` reescrita como **tabela** (`ClientsClient.tsx`): Nome (+CPF) · Telefone · E-mail · Contrato · Plataforma · Boleto mensal · Conversa. Linha clicável → ficha. Busca (nome/e-mail/CPF/tel) + filtros (Sienge/SGL/Ambos/Conversa/Vencido/Pago/Cancelado).
+  - `vw_central_clientes` (migration 045) ganhou 3 colunas: `email` (coluna nova em `sienge_clientes`, **nula por ora — sync do Sienge é pendência**), `contrato_situacao` (de `vw_cliente_contrato.situation`: Emitido→"Ativo", Cancelado, etc.), `boleto_status` (`pago`>`vencido`>`enviado`>`a_enviar`>`sem_boleto`). O `boleto_status` considera `boletos_emitidos` em aberto além do `vw_clientes_boletos` (pega cliente novo/avulso sem parcela em `sienge_boletos`, ex.: Daniele → "enviado").
 - **2026-06-17 — Import de boleto avulso: fallback por título.**
   - `app/api/boletos/import/route.ts` (formato B `{nome}_{título}_{parcela}_{data}`): além de resolver o cliente por NOME em `sienge_clientes`, agora cai no **título** (`sienge_contratos.receivable_bill_id → client_id`) quando o nome não resolve (cliente novo cujo cadastro ainda não sincronizou, ou nome ambíguo). Validado: `receivable_bill_id` é único por cliente; caso Daniele (título 216 → 13060). Complementa o fix do webhook `CUSTOMER_CREATED`.
 - **2026-06-17 — Central: "Réguas inscritas" + próximo disparo na ficha do cliente.**
