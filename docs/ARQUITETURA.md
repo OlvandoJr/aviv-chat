@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Central: coluna Empreendimento na tabela de clientes.**
+  - `vw_central_clientes` (migration 046) expõe `empreendimento` (`vw_cliente_contrato.enterprise_name`, join já existente). Coluna adicionada na tabela `/clients` entre Contrato e Plataforma.
 - **2026-06-18 — Central de Clientes: lista em tabela profissional.**
   - `/clients` reescrita como **tabela** (`ClientsClient.tsx`): Nome (+CPF) · Telefone · E-mail · Contrato · Plataforma · Boleto mensal · Conversa. Linha clicável → ficha. Busca (nome/e-mail/CPF/tel) + filtros (Sienge/SGL/Ambos/Conversa/Vencido/Pago/Cancelado).
   - `vw_central_clientes` (migration 045) ganhou 3 colunas: `email` (coluna nova em `sienge_clientes`, **nula por ora — sync do Sienge é pendência**), `contrato_situacao` (de `vw_cliente_contrato.situation`: Emitido→"Ativo", Cancelado, etc.), `boleto_status` (`pago`>`vencido`>`enviado`>`a_enviar`>`sem_boleto`). O `boleto_status` considera `boletos_emitidos` em aberto além do `vw_clientes_boletos` (pega cliente novo/avulso sem parcela em `sienge_boletos`, ex.: Daniele → "enviado").

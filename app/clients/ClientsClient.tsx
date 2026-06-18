@@ -122,13 +122,14 @@ export default function ClientsClient({ initial }: { initial: any[] }) {
       {/* Tabela */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[920px]">
+          <table className="w-full text-sm min-w-[1080px]">
             <thead>
               <tr className="bg-gray-50 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                 <th className="px-4 py-2.5">Nome</th>
                 <th className="px-4 py-2.5">Telefone</th>
                 <th className="px-4 py-2.5">E-mail</th>
                 <th className="px-4 py-2.5">Contrato</th>
+                <th className="px-4 py-2.5">Empreendimento</th>
                 <th className="px-4 py-2.5">Plataforma</th>
                 <th className="px-4 py-2.5">Boleto mensal</th>
                 <th className="px-4 py-2.5">Conversa</th>
@@ -150,6 +151,7 @@ export default function ClientsClient({ initial }: { initial: any[] }) {
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{fmtPhone(c.telefone)}</td>
                     <td className="px-4 py-3 text-gray-600 truncate max-w-[200px]">{c.email || <span className="text-gray-300">—</span>}</td>
                     <td className="px-4 py-3">{ct ? <Badge {...ct} /> : <span className="text-gray-300">—</span>}</td>
+                    <td className="px-4 py-3 text-gray-600 truncate max-w-[200px]">{c.empreendimento || <span className="text-gray-300">—</span>}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
                         {c.is_sienge && <Badge label="Sienge" cls="bg-blue-100 text-blue-700" />}
@@ -163,7 +165,7 @@ export default function ClientsClient({ initial }: { initial: any[] }) {
                 )
               })}
               {filtered.length === 0 && (
-                <tr><td colSpan={7} className="text-center py-16 text-gray-400 text-sm">Nenhum cliente encontrado.</td></tr>
+                <tr><td colSpan={8} className="text-center py-16 text-gray-400 text-sm">Nenhum cliente encontrado.</td></tr>
               )}
             </tbody>
           </table>
