@@ -23,7 +23,7 @@ const EMPREENDIMENTOS = `
 - CONJUNTO HABITACIONAL AMADOR GONÇALVES
 - JARDIM IMPERIAL SPE LTDA – CNPJ 62.143.390/0001-06
 - FELIPE GIOVANINI ROSSETO – CPF 079.605.329-40
-- LOTEAMENTO JARDIM PAULO FREIRE SPE LTDA – CNPJ 61.024.834/0001-21
+- LOTEAMENTO JARDIM PAULO FREIRE SPE LTDA – CNPJ 61.024.834/0001-21 (também conhecido como: Jardim dos Ypes, Jardim dos Ipês)
 - LOTEAMENTO JARDIM DAS PALMEIRAS SPE LTDA
 `.trim()
 
@@ -31,11 +31,11 @@ const EMPREENDIMENTOS = `
 async function getEmpreendimentosTexto(): Promise<string> {
   const { data } = await supabase
     .from('sienge_empreendimentos')
-    .select('name, company_name, cnpj')
+    .select('name, company_name, cnpj, apelidos')
     .order('name')
   if (!data || !data.length) return EMPREENDIMENTOS
   return data
-    .map(e => `- ${e.company_name || e.name}${e.cnpj ? ' – CNPJ ' + e.cnpj : ''}`)
+    .map(e => `- ${e.company_name || e.name}${e.cnpj ? ' – CNPJ ' + e.cnpj : ''}${e.apelidos ? ' (também conhecido como: ' + e.apelidos + ')' : ''}`)
     .join('\n')
 }
 
