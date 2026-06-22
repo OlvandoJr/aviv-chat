@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Validador de comprovante: apelidos de empreendimento.**
+  - A SPE no boleto difere do nome comercial: "LOTEAMENTO JARDIM PAULO FREIRE SPE LTDA" == "Jardim dos Ypes"/"Jardim dos Ipês". O validador tratava como divergência → validação manual.
+  - `sienge_empreendimentos.apelidos` (migration 049); `getEmpreendimentosTexto` (process-media) inclui "(também conhecido como: …)" na lista de referência. **Instruções dos 2 subagentes** validadores (`chat_subagents`, ids `fd4101fe…`/`22e4dc8a…`) ganharam OBS: nomes "também conhecido como" são o MESMO empreendimento — não rebaixar o veredito por isso. Para novos apelidos, basta preencher `apelidos` no empreendimento.
 - **2026-06-18 — Validação geral + fix security_invoker das views.**
   - Advisor apontou 3 ERROS `security_definer_view`: `vw_central_clientes` e `vw_boletos_central` foram regredidas para DEFINER pelas recriações 045–047 (CREATE OR REPLACE sem `WITH (security_invoker=true)`); `vw_clientes_boletos` já era DEFINER desde 032. Migration **048** religa `security_invoker=true` nas três (seguro: nenhuma tabela-base sem policy). Lição: ao recriar uma view, **repetir a cláusula `WITH (security_invoker=true)`**.
   - Saúde OK: todas as edges 200 nas últimas horas; 6 crons ativos; views respondendo; tsc limpo. Backlog de segurança pré-existente segue (leaked-password protection, upgrade Postgres, tabelas legadas sem policy) — ver `docs/SEGURANCA.md`.
