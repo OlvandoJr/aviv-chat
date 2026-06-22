@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Validação geral + fix security_invoker das views.**
+  - Advisor apontou 3 ERROS `security_definer_view`: `vw_central_clientes` e `vw_boletos_central` foram regredidas para DEFINER pelas recriações 045–047 (CREATE OR REPLACE sem `WITH (security_invoker=true)`); `vw_clientes_boletos` já era DEFINER desde 032. Migration **048** religa `security_invoker=true` nas três (seguro: nenhuma tabela-base sem policy). Lição: ao recriar uma view, **repetir a cláusula `WITH (security_invoker=true)`**.
+  - Saúde OK: todas as edges 200 nas últimas horas; 6 crons ativos; views respondendo; tsc limpo. Backlog de segurança pré-existente segue (leaked-password protection, upgrade Postgres, tabelas legadas sem policy) — ver `docs/SEGURANCA.md`.
 - **2026-06-18 — Empreendimento correto POR BOLETO (não pelo contrato do cliente).**
   - O empreendimento era derivado do contrato do cliente — errado quando o cliente tem mais de uma unidade/empreendimento (ou o contrato do boleto não está sincronizado). Caso: Paulo (client 1) contrato "Por do Sol", mas o boleto é "Jardim das Palmeiras"; a mensagem da régua saiu com "Por do Sol".
   - `boletos_emitidos.empreendimento` (migration 047); o import grava o **Beneficiário lido do PDF** (regex `… SPE LTDA` + fallback rótulo). Views `vw_cobranca_boletos`, `vw_boletos_central`, `vw_clientes_boletos`, `vw_central_clientes` passam a usar `COALESCE(boleto, contrato, parcela)`. **Sem backfill** (só daqui pra frente; boletos antigos seguem no fallback do contrato até serem recarregados).
