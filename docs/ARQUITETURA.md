@@ -350,9 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
-- **2026-06-18 — Link público do boleto (`boleto-link`).**
+- **2026-06-18 — Link público do boleto (`boleto-link`) + na mensagem da régua.**
   - `boletos_emitidos.public_token` (uuid aleatório, migration 050) + edge **pública** `boleto-link?t=<token>` (`--no-verify-jwt`): gera signed URL fresca do PDF e redireciona (302); sem PDF, página HTML com linha digitável + valor + vencimento. URL base = Supabase (estável, não depende do domínio Vercel). Link abre sem login e funciona dias depois. Validado: token válido → PDF, inválido → 404 amigável.
-  - **Pendente**: expor o link como coluna nas views de cobrança + `AVAILABLE_COLUMNS` e decidir como entra na mensagem (substituir a linha digitável vs. manter as duas) — atenção: variável de template Meta **não aceita quebra de linha**.
+  - **Na mensagem (migration 051):** a coluna `link_boleto` (já mapeada na variável `{{Boleto}}` da régua/campanha, rótulo "Link do boleto") passou a conter a **URL do link** em vez da linha digitável — em `vw_cobranca_boletos` e `vw_clientes_boletos`. Logo, todo disparo da régua/campanha já manda o link clicável, **sem mudar template nem mapeamento**. SGL mantém seu próprio `linkboleto`. (security_invoker=true preservado nas duas.) A linha digitável segue disponível em `boletos_emitidos.linha_digitavel` e na 2ª via sob demanda do bot.
 - **2026-06-18 — Validador de comprovante: apelidos de empreendimento.**
   - A SPE no boleto difere do nome comercial: "LOTEAMENTO JARDIM PAULO FREIRE SPE LTDA" == "Jardim dos Ypes"/"Jardim dos Ipês". O validador tratava como divergência → validação manual.
   - `sienge_empreendimentos.apelidos` (migration 049); `getEmpreendimentosTexto` (process-media) inclui "(também conhecido como: …)" na lista de referência. **Instruções dos 2 subagentes** validadores (`chat_subagents`, ids `fd4101fe…`/`22e4dc8a…`) ganharam OBS: nomes "também conhecido como" são o MESMO empreendimento — não rebaixar o veredito por isso. Para novos apelidos, basta preencher `apelidos` no empreendimento.
