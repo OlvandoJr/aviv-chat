@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Régua: template sem-PDF de fallback (`a_vencer2_sem_pdf`).**
+  - Por destinatário: COM PDF → `a_vencer1` (documento anexado); SEM PDF → `a_vencer2_sem_pdf` (texto), **mesmo mapeamento de variáveis**. Pareamento por nome em `cobranca-regua` (`NO_PDF_FALLBACK = { a_vencer1: 'a_vencer2_sem_pdf' }`); o fallback só ativa quando estiver **APPROVED** no mesmo inbox (lookup por nome+inbox+status). Sem fallback aprovado → disparo `failed` (como antes). **Requer**: aprovar o template no Meta e **re-sincronizar** (`/templates` "Sincronizar") p/ ele entrar em `chat_wa_templates` como APPROVED.
 - **2026-06-18 — Régua envia o PDF do boleto (header de documento do template).**
   - O template `a_vencer1` ganhou um **header DOCUMENT** (mudança feita no Meta). `_shared/whatsapp.ts`: `TemplateRow.header_type` + `buildTemplateComponents`/`sendTemplateMessage` aceitam `headerMedia` (documento/imagem/vídeo) → componente `header` com `{type:'document', document:{link, filename}}`. `cobranca-regua`: quando o template é de mídia, busca `boletos_emitidos.pdf_path` (por phone_norm+venc), gera **signed URL fresca (600s)** e anexa; sem PDF, marca o disparo como `failed` (não envia template de doc sem o doc). `header_type` do `a_vencer1` refletido no banco (igual ao que um re-sync faria).
   - ⚠️ **Efeito colateral:** como `a_vencer1` agora EXIGE o documento, **qualquer envio dele precisa anexar o PDF**. A régua já faz. **Campanhas (`dispatch-campaign`) ainda NÃO anexam** → uma campanha usando `a_vencer1` falharia no Meta até receber o mesmo tratamento (pendência).
