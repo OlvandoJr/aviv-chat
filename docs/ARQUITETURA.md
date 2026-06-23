@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Campanhas (mídia): escolher "mesmo arquivo p/ todos" ou "boleto de cada cliente".**
+  - Template de mídia no wizard agora tem 2 modos: **upload** (um arquivo p/ todos) ou **boleto** (o PDF do boleto de cada destinatário, como a régua). `chat_campaigns.header_media_mode` ('upload'|'boleto') + `chat_campaign_recipients.boleto_pdf_path` (migration 053).
+  - Audiência: resolve o `pdf_path` por destinatário (`boletos_emitidos` por phone_norm+venc) e grava em cada recipient. `dispatch-campaign`: modo boleto → signed URL do PDF de cada um (sem PDF → recipient `failed`); modo upload → arquivo único (1 signed URL/lote). Wizard exige upload só no modo upload.
 - **2026-06-18 — Campanhas: anexar mídia quando o template tem header de mídia.**
   - No assistente de campanha, ao escolher um template com header **DOCUMENT/IMAGE/VIDEO**, abre o campo **"Anexar … do template"** (obrigatório p/ continuar). Vale p/ qualquer template de mídia.
   - `chat_campaigns.header_media_path`/`header_media_filename` (migration 052) + bucket privado **`campaign-media`**. Upload: `POST /api/campaigns/media` (admin/manager). `dispatch-campaign`: template de mídia → gera signed URL (1×/lote) e anexa o mesmo arquivo a todos; sem arquivo → campanha `failed`. **UM arquivo por campanha** (mesma mídia p/ todos — diferente da régua, que anexa o PDF de cada boleto). `CampaignWizard` reusado no editar (pré-preenche a mídia).

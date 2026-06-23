@@ -43,6 +43,7 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
   const [scheduledAt, setScheduledAt] = useState(toLocalInput(campaign?.scheduled_at || null))
   const [headerMediaPath, setHeaderMediaPath]         = useState<string | null>(campaign?.header_media_path || null)
   const [headerMediaFilename, setHeaderMediaFilename] = useState<string | null>(campaign?.header_media_filename || null)
+  const [headerMediaMode, setHeaderMediaMode]         = useState<'upload' | 'boleto'>(campaign?.header_media_mode === 'boleto' ? 'boleto' : 'upload')
   const [uploading, setUploading] = useState(false)
 
   const [busy, setBusy]   = useState(false)
@@ -97,7 +98,7 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
     setError(null)
     if (!name || !inboxId || !templateId) { setError('Preencha nome, inbox e template.'); return }
     if (!mappingReady) { setError('Mapeie todas as variáveis do template.'); return }
-    if (isMediaTemplate && !headerMediaPath) { setError(`Anexe o ${mediaLabel} do template antes de continuar.`); return }
+    if (isMediaTemplate && headerMediaMode === 'upload' && !headerMediaPath) { setError(`Anexe o ${mediaLabel} do template antes de continuar.`); return }
     setBusy(true)
     try {
       const headers = await authHeader()
@@ -109,9 +110,11 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
           ? { type: 'static', value: m.value }
           : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
       }
+      const usaUpload = isMediaTemplate && headerMediaMode === 'upload'
       const payload = { name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null,
-        headerMediaPath: isMediaTemplate ? headerMediaPath : null,
-        headerMediaFilename: isMediaTemplate ? headerMediaFilename : null }
+        headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
+        headerMediaPath: usaUpload ? headerMediaPath : null,
+        headerMediaFilename: usaUpload ? headerMediaFilename : null }
       if (!id) {
         const r = await fetch('/api/campaigns', { method: 'POST', headers, body: JSON.stringify(payload) })
         const j = await r.json()
@@ -186,25 +189,42 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
             </div>
           </div>
 
-          {/* Anexo de mídia (template com header DOCUMENT/IMAGE/VIDEO) */}
+          {/* Mídia do template (header DOCUMENT/IMAGE/VIDEO): mesmo arquivo p/ todos OU boleto de cada cliente */}
           {isMediaTemplate && (
-            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
-              <label className="text-xs font-medium text-gray-700 block mb-1">
-                Anexar {mediaLabel} do template <span className="text-red-500">*</span>
-              </label>
-              <p className="text-[11px] text-gray-500 mb-2">Este template tem mídia no cabeçalho. O mesmo arquivo será enviado a todos os destinatários.</p>
-              {headerMediaPath ? (
-                <div className="flex items-center justify-between gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
-                  <span className="text-sm text-gray-700 truncate">📎 {headerMediaFilename || 'arquivo anexado'}</span>
-                  <button type="button" onClick={() => { setHeaderMediaPath(null); setHeaderMediaFilename(null) }}
-                    className="text-xs text-red-500 hover:text-red-600 shrink-0">remover</button>
+            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60 space-y-2">
+              <p className="text-xs font-medium text-gray-700">Este template envia {mediaLabel} no cabeçalho. O que enviar?</p>
+              <div className="flex flex-col gap-1.5">
+                <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="radio" name="mediaMode" className="mt-0.5" checked={headerMediaMode === 'upload'}
+                    onChange={() => setHeaderMediaMode('upload')} />
+                  <span>Mesmo {mediaLabel} para todos <span className="text-gray-400">(anexar um arquivo)</span></span>
+                </label>
+                <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="radio" name="mediaMode" className="mt-0.5" checked={headerMediaMode === 'boleto'}
+                    onChange={() => setHeaderMediaMode('boleto')} />
+                  <span>Boleto de cada cliente <span className="text-gray-400">(o PDF do boleto de cada destinatário)</span></span>
+                </label>
+              </div>
+
+              {headerMediaMode === 'upload' ? (
+                <div>
+                  <label className="text-xs font-medium text-gray-700 block mb-1">Anexar {mediaLabel} <span className="text-red-500">*</span></label>
+                  {headerMediaPath ? (
+                    <div className="flex items-center justify-between gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                      <span className="text-sm text-gray-700 truncate">📎 {headerMediaFilename || 'arquivo anexado'}</span>
+                      <button type="button" onClick={() => { setHeaderMediaPath(null); setHeaderMediaFilename(null) }}
+                        className="text-xs text-red-500 hover:text-red-600 shrink-0">remover</button>
+                    </div>
+                  ) : (
+                    <input type="file" accept={mediaAccept} disabled={uploading}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) uploadMedia(f) }}
+                      className="block w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100" />
+                  )}
+                  {uploading && <p className="text-[11px] text-gray-400 mt-1">Enviando…</p>}
                 </div>
               ) : (
-                <input type="file" accept={mediaAccept} disabled={uploading}
-                  onChange={e => { const f = e.target.files?.[0]; if (f) uploadMedia(f) }}
-                  className="block w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100" />
+                <p className="text-[11px] text-gray-500">Cada destinatário recebe o PDF do próprio boleto. Quem não tiver boleto com PDF é pulado no envio.</p>
               )}
-              {uploading && <p className="text-[11px] text-gray-400 mt-1">Enviando…</p>}
             </div>
           )}
 

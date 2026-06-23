@@ -91,12 +91,13 @@ async function processCampaign(camp: any) {
     return { campaign: camp.id, error: 'inbox ou template inválido' }
   }
 
-  // Template com header de mídia: anexa o arquivo da campanha (mesmo p/ todos).
-  // Signed URL gerada 1x por lote (Meta baixa no envio). Sem arquivo → falha a campanha.
+  // Template com header de mídia: 'upload' = mesmo arquivo p/ todos (signed URL 1x);
+  // 'boleto' = PDF de cada destinatário (signed URL por envio). Sem mídia → falha.
   const mediaType = (tpl.header_type || '').toUpperCase()
   const precisaMedia = mediaType === 'DOCUMENT' || mediaType === 'IMAGE' || mediaType === 'VIDEO'
+  const mediaMode = camp.header_media_mode === 'boleto' ? 'boleto' : 'upload'
   let headerMedia: { link: string; filename?: string } | null = null
-  if (precisaMedia) {
+  if (precisaMedia && mediaMode === 'upload') {
     if (!camp.header_media_path) {
       await admin.from('chat_campaigns').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', camp.id)
       return { campaign: camp.id, error: 'template de mídia sem arquivo anexado' }
@@ -112,7 +113,7 @@ async function processCampaign(camp: any) {
   // Lote de pendentes
   const { data: recipients } = await admin
     .from('chat_campaign_recipients')
-    .select('id, wa_id, name, variables')
+    .select('id, wa_id, name, variables, boleto_pdf_path')
     .eq('campaign_id', camp.id)
     .eq('status', 'pending')
     .limit(BATCH)
@@ -125,6 +126,22 @@ async function processCampaign(camp: any) {
       failed++
       continue
     }
+
+    // Modo 'boleto': anexa o PDF do próprio destinatário (signed URL por envio).
+    let sendMedia = headerMedia
+    if (precisaMedia && mediaMode === 'boleto') {
+      if (!r.boleto_pdf_path) {
+        await markRecipient(r.id, 'failed', null, 'sem boleto com PDF para anexar')
+        failed++; continue
+      }
+      const { data: signed } = await admin.storage.from('boletos').createSignedUrl(r.boleto_pdf_path, 3600)
+      if (!signed?.signedUrl) {
+        await markRecipient(r.id, 'failed', null, 'falha ao gerar signed URL do boleto')
+        failed++; continue
+      }
+      sendMedia = { link: signed.signedUrl, filename: 'Boleto.pdf' }
+    }
+
     const res = await sendTemplateMessage({
       admin,
       inbox: { phone_number_id: inbox.phone_number_id, access_token: inbox.access_token },
@@ -132,7 +149,7 @@ async function processCampaign(camp: any) {
       tpl: tpl as TemplateRow,
       variables: Array.isArray(r.variables) ? r.variables : [],
       conversationId: conv.conversationId,
-      headerMedia,
+      headerMedia: sendMedia,
       metaExtra: { campaign_id: camp.id },
     })
     if (res.ok) {

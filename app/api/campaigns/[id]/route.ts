@@ -30,7 +30,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
 
     const mudaConfig = b.inboxId !== undefined || b.templateId !== undefined
       || b.variableMapping !== undefined || b.scheduledAt !== undefined
-      || b.headerMediaPath !== undefined || b.headerMediaFilename !== undefined
+      || b.headerMediaPath !== undefined || b.headerMediaFilename !== undefined || b.headerMediaMode !== undefined
     if (mudaConfig) {
       if (!EDITAVEL.includes(camp.status)) {
         return NextResponse.json({ error: `Não é possível editar a configuração de uma campanha "${camp.status}".` }, { status: 422 })
@@ -39,8 +39,14 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       if (b.templateId !== undefined)         patch.template_id = b.templateId
       if (b.variableMapping !== undefined)    patch.variable_mapping = b.variableMapping
       if (b.scheduledAt !== undefined)        patch.scheduled_at = b.scheduledAt || null
-      if (b.headerMediaPath !== undefined)    patch.header_media_path = b.headerMediaPath || null
-      if (b.headerMediaFilename !== undefined) patch.header_media_filename = b.headerMediaFilename || null
+      const mode = b.headerMediaMode === 'boleto' ? 'boleto' : (b.headerMediaMode === 'upload' ? 'upload' : undefined)
+      if (mode !== undefined)                 patch.header_media_mode = mode
+      // modo 'boleto' não usa arquivo único → zera; senão respeita o que veio
+      if (mode === 'boleto') { patch.header_media_path = null; patch.header_media_filename = null }
+      else {
+        if (b.headerMediaPath !== undefined)     patch.header_media_path = b.headerMediaPath || null
+        if (b.headerMediaFilename !== undefined) patch.header_media_filename = b.headerMediaFilename || null
+      }
     }
 
     const { error } = await admin.from('chat_campaigns').update(patch).eq('id', id)
