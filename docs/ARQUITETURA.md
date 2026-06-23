@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Link público do boleto (`boleto-link`).**
+  - `boletos_emitidos.public_token` (uuid aleatório, migration 050) + edge **pública** `boleto-link?t=<token>` (`--no-verify-jwt`): gera signed URL fresca do PDF e redireciona (302); sem PDF, página HTML com linha digitável + valor + vencimento. URL base = Supabase (estável, não depende do domínio Vercel). Link abre sem login e funciona dias depois. Validado: token válido → PDF, inválido → 404 amigável.
+  - **Pendente**: expor o link como coluna nas views de cobrança + `AVAILABLE_COLUMNS` e decidir como entra na mensagem (substituir a linha digitável vs. manter as duas) — atenção: variável de template Meta **não aceita quebra de linha**.
 - **2026-06-18 — Validador de comprovante: apelidos de empreendimento.**
   - A SPE no boleto difere do nome comercial: "LOTEAMENTO JARDIM PAULO FREIRE SPE LTDA" == "Jardim dos Ypes"/"Jardim dos Ipês". O validador tratava como divergência → validação manual.
   - `sienge_empreendimentos.apelidos` (migration 049); `getEmpreendimentosTexto` (process-media) inclui "(também conhecido como: …)" na lista de referência. **Instruções dos 2 subagentes** validadores (`chat_subagents`, ids `fd4101fe…`/`22e4dc8a…`) ganharam OBS: nomes "também conhecido como" são o MESMO empreendimento — não rebaixar o veredito por isso. Para novos apelidos, basta preencher `apelidos` no empreendimento.
