@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { ArrowLeft, MessageSquare, FileText, CalendarClock, Send, Phone, Building2, Calendar, DollarSign, Layers, FileCheck2, ExternalLink, Megaphone, CheckCircle2 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { cn, formatCurrency, getInitials, formatHour, mediaSrc } from '@/lib/utils'
+import { renderWhatsApp } from '@/lib/whatsapp/format'
 import ConfirmPaymentButton from '@/components/clients/ConfirmPaymentButton'
 import BoletoActions        from '@/components/clients/BoletoActions'
 
@@ -275,7 +276,7 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
                         <span className="text-gray-400">{dtTime(c.created_at)}</span>
                         {c.wa_status && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 uppercase">{c.wa_status}</span>}
                       </div>
-                      {c.content && <p className="text-[11px] text-gray-500 whitespace-pre-wrap line-clamp-3 mt-0.5">{c.content}</p>}
+                      {c.content && <p className="text-[11px] text-gray-500 whitespace-pre-wrap line-clamp-3 mt-0.5">{renderWhatsApp(c.content)}</p>}
                       {c.conversation_id && (
                         <Link href={`/conversations/${c.conversation_id}`} className="text-[11px] text-gray-400 hover:text-gray-600">na conversa →</Link>
                       )}
@@ -300,7 +301,7 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
               <div key={m.id} className={cn('flex', m.direction === 'out' ? 'justify-end' : 'justify-start')}>
                 <div className={cn('max-w-[75%] rounded-lg px-3 py-1.5 text-sm', m.direction === 'out' ? 'bg-emerald-100 text-gray-800' : 'bg-white text-gray-800 border border-gray-100')}>
                   {m.type !== 'text' && m.type !== 'template' && <p className="text-[10px] text-gray-400 italic mb-0.5">[{m.type}]</p>}
-                  <p className="whitespace-pre-wrap break-words">{m.content || '—'}</p>
+                  <p className="whitespace-pre-wrap break-words">{m.content ? renderWhatsApp(m.content) : '—'}</p>
                   <p className="text-[10px] text-gray-400 text-right mt-0.5">{formatHour(m.created_at)}{m.direction === 'out' && m.wa_status ? ` · ${m.wa_status}` : ''}</p>
                 </div>
               </div>
