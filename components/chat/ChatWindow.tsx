@@ -27,7 +27,10 @@ interface Props {
   contactAttributes: ContactAttribute[]
   central?:          any
   initialMessages?:  Message[]
+  templateButtons?:  Record<string, { text: string; type: string }[]>
 }
+
+export type TplButton = { text: string; type: string }
 
 const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   sienge: { label: 'Sienge',        cls: 'bg-blue-100 text-blue-700' },
@@ -35,7 +38,7 @@ const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages }: Props) {
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages, templateButtons }: Props) {
   const origem = central?.origem as string | undefined
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -244,6 +247,7 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
                     showAvatar={!prev || prev.direction !== msg.direction}
                     showSender={showSender}
                     contactName={name}
+                    templateButtons={templateButtons}
                   />
                 </div>
               )
@@ -283,11 +287,13 @@ function MessageBubble({
   showAvatar,
   showSender,
   contactName,
+  templateButtons,
 }: {
   message:     Message
   showAvatar:  boolean
   showSender:  boolean
   contactName: string
+  templateButtons?: Record<string, { text: string; type: string }[]>
 }) {
   const isIn      = msg.direction === 'in'
   const isOut     = msg.direction === 'out'
@@ -368,6 +374,25 @@ function MessageBubble({
               {isOut && <MsgStatus status={msg.wa_status} />}
             </div>
           )}
+
+          {/* Botões do template (read-only — o que o cliente vê) */}
+          {(() => {
+            const tplId = meta?.template_id as string | undefined
+            const btns = (tplId && templateButtons?.[tplId]) || []
+            if (!btns.length) return null
+            const icon = (t: string) => t === 'URL' ? '🔗' : t === 'PHONE_NUMBER' ? '📞' : '↩'
+            return (
+              <div className={cn('mt-1.5 -mx-1 pt-1.5 border-t space-y-1', isOut ? 'border-emerald-500/40' : 'border-gray-100')}>
+                {btns.map((b, i) => (
+                  <div key={i}
+                    className={cn('text-center text-[13px] font-medium rounded-md py-1 px-2',
+                      isOut ? 'bg-emerald-500/30 text-white' : 'bg-gray-50 text-emerald-700')}>
+                    <span className="opacity-70 mr-1">{icon(b.type)}</span>{b.text}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       </div>
 
