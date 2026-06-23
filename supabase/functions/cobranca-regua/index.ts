@@ -127,9 +127,13 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
 
   if (!inbox?.phone_number_id) return { ...label, error: 'inbox inválido' }
   const { data: tpl } = await admin.from('chat_wa_templates')
-    .select('id, name, language, header_text, header_var_count, body_var_count, body_text')
+    .select('id, name, language, header_text, header_var_count, body_var_count, body_text, header_type')
     .eq('id', step.template_id).single()
   if (!tpl) return { ...label, error: 'template inválido' }
+
+  // Header de mídia (ex.: DOCUMENT): o template exige o PDF anexado no envio.
+  const headerMedia = (tpl.header_type || '').toUpperCase()
+  const precisaPdf = headerMedia === 'DOCUMENT' || headerMedia === 'IMAGE' || headerMedia === 'VIDEO'
 
   let sent = 0, failed = 0, skipped = 0
   for (const r of audience) {
@@ -152,6 +156,26 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       failed++; continue
     }
 
+    // Header de documento: gera signed URL fresca do PDF (Meta baixa no envio).
+    let mediaArg: { link: string; filename?: string } | null = null
+    if (precisaPdf) {
+      // pdf_path vem de boletos_emitidos (chave phone_norm + vencimento) — evita
+      // depender de coluna na view.
+      const { data: be } = await admin.from('boletos_emitidos')
+        .select('pdf_path').eq('phone_norm', r.phone_norm).eq('vencimento', r.due_date).maybeSingle()
+      if (!be?.pdf_path) {
+        await admin.from('cobranca_regua_log').update({ status: 'failed', error: 'template exige PDF mas boleto sem pdf_path' }).eq('id', claim.id)
+        failed++; continue
+      }
+      const { data: signed } = await admin.storage.from('boletos').createSignedUrl(be.pdf_path, 600)
+      if (!signed?.signedUrl) {
+        await admin.from('cobranca_regua_log').update({ status: 'failed', error: 'falha ao gerar signed URL do PDF' }).eq('id', claim.id)
+        failed++; continue
+      }
+      const venc = String(r.due_date || '').slice(0, 10)
+      mediaArg = { link: signed.signedUrl, filename: `Boleto ${venc}.pdf` }
+    }
+
     const variables = resolveVariables(step.variable_mapping as VariableMapping, r)
     const res = await sendTemplateMessage({
       admin,
@@ -161,6 +185,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       variables,
       conversationId: conv.conversationId,
       metaExtra: { regua_id: regua.id, regua_step_id: step.id },
+      headerMedia: mediaArg,
     })
 
     if (res.ok) {

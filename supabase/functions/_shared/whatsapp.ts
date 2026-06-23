@@ -31,7 +31,11 @@ export interface TemplateRow {
   header_var_count: number
   body_var_count: number
   body_text: string
+  header_type?: string | null   // TEXT | DOCUMENT | IMAGE | VIDEO (null = sem header)
 }
+
+// Mídia do header de template (documento/imagem/vídeo) — link público (Meta baixa no envio)
+export interface HeaderMedia { link: string; filename?: string }
 
 export interface SendResult { ok: boolean; waMessageId: string | null; error?: unknown }
 
@@ -82,9 +86,16 @@ export function resolveVariables(
 const PARAM_VAZIO = '-'
 const paramText = (v: string) => ({ type: 'text', text: (v && v.trim() ? v : PARAM_VAZIO) })
 
-export function buildTemplateComponents(tpl: TemplateRow, variables: string[]): unknown[] {
+export function buildTemplateComponents(tpl: TemplateRow, variables: string[], headerMedia?: HeaderMedia | null): unknown[] {
   const components: unknown[] = []
-  if (tpl.header_var_count > 0 && tpl.header_text) {
+  // Header de MÍDIA (documento/imagem/vídeo): exige o parâmetro de mídia no envio.
+  const mediaType = (tpl.header_type || '').toUpperCase()
+  if (headerMedia?.link && (mediaType === 'DOCUMENT' || mediaType === 'IMAGE' || mediaType === 'VIDEO')) {
+    const key = mediaType.toLowerCase()                       // document | image | video
+    const media: Record<string, string> = { link: headerMedia.link }
+    if (mediaType === 'DOCUMENT' && headerMedia.filename) media.filename = headerMedia.filename
+    components.push({ type: 'header', parameters: [{ type: key, [key]: media }] })
+  } else if (tpl.header_var_count > 0 && tpl.header_text) {
     components.push({
       type: 'header',
       parameters: variables.slice(0, tpl.header_var_count).map(paramText),
@@ -116,11 +127,12 @@ export interface SendTemplateArgs {
   sentBy?: string
   attendantId?: string | null
   metaExtra?: Record<string, unknown>
+  headerMedia?: HeaderMedia | null
 }
 
 export async function sendTemplateMessage(args: SendTemplateArgs): Promise<SendResult> {
   const { admin, inbox, toWaId, tpl, variables, conversationId } = args
-  const components = buildTemplateComponents(tpl, variables)
+  const components = buildTemplateComponents(tpl, variables, args.headerMedia)
   const payload = {
     messaging_product: 'whatsapp',
     to: normalizeWaId(toWaId),
