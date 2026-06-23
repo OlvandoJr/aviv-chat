@@ -42,6 +42,17 @@ export default async function ConversationPage({ params }: Props) {
 
   const contact = conversation.contact as any
 
+  // Mapa template_id → botões (p/ exibir no balão os botões que o cliente recebeu)
+  const templateButtons: Record<string, { text: string; type: string }[]> = {}
+  {
+    const { data: tpls } = await supabase
+      .from('chat_wa_templates').select('id, buttons').eq('inbox_id', conversation.inbox_id)
+    for (const t of tpls || []) {
+      const bs = Array.isArray(t.buttons) ? t.buttons : []
+      if (bs.length) templateButtons[t.id] = bs.map((b: any) => ({ text: b.text, type: b.type }))
+    }
+  }
+
   // Resumo 360 da Central (precisa do contact_id da conversa)
   const { data: central } = await supabase
     .from('vw_central_clientes')
@@ -90,6 +101,7 @@ export default async function ConversationPage({ params }: Props) {
       contactAttributes={contactAttributes || []}
       central={central || null}
       initialMessages={(initialMessages || []) as any}
+      templateButtons={templateButtons}
     />
   )
 }

@@ -350,6 +350,8 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Conversas: exibir os botões dos templates no balão.**
+  - Templates com botões (QUICK_REPLY/URL/PHONE_NUMBER) não apareciam no painel — só o texto. A página da conversa monta um mapa `template_id → buttons` (de `chat_wa_templates` do inbox) e passa ao `ChatWindow`; `MessageBubble` renderiza os botões (read-only) abaixo do balão quando `metadata.template_id` tem botões. Cobre mensagens antigas e novas (sem mexer no envio). Só `/conversations` por ora.
 - **2026-06-18 — Campanhas (mídia): escolher "mesmo arquivo p/ todos" ou "boleto de cada cliente".**
   - Template de mídia no wizard agora tem 2 modos: **upload** (um arquivo p/ todos) ou **boleto** (o PDF do boleto de cada destinatário, como a régua). `chat_campaigns.header_media_mode` ('upload'|'boleto') + `chat_campaign_recipients.boleto_pdf_path` (migration 053).
   - Audiência: resolve o `pdf_path` por destinatário (`boletos_emitidos` por phone_norm+venc) e grava em cada recipient. `dispatch-campaign`: modo boleto → signed URL do PDF de cada um (sem PDF → recipient `failed`); modo upload → arquivo único (1 signed URL/lote). Wizard exige upload só no modo upload.
