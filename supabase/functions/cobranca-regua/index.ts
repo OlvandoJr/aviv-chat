@@ -37,6 +37,12 @@ const admin = createClient(
 
 const DELAY_MS = 120
 
+// Pareamento template-com-PDF → template-sem-PDF (texto). Quando o boleto do
+// destinatário não tem PDF, a régua usa o fallback (mesmo mapeamento de variáveis).
+const NO_PDF_FALLBACK: Record<string, string> = {
+  a_vencer1: 'a_vencer2_sem_pdf',
+}
+
 function brtNow(): Date {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }))
 }
@@ -126,14 +132,25 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
   }
 
   if (!inbox?.phone_number_id) return { ...label, error: 'inbox inválido' }
-  const { data: tpl } = await admin.from('chat_wa_templates')
-    .select('id, name, language, header_text, header_var_count, body_var_count, body_text, header_type')
-    .eq('id', step.template_id).single()
+  const TPL_COLS = 'id, name, language, header_text, header_var_count, body_var_count, body_text, header_type'
+  const { data: tpl } = await admin.from('chat_wa_templates').select(TPL_COLS).eq('id', step.template_id).single()
   if (!tpl) return { ...label, error: 'template inválido' }
 
   // Header de mídia (ex.: DOCUMENT): o template exige o PDF anexado no envio.
   const headerMedia = (tpl.header_type || '').toUpperCase()
   const precisaPdf = headerMedia === 'DOCUMENT' || headerMedia === 'IMAGE' || headerMedia === 'VIDEO'
+
+  // Quando NÃO há PDF, cai para um template de texto (mesmo mapeamento de variáveis).
+  // Pareamento por nome; ativa só quando o fallback estiver APROVADO/sincronizado.
+  let fallbackTpl: any = null
+  if (precisaPdf) {
+    const fbName = NO_PDF_FALLBACK[tpl.name]
+    if (fbName) {
+      const { data } = await admin.from('chat_wa_templates').select(TPL_COLS)
+        .eq('name', fbName).eq('inbox_id', regua.inbox_id).eq('status', 'APPROVED').maybeSingle()
+      fallbackTpl = data || null
+    }
+  }
 
   let sent = 0, failed = 0, skipped = 0
   for (const r of audience) {
@@ -156,24 +173,26 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       failed++; continue
     }
 
-    // Header de documento: gera signed URL fresca do PDF (Meta baixa no envio).
+    // Escolhe o template por destinatário: COM PDF → template de documento (anexa
+    // o PDF); SEM PDF → template de texto (fallback). Mesmo mapeamento de variáveis.
+    let tplToSend: any = tpl
     let mediaArg: { link: string; filename?: string } | null = null
     if (precisaPdf) {
-      // pdf_path vem de boletos_emitidos (chave phone_norm + vencimento) — evita
-      // depender de coluna na view.
+      // pdf_path vem de boletos_emitidos (chave phone_norm + vencimento).
       const { data: be } = await admin.from('boletos_emitidos')
         .select('pdf_path').eq('phone_norm', r.phone_norm).eq('vencimento', r.due_date).maybeSingle()
-      if (!be?.pdf_path) {
-        await admin.from('cobranca_regua_log').update({ status: 'failed', error: 'template exige PDF mas boleto sem pdf_path' }).eq('id', claim.id)
+      const signedUrl = be?.pdf_path
+        ? (await admin.storage.from('boletos').createSignedUrl(be.pdf_path, 600)).data?.signedUrl
+        : null
+      if (signedUrl) {
+        const venc = String(r.due_date || '').slice(0, 10)
+        mediaArg = { link: signedUrl, filename: `Boleto ${venc}.pdf` }     // → a_vencer1 com PDF
+      } else if (fallbackTpl) {
+        tplToSend = fallbackTpl                                            // → a_vencer2_sem_pdf (texto)
+      } else {
+        await admin.from('cobranca_regua_log').update({ status: 'failed', error: 'sem PDF e sem template de fallback aprovado' }).eq('id', claim.id)
         failed++; continue
       }
-      const { data: signed } = await admin.storage.from('boletos').createSignedUrl(be.pdf_path, 600)
-      if (!signed?.signedUrl) {
-        await admin.from('cobranca_regua_log').update({ status: 'failed', error: 'falha ao gerar signed URL do PDF' }).eq('id', claim.id)
-        failed++; continue
-      }
-      const venc = String(r.due_date || '').slice(0, 10)
-      mediaArg = { link: signed.signedUrl, filename: `Boleto ${venc}.pdf` }
     }
 
     const variables = resolveVariables(step.variable_mapping as VariableMapping, r)
@@ -181,7 +200,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       admin,
       inbox: { phone_number_id: inbox.phone_number_id, access_token: inbox.access_token },
       toWaId: waId,
-      tpl: tpl as TemplateRow,
+      tpl: tplToSend as TemplateRow,
       variables,
       conversationId: conv.conversationId,
       metaExtra: { regua_id: regua.id, regua_step_id: step.id },
