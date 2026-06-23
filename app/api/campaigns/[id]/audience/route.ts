@@ -54,6 +54,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       return NextResponse.json({ error: 'mode inválido' }, { status: 400 })
     }
 
+    // Mapa pdf_path por (phone_norm|venc) — usado quando a campanha enviar o boleto
+    // de cada cliente (modo 'boleto'). Resolve por boletos_emitidos (fonte do PDF).
+    const pdfByKey = new Map<string, string>()
+    const phonesAud = [...new Set(sourceRows.map(r => r.phone_norm).filter(Boolean))]
+    for (let i = 0; i < phonesAud.length; i += 200) {
+      const chunk = phonesAud.slice(i, i + 200)
+      const { data: bes } = await admin.from('boletos_emitidos')
+        .select('phone_norm, vencimento, pdf_path').in('phone_norm', chunk)
+      for (const b of bes || []) {
+        if (b.pdf_path) pdfByKey.set(`${b.phone_norm}|${String(b.vencimento).slice(0, 10)}`, b.pdf_path)
+      }
+    }
+
     // Filtrar sem telefone e deduplicar por wa_id
     const seen = new Set<string>()
     const recipients = sourceRows
@@ -64,6 +77,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         wa_id:       String(r.wa_id).replace(/\D/g, ''),
         name:        r.name || null,
         variables:   resolveVariables(camp.variable_mapping as any, r),
+        boleto_pdf_path: pdfByKey.get(`${r.phone_norm}|${String(r.due_date || '').slice(0, 10)}`) || null,
         status:      'pending' as const,
       }))
 

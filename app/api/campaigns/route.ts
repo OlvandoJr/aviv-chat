@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
     const { name, inboxId, templateId, variableMapping = {}, scheduledAt = null,
-            headerMediaPath = null, headerMediaFilename = null } = await req.json()
+            headerMediaPath = null, headerMediaFilename = null, headerMediaMode = 'upload' } = await req.json()
     if (!name || !inboxId || !templateId) {
       return NextResponse.json({ error: 'name, inboxId e templateId são obrigatórios' }, { status: 400 })
     }
@@ -26,8 +26,9 @@ export async function POST(req: NextRequest) {
       template_id:      templateId,
       variable_mapping: variableMapping,
       scheduled_at:     scheduledAt,
-      header_media_path:     headerMediaPath,
-      header_media_filename: headerMediaFilename,
+      header_media_mode:     headerMediaMode === 'boleto' ? 'boleto' : 'upload',
+      header_media_path:     headerMediaMode === 'boleto' ? null : headerMediaPath,
+      header_media_filename: headerMediaMode === 'boleto' ? null : headerMediaFilename,
       created_by:       user.id,
       status:           'draft',
     }).select('id').single()
