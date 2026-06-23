@@ -41,6 +41,9 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
     { source: campaign?.audience?.filter?.source || 'both', dueFrom: campaign?.audience?.filter?.dueFrom || '',
       dueTo: campaign?.audience?.filter?.dueTo || '', empreendimento: campaign?.audience?.filter?.empreendimento || '' })
   const [scheduledAt, setScheduledAt] = useState(toLocalInput(campaign?.scheduled_at || null))
+  const [headerMediaPath, setHeaderMediaPath]         = useState<string | null>(campaign?.header_media_path || null)
+  const [headerMediaFilename, setHeaderMediaFilename] = useState<string | null>(campaign?.header_media_filename || null)
+  const [uploading, setUploading] = useState(false)
 
   const [busy, setBusy]   = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -49,6 +52,24 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
   const tpl = templates.find(t => t.id === templateId) || null
+
+  // Template com header de mídia (DOCUMENT/IMAGE/VIDEO) → exige anexar o arquivo.
+  const mediaType = (tpl?.header_type || '').toUpperCase()
+  const isMediaTemplate = mediaType === 'DOCUMENT' || mediaType === 'IMAGE' || mediaType === 'VIDEO'
+  const mediaLabel = mediaType === 'IMAGE' ? 'imagem' : mediaType === 'VIDEO' ? 'vídeo' : 'documento'
+  const mediaAccept = mediaType === 'IMAGE' ? 'image/*' : mediaType === 'VIDEO' ? 'video/*' : '.pdf,application/pdf'
+
+  async function uploadMedia(file: File) {
+    setError(null); setUploading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const fd = new FormData(); fd.append('file', file)
+      const r = await fetch('/api/campaigns/media', { method: 'POST', headers: { Authorization: `Bearer ${session?.access_token}` }, body: fd })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error || 'Falha no upload')
+      setHeaderMediaPath(j.path); setHeaderMediaFilename(j.filename)
+    } catch (e: any) { setError(e.message) } finally { setUploading(false) }
+  }
 
   const allVars = useMemo(() => {
     if (!tpl) return [] as number[]
@@ -76,6 +97,7 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
     setError(null)
     if (!name || !inboxId || !templateId) { setError('Preencha nome, inbox e template.'); return }
     if (!mappingReady) { setError('Mapeie todas as variáveis do template.'); return }
+    if (isMediaTemplate && !headerMediaPath) { setError(`Anexe o ${mediaLabel} do template antes de continuar.`); return }
     setBusy(true)
     try {
       const headers = await authHeader()
@@ -87,7 +109,9 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
           ? { type: 'static', value: m.value }
           : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
       }
-      const payload = { name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null }
+      const payload = { name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null,
+        headerMediaPath: isMediaTemplate ? headerMediaPath : null,
+        headerMediaFilename: isMediaTemplate ? headerMediaFilename : null }
       if (!id) {
         const r = await fetch('/api/campaigns', { method: 'POST', headers, body: JSON.stringify(payload) })
         const j = await r.json()
@@ -154,13 +178,36 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">Template aprovado</label>
-              <select value={templateId} onChange={e => { setTemplateId(e.target.value); setMapping({}); setAudienceTotal(null) }}
+              <select value={templateId} onChange={e => { setTemplateId(e.target.value); setMapping({}); setAudienceTotal(null); setHeaderMediaPath(null); setHeaderMediaFilename(null) }}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
                 <option value="">Selecione…</option>
                 {inboxTemplates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
           </div>
+
+          {/* Anexo de mídia (template com header DOCUMENT/IMAGE/VIDEO) */}
+          {isMediaTemplate && (
+            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60">
+              <label className="text-xs font-medium text-gray-700 block mb-1">
+                Anexar {mediaLabel} do template <span className="text-red-500">*</span>
+              </label>
+              <p className="text-[11px] text-gray-500 mb-2">Este template tem mídia no cabeçalho. O mesmo arquivo será enviado a todos os destinatários.</p>
+              {headerMediaPath ? (
+                <div className="flex items-center justify-between gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                  <span className="text-sm text-gray-700 truncate">📎 {headerMediaFilename || 'arquivo anexado'}</span>
+                  <button type="button" onClick={() => { setHeaderMediaPath(null); setHeaderMediaFilename(null) }}
+                    className="text-xs text-red-500 hover:text-red-600 shrink-0">remover</button>
+                </div>
+              ) : (
+                <input type="file" accept={mediaAccept} disabled={uploading}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) uploadMedia(f) }}
+                  className="block w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100" />
+              )}
+              {uploading && <p className="text-[11px] text-gray-400 mt-1">Enviando…</p>}
+            </div>
+          )}
+
           {tpl && (
             <MappedPreview headerText={tpl.header_text} bodyText={tpl.body_text} footerText={tpl.footer_text} mapping={mapping} />
           )}

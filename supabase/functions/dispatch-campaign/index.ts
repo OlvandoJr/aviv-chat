@@ -39,12 +39,13 @@ Deno.serve(async (req) => {
       .is('deleted_at', null)
       .lte('scheduled_at', new Date().toISOString())
 
+    const CAMP_COLS = 'id, inbox_id, template_id, status, header_media_path, header_media_filename'
     let q = admin.from('chat_campaigns')
-      .select('id, inbox_id, template_id, status')
+      .select(CAMP_COLS)
       .eq('status', 'running')
       .is('deleted_at', null)
     if (onlyId) q = admin.from('chat_campaigns')
-      .select('id, inbox_id, template_id, status, deleted_at')
+      .select(CAMP_COLS + ', deleted_at')
       .eq('id', onlyId)
 
     const { data: campaigns } = await q
@@ -79,7 +80,7 @@ async function processCampaign(camp: any) {
 
   const { data: tpl } = await admin
     .from('chat_wa_templates')
-    .select('id, name, language, header_text, header_var_count, body_var_count, body_text')
+    .select('id, name, language, header_text, header_var_count, body_var_count, body_text, header_type')
     .eq('id', camp.template_id)
     .single()
 
@@ -88,6 +89,24 @@ async function processCampaign(camp: any) {
       .update({ status: 'failed', updated_at: new Date().toISOString() })
       .eq('id', camp.id)
     return { campaign: camp.id, error: 'inbox ou template inválido' }
+  }
+
+  // Template com header de mídia: anexa o arquivo da campanha (mesmo p/ todos).
+  // Signed URL gerada 1x por lote (Meta baixa no envio). Sem arquivo → falha a campanha.
+  const mediaType = (tpl.header_type || '').toUpperCase()
+  const precisaMedia = mediaType === 'DOCUMENT' || mediaType === 'IMAGE' || mediaType === 'VIDEO'
+  let headerMedia: { link: string; filename?: string } | null = null
+  if (precisaMedia) {
+    if (!camp.header_media_path) {
+      await admin.from('chat_campaigns').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', camp.id)
+      return { campaign: camp.id, error: 'template de mídia sem arquivo anexado' }
+    }
+    const { data: signed } = await admin.storage.from('campaign-media').createSignedUrl(camp.header_media_path, 3600)
+    if (!signed?.signedUrl) {
+      await admin.from('chat_campaigns').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', camp.id)
+      return { campaign: camp.id, error: 'falha ao gerar signed URL da mídia' }
+    }
+    headerMedia = { link: signed.signedUrl, filename: camp.header_media_filename || undefined }
   }
 
   // Lote de pendentes
@@ -113,6 +132,7 @@ async function processCampaign(camp: any) {
       tpl: tpl as TemplateRow,
       variables: Array.isArray(r.variables) ? r.variables : [],
       conversationId: conv.conversationId,
+      headerMedia,
       metaExtra: { campaign_id: camp.id },
     })
     if (res.ok) {

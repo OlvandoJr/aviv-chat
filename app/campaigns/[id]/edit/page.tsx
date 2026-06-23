@@ -10,7 +10,7 @@ export default async function EditCampaignPage({ params }: { params: Promise<{ i
 
   const [{ data: campaign }, { data: inboxes }, { data: templates }] = await Promise.all([
     supabase.from('chat_campaigns')
-      .select('id, name, status, inbox_id, template_id, variable_mapping, audience, scheduled_at, deleted_at')
+      .select('id, name, status, inbox_id, template_id, variable_mapping, audience, scheduled_at, deleted_at, header_media_path, header_media_filename')
       .eq('id', id).single(),
     supabase.from('chat_inboxes').select('id, name').eq('is_active', true).order('name'),
     supabase.from('chat_wa_templates')
