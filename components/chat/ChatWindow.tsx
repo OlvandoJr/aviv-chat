@@ -11,6 +11,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { formatHour, formatDaySeparator, dayKey, formatCurrency, getInitials, cn, mediaSrc } from '@/lib/utils'
+import { renderWhatsApp } from '@/lib/whatsapp/format'
 import MessageInput from './MessageInput'
 import ContactPanel from './ContactPanel'
 import ConversationActions from './ConversationActions'
@@ -399,7 +400,7 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
 
       {msg.type === 'text' || msg.type === 'button' || msg.type === 'template' ? (
         <p className={cn('text-sm whitespace-pre-wrap break-words', isOut ? 'text-white' : 'text-gray-900')}>
-          {msg.content}
+          {renderWhatsApp(msg.content)}
         </p>
 
       ) : msg.type === 'image' ? (
@@ -418,7 +419,7 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
             </div>
           )}
           {msg.content && (
-            <p className={cn('text-sm mt-1', isOut ? 'text-white' : 'text-gray-900')}>{msg.content}</p>
+            <p className={cn('text-sm mt-1', isOut ? 'text-white' : 'text-gray-900')}>{renderWhatsApp(msg.content)}</p>
           )}
         </div>
 
@@ -452,7 +453,7 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
             </div>
           )}
           {msg.content && (
-            <p className={cn('text-sm mt-1', isOut ? 'text-white' : 'text-gray-900')}>{msg.content}</p>
+            <p className={cn('text-sm mt-1', isOut ? 'text-white' : 'text-gray-900')}>{renderWhatsApp(msg.content)}</p>
           )}
         </div>
 
