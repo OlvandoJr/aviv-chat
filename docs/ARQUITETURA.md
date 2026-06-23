@@ -350,6 +350,9 @@ npx tsc --noEmit   # type-check
 
 > Adicione novas entradas no topo, com data.
 
+- **2026-06-18 — Campanhas: anexar mídia quando o template tem header de mídia.**
+  - No assistente de campanha, ao escolher um template com header **DOCUMENT/IMAGE/VIDEO**, abre o campo **"Anexar … do template"** (obrigatório p/ continuar). Vale p/ qualquer template de mídia.
+  - `chat_campaigns.header_media_path`/`header_media_filename` (migration 052) + bucket privado **`campaign-media`**. Upload: `POST /api/campaigns/media` (admin/manager). `dispatch-campaign`: template de mídia → gera signed URL (1×/lote) e anexa o mesmo arquivo a todos; sem arquivo → campanha `failed`. **UM arquivo por campanha** (mesma mídia p/ todos — diferente da régua, que anexa o PDF de cada boleto). `CampaignWizard` reusado no editar (pré-preenche a mídia).
 - **2026-06-18 — Régua: template sem-PDF de fallback (`a_vencer2_sem_pdf`).**
   - Por destinatário: COM PDF → `a_vencer1` (documento anexado); SEM PDF → `a_vencer2_sem_pdf` (texto), **mesmo mapeamento de variáveis**. Pareamento por nome em `cobranca-regua` (`NO_PDF_FALLBACK = { a_vencer1: 'a_vencer2_sem_pdf' }`); o fallback só ativa quando estiver **APPROVED** no mesmo inbox (lookup por nome+inbox+status). Sem fallback aprovado → disparo `failed` (como antes). **Requer**: aprovar o template no Meta e **re-sincronizar** (`/templates` "Sincronizar") p/ ele entrar em `chat_wa_templates` como APPROVED.
 - **2026-06-18 — Régua envia o PDF do boleto (header de documento do template).**

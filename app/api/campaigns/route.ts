@@ -14,7 +14,8 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
-    const { name, inboxId, templateId, variableMapping = {}, scheduledAt = null } = await req.json()
+    const { name, inboxId, templateId, variableMapping = {}, scheduledAt = null,
+            headerMediaPath = null, headerMediaFilename = null } = await req.json()
     if (!name || !inboxId || !templateId) {
       return NextResponse.json({ error: 'name, inboxId e templateId são obrigatórios' }, { status: 400 })
     }
@@ -25,6 +26,8 @@ export async function POST(req: NextRequest) {
       template_id:      templateId,
       variable_mapping: variableMapping,
       scheduled_at:     scheduledAt,
+      header_media_path:     headerMediaPath,
+      header_media_filename: headerMediaFilename,
       created_by:       user.id,
       status:           'draft',
     }).select('id').single()
