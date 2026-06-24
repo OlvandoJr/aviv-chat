@@ -287,6 +287,45 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── 2d. Subagentes ON_DEMAND — expostos ao principal como delegar_<slug> ───
+    // O agente principal é orquestrador: quando o cliente pede algo que é de um
+    // especialista (ex.: agendar pagamento), ele chama delegar_<slug>. A execução
+    // real (com prompt + ferramentas do subagente) acontece em runSubagent().
+    const onDemandSubs: Record<string, any> = {}   // nome-da-função → subagente
+    if (agent?.id) {
+      const { data: subs } = await supabase
+        .from('chat_subagents')
+        .select('*')
+        .eq('agent_id', agent.id)
+        .eq('invocation', 'on_demand')
+        .eq('is_active', true)
+        .order('sort_order')
+      for (const sub of subs || []) {
+        let fn = 'delegar_' + String(sub.name || sub.id).toLowerCase()
+          .normalize('NFD').replace(/[̀-ͯ]/g, '')
+          .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        while (onDemandSubs[fn]) fn += '_'
+        onDemandSubs[fn] = sub
+        openAiTools.push({
+          type: 'function',
+          function: {
+            name: fn,
+            description:
+              (sub.delegation_description || `Encaminhe ao especialista "${sub.name}".`) +
+              ' Chame esta função (sem responder você mesmo) quando o pedido se encaixar; ' +
+              'descreva no parâmetro "pedido" o que o cliente quer em uma frase.',
+            parameters: {
+              type: 'object',
+              required: ['pedido'],
+              properties: {
+                pedido: { type: 'string', description: 'O que o cliente está pedindo, em uma frase curta.' },
+              },
+            },
+          },
+        })
+      }
+    }
+
     // Adicionar atualizar_conversa se há campos de atualização configurados
     if (updateDefs.length > 0) {
       const properties: Record<string, any> = {}
@@ -673,7 +712,7 @@ Deno.serve(async (req) => {
         .from('chat_subagents')
         .select('*, datasources:chat_subagent_datasources(*)')
         .eq('agent_id', agent.id)
-        .eq('trigger_type', 'text')
+        .eq('invocation', 'auto_context')   // só os que injetam contexto a cada mensagem (não os on_demand)
         .eq('is_active', true)
         .order('sort_order')
 
@@ -801,16 +840,23 @@ Deno.serve(async (req) => {
           console.log(`Tool call: ${toolName}`, toolArgs)
 
           let toolResult = ''
+          let delegated  = false   // delegamos a um subagente → usamos a resposta dele direto
 
-          if (toolName === 'calcular_datas_pagamento') {
-            const { d3, d5, d10 } = calcularDatasDisponiveis()
-            toolResult = JSON.stringify({
-              datas: [
-                { label: formatarDataBR(d3),  iso: d3.toISOString().split('T')[0]  },
-                { label: formatarDataBR(d5),  iso: d5.toISOString().split('T')[0]  },
-                { label: formatarDataBR(d10), iso: d10.toISOString().split('T')[0] },
-              ],
+          if (onDemandSubs[toolName]) {
+            // Delegação ao subagente especialista: roda o loop dele (prompt +
+            // ferramentas próprias) e usa a resposta diretamente — preserva a
+            // redação e a eventual escalação do especialista.
+            delegated = true
+            botReply = await runSubagent(onDemandSubs[toolName], {
+              conv, contact, contactWaId, boletos, capturedAttrs,
+              phoneNumberId, accessToken, conversationId,
+              history, customerContext,
+              pedido: (toolArgs?.pedido as string) || lastUserText,
+              fallbackModel: model, temperature, maxTokens,
             })
+          } else if (toolName === 'calcular_datas_pagamento') {
+            const paymentTool = agentTools.find((t: any) => t.tool_type === 'payment_scheduler')
+            toolResult = JSON.stringify(calcularDatasDisponiveis(paymentTool?.config))
           } else if (toolName === 'confirmar_agendamento') {
             const paymentTool = agentTools.find((t: any) => t.tool_type === 'payment_scheduler')
             toolResult = await handleConfirmarAgendamento(toolArgs, conv, contact, boletos, paymentTool)
@@ -849,35 +895,38 @@ Deno.serve(async (req) => {
             }
           }
 
-          // Segunda chamada ao OpenAI com o resultado da ferramenta
-          const messagesWithTool = [
-            ...openAiMessages,
-            choice.message,                          // mensagem com tool_calls
-            {
-              role:         'tool',
-              tool_call_id: toolCall.id,
-              content:      toolResult,
-            },
-          ]
+          // Segunda chamada ao OpenAI com o resultado da ferramenta.
+          // Pulada quando delegamos — a resposta do especialista já está em botReply.
+          if (!delegated) {
+            const messagesWithTool = [
+              ...openAiMessages,
+              choice.message,                          // mensagem com tool_calls
+              {
+                role:         'tool',
+                tool_call_id: toolCall.id,
+                content:      toolResult,
+              },
+            ]
 
-          const finalResp = await fetch('https://api.openai.com/v1/chat/completions', {
-            method:  'POST',
-            headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model,
-              max_completion_tokens: maxTokens,
-              temperature,
-              messages: messagesWithTool,
-            }),
-          })
+            const finalResp = await fetch('https://api.openai.com/v1/chat/completions', {
+              method:  'POST',
+              headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model,
+                max_completion_tokens: maxTokens,
+                temperature,
+                messages: messagesWithTool,
+              }),
+            })
 
-          if (finalResp.ok) {
-            const finalData = await finalResp.json()
-            botReply = (finalData.choices?.[0]?.message?.content || '').trim()
-            console.log(`OpenAI tool-result OK — resposta: ${botReply.substring(0, 80)}...`)
-          } else {
-            console.error('OpenAI second call error:', finalResp.status, await finalResp.text())
-            botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
+            if (finalResp.ok) {
+              const finalData = await finalResp.json()
+              botReply = (finalData.choices?.[0]?.message?.content || '').trim()
+              console.log(`OpenAI tool-result OK — resposta: ${botReply.substring(0, 80)}...`)
+            } else {
+              console.error('OpenAI second call error:', finalResp.status, await finalResp.text())
+              botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
+            }
           }
         } else {
           // Resposta normal (sem tool call)
@@ -1135,13 +1184,173 @@ function formatarDataBR(data: Date): string {
   return data.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
 }
 
-function calcularDatasDisponiveis(): { d3: Date; d5: Date; d10: Date } {
+// Regras do agendador (editáveis no config da ferramenta payment_scheduler).
+function schedulerRules(config: any): { offsets: number[]; maxOffsetDays: number; maxReschedules: number } {
+  const offsets: number[] = Array.isArray(config?.business_day_offsets) && config.business_day_offsets.length
+    ? config.business_day_offsets.map((n: any) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0)
+    : [3, 5, 10]
+  const maxOffsetDays  = Number(config?.max_offset_days) > 0 ? Number(config.max_offset_days) : Math.max(...offsets)
+  const maxReschedules = Number(config?.max_reschedules) > 0 ? Number(config.max_reschedules) : 99
+  return { offsets, maxOffsetDays, maxReschedules }
+}
+
+// Datas oferecidas ao cliente, conforme os offsets (dias úteis) do config.
+function calcularDatasDisponiveis(config?: any): { datas: { label: string; iso: string }[] } {
+  const { offsets } = schedulerRules(config)
   const hoje = new Date()
-  return {
-    d3:  adicionarDiasUteis(hoje, 3),
-    d5:  adicionarDiasUteis(hoje, 5),
-    d10: adicionarDiasUteis(hoje, 10),
+  const datas = offsets.map((off) => {
+    const d = adicionarDiasUteis(hoje, off)
+    return { label: formatarDataBR(d), iso: d.toISOString().split('T')[0] }
+  })
+  return { datas }
+}
+
+// ── Loop do subagente especialista (delegação on_demand) ──────────────────────
+// Roda um ciclo de OpenAI com o prompt e as FERRAMENTAS do próprio subagente,
+// reaproveitando os handlers já existentes. Retorna o texto a enviar ao cliente
+// (pode conter ESCALAR_HUMANO:, que a escalação do fluxo principal detecta).
+// deno-lint-ignore no-explicit-any
+async function runSubagent(sub: any, ctx: any): Promise<string> {
+  if (!OPENAI_API_KEY) return sub.escalation_message || 'Vou te encaminhar para um atendente. 🙏'
+
+  // 1. Ferramentas do subagente
+  const { data: subTools } = await supabase
+    .from('chat_agent_tools')
+    .select('*, api_connection:chat_api_connections(*)')
+    .eq('subagent_id', sub.id)
+    .eq('is_active', true)
+    .order('sort_order')
+
+  const tools: any[] = []
+  const apiFns: Record<string, any> = {}
+  let schedulerTool: any = null
+
+  for (const t of subTools || []) {
+    if (t.tool_type === 'payment_scheduler') {
+      schedulerTool = t
+      tools.push({ type: 'function', function: {
+        name: 'calcular_datas_pagamento',
+        description: 'Calcula as datas úteis disponíveis para o cliente agendar o pagamento do boleto.',
+        parameters: { type: 'object', properties: {} },
+      } })
+      tools.push({ type: 'function', function: {
+        name: 'confirmar_agendamento',
+        description: 'Registra o agendamento do pagamento para a data escolhida pelo cliente (uma das datas oferecidas).',
+        parameters: {
+          type: 'object', required: ['data_escolhida'],
+          properties: {
+            data_escolhida: { type: 'string', description: 'Data escolhida no formato DD/MM/YYYY' },
+            observacoes:    { type: 'string', description: 'Observações adicionais do cliente (opcional)' },
+          },
+        },
+      } })
+    } else if (t.tool_type === 'api_call') {
+      const cfg = t.config || {}
+      let fn = 'api_' + String(t.name || t.id).toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+      while (apiFns[fn]) fn += '_'
+      const properties: Record<string, any> = {}
+      const required: string[] = []
+      for (const p of (cfg.parameters || [])) {
+        if (!p?.name) continue
+        properties[p.name] = { type: p.type || 'string', description: p.description || '' }
+        if (p.required) required.push(p.name)
+      }
+      apiFns[fn] = t
+      tools.push({ type: 'function', function: {
+        name: fn, description: t.description || t.name || 'Chama uma integração externa.',
+        parameters: { type: 'object', properties, required },
+      } })
+    }
   }
+
+  // 2. Prompt + contexto + histórico recente
+  const today = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+  const sys = (sub.instructions || '')
+    + `\n\nHoje é ${today}.`
+    + (ctx.customerContext ? `\n\n--- DADOS DO CLIENTE ---\n${ctx.customerContext}` : '')
+    + (ctx.pedido ? `\n\nO cliente está pedindo: ${ctx.pedido}` : '')
+
+  const messages: any[] = [{ role: 'system', content: sys }]
+  for (const m of (ctx.history || [])) {
+    const role = m.direction === 'in' ? 'user' : 'assistant'
+    const content = m.content || ''
+    if (content) messages.push({ role, content })
+  }
+  if (!messages.some((m: any) => m.role === 'user')) {
+    messages.push({ role: 'user', content: ctx.pedido || 'Olá' })
+  }
+
+  const model = sub.model || ctx.fallbackModel || 'gpt-4o-mini'
+
+  // 3. Loop de tool-calls (até 4 rodadas)
+  for (let round = 0; round < 4; round++) {
+    const body: any = { model, max_completion_tokens: ctx.maxTokens, temperature: ctx.temperature, messages }
+    if (tools.length) { body.tools = tools; body.tool_choice = 'auto' }
+
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      console.error(`runSubagent(${sub.name}) OpenAI ${resp.status}:`, await resp.text())
+      return sub.escalation_message || 'Vou te encaminhar para um atendente. 🙏'
+    }
+    const choice = (await resp.json()).choices?.[0]
+
+    if (choice?.finish_reason === 'tool_calls' && choice.message?.tool_calls?.length > 0) {
+      messages.push(choice.message)
+      for (const tc of choice.message.tool_calls) {
+        const name = tc.function.name
+        const args = JSON.parse(tc.function.arguments || '{}')
+        let result = ''
+
+        if (name === 'calcular_datas_pagamento') {
+          result = JSON.stringify(calcularDatasDisponiveis(schedulerTool?.config))
+        } else if (name === 'confirmar_agendamento') {
+          result = await handleConfirmarAgendamento(args, ctx.conv, ctx.contact, ctx.boletos, schedulerTool)
+          // Regra excedida → escala de forma determinística (não depende do modelo).
+          try {
+            const parsed = JSON.parse(result)
+            if (parsed?.escalate) return `ESCALAR_HUMANO: ${parsed.reason || 'agendamento fora das regras'}`
+          } catch { /* ignore */ }
+        } else if (apiFns[name]) {
+          const apiTool = apiFns[name]
+          const cpfAttr   = Object.values(ctx.capturedAttrs || {}).find((a: any) => a.fieldType === 'cpf_cnpj') as any
+          const emailAttr = Object.values(ctx.capturedAttrs || {}).find((a: any) => a.fieldType === 'email') as any
+          const contactCtx = {
+            wa_id:       ctx.contactWaId,
+            telefone:    ctx.contactWaId,
+            cpf:         cpfAttr ? String(cpfAttr.value).replace(/\D/g, '') : '',
+            email:       emailAttr ? String(emailAttr.value) : '',
+            customer_id: (ctx.boletos?.[0] as any)?.customer_id || ctx.capturedAttrs?.['sienge_customer_id']?.value || '',
+          }
+          const { data: apiCfg } = await supabase
+            .from('chat_api_configs').select('*').eq('id', apiTool.config?.api_config_id).maybeSingle()
+          if (!apiCfg) {
+            result = JSON.stringify({ ok: false, erro: 'Integração não configurada.' })
+          } else {
+            const r = await executeApiConfig(apiCfg, { variables: args, contact: contactCtx })
+            let bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+            if (bodyStr.length > 3000) bodyStr = bodyStr.slice(0, 3000) + '…'
+            result = JSON.stringify({ ok: r.ok, status: r.status, resposta: bodyStr })
+          }
+        } else {
+          result = JSON.stringify({ ok: false, erro: 'ferramenta desconhecida' })
+        }
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: result })
+      }
+      continue
+    }
+
+    // Resposta final do especialista
+    const reply = (choice?.message?.content || '').trim()
+    if (reply) return reply
+    break
+  }
+  return sub.escalation_message || 'Vou te encaminhar para um atendente para tratar isso. 🙏'
 }
 
 // ── Confirmar agendamento de pagamento ────────────────────────────────────────
@@ -1163,6 +1372,35 @@ async function handleConfirmarAgendamento(
       return JSON.stringify({ success: false, error: 'Data inválida.' })
     }
     const scheduledDate = `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
+
+    // ── Regras configuráveis: prazo máximo + limite de reagendamentos ─────────
+    const { maxOffsetDays, maxReschedules } = schedulerRules(tool?.config)
+    const hoje    = new Date()
+    const todayIso = hoje.toISOString().split('T')[0]
+    const maxIso   = adicionarDiasUteis(hoje, maxOffsetDays).toISOString().split('T')[0]
+
+    if (scheduledDate < todayIso) {
+      return JSON.stringify({ success: false, error: 'A data escolhida está no passado. Peça uma data dentro das opções oferecidas.' })
+    }
+    if (scheduledDate > maxIso) {
+      return JSON.stringify({
+        success: false, escalate: true,
+        reason: `cliente quer agendar para ${args.data_escolhida}, além do prazo máximo permitido (até ${formatarDataBR(adicionarDiasUteis(hoje, maxOffsetDays))})`,
+      })
+    }
+
+    // Limite de agendamentos por contato (ignora cancelados)
+    const { count: jaAgendados } = await supabase
+      .from('chat_scheduled_payments')
+      .select('id', { count: 'exact', head: true })
+      .eq('contact_id', conv.contact_id)
+      .neq('status', 'cancelado')
+    if ((jaAgendados || 0) >= maxReschedules) {
+      return JSON.stringify({
+        success: false, escalate: true,
+        reason: `cliente já possui ${jaAgendados} agendamento(s) — atingiu o limite de ${maxReschedules}`,
+      })
+    }
 
     const boleto = boletos[0] || null
 

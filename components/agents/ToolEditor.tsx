@@ -8,6 +8,7 @@ import type { AgentTool, ToolType, ApiConnection, ApiToolParam } from '@/lib/typ
 
 interface Props {
   agentId:        string
+  subagentId?:    string | null           // se setado, a ferramenta pertence a um subagente
   tool:           AgentTool | null        // null = novo
   apiConnections: ApiConnection[]
   onSaved:        (tool: AgentTool) => void
@@ -36,7 +37,7 @@ const TOOL_TYPES: { value: ToolType; label: string; icon: string; description: s
   },
 ]
 
-export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onDeleted, onClose }: Props) {
+export default function ToolEditor({ agentId, subagentId, tool, apiConnections, onSaved, onDeleted, onClose }: Props) {
   const supabase = createClient()
   const isNew    = !tool
 
@@ -49,6 +50,11 @@ export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onD
   const [apiConfigId,     setApiConfigId]    = useState<string>((tool?.config as any)?.api_config_id || '')
   const [params,          setParams]         = useState<ApiToolParam[]>(((tool?.config as any)?.parameters as ApiToolParam[]) || [])
   const [apiConfigs,      setApiConfigs]     = useState<{ id: string; name: string; method: string; url: string }[]>([])
+
+  // Regras do Agendador (payment_scheduler)
+  const [schedOffsets,    setSchedOffsets]   = useState<string>(((((tool?.config as any)?.business_day_offsets) as number[]) || [3, 5, 10]).join(', '))
+  const [schedMaxDays,    setSchedMaxDays]   = useState<number>(Number((tool?.config as any)?.max_offset_days)  || 10)
+  const [schedMaxResched, setSchedMaxResched]= useState<number>(Number((tool?.config as any)?.max_reschedules) || 2)
 
   const [loading,         setLoading]        = useState(false)
   const [error,           setError]          = useState('')
@@ -82,9 +88,17 @@ export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onD
         .filter(p => p.name.trim())
         .map(p => ({ name: p.name.trim(), type: p.type || 'string', description: p.description || '', required: !!p.required }))
     }
+    if (toolType === 'payment_scheduler') {
+      const offsets = schedOffsets.split(/[,\s]+/).map(n => parseInt(n, 10)).filter(n => Number.isFinite(n) && n > 0)
+      config.business_day_offsets = offsets.length ? offsets : [3, 5, 10]
+      config.max_offset_days = schedMaxDays  > 0 ? schedMaxDays  : Math.max(...config.business_day_offsets)
+      config.max_reschedules = schedMaxResched > 0 ? schedMaxResched : 2
+      config.on_exceed       = 'escalate'
+      config.calendar        = (tool?.config as any)?.calendar || 'system'
+    }
 
     const payload = {
-      agent_id:          agentId,
+      ...(subagentId ? { subagent_id: subagentId, agent_id: null } : { agent_id: agentId }),
       name:              name.trim(),
       description:       description.trim(),
       tool_type:         toolType,
@@ -224,7 +238,41 @@ export default function ToolEditor({ agentId, tool, apiConnections, onSaved, onD
 
           {/* Config por tipo */}
           {toolType === 'payment_scheduler' && (
-            <div>
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-3">
+                  <label className="text-xs text-gray-500 mb-1 block font-medium">Datas oferecidas (dias úteis a partir de hoje)</label>
+                  <input
+                    value={schedOffsets}
+                    onChange={(e) => setSchedOffsets(e.target.value)}
+                    placeholder="3, 5, 10"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">Lista separada por vírgula. Ex.: <code className="bg-gray-100 px-1 rounded">3, 5, 10</code> oferece 3 opções.</p>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block font-medium">Prazo máximo (dias úteis)</label>
+                  <input
+                    type="number" min={1}
+                    value={schedMaxDays}
+                    onChange={(e) => setSchedMaxDays(parseInt(e.target.value, 10) || 0)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block font-medium">Máx. de agendamentos</label>
+                  <input
+                    type="number" min={1}
+                    value={schedMaxResched}
+                    onChange={(e) => setSchedMaxResched(parseInt(e.target.value, 10) || 0)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-amber-600">
+                Se o cliente pedir uma data além do prazo máximo ou já tiver atingido o limite de agendamentos, o atendimento é <strong>encaminhado a um humano</strong>.
+              </p>
+
               <label className="text-xs text-gray-500 mb-1 block font-medium">
                 Integração Google Calendar (opcional)
               </label>

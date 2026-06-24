@@ -12,7 +12,7 @@ import type {
   Agent, AgentModel, AgentRule, AgentRuleType, Inbox,
   ContactAttributeDef, AttributeFieldType, AttributeAction,
   AgentTool, ApiConnection, ConversationUpdateDef, UpdateFieldType,
-  Subagent, SubagentTrigger,
+  Subagent, SubagentTrigger, SubagentInvocation,
 } from '@/lib/types'
 import ToolEditor from './ToolEditor'
 
@@ -46,6 +46,9 @@ interface SubagentDraft {
   id?:               string
   name:              string
   trigger_type:      SubagentTrigger
+  invocation:        SubagentInvocation
+  delegation_description: string
+  escalation_message:     string
   extraction_prompt: string
   extraction_model:  string
   instructions:      string
@@ -54,6 +57,7 @@ interface SubagentDraft {
   is_active:         boolean
   sort_order:        number
   datasources:       DatasourceDraft[]
+  tools:             AgentTool[]
 }
 
 interface AttrDefDraft {
@@ -142,6 +146,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   const [tools,               setTools]              = useState<AgentTool[]>(initialTools)
   const [toolEditorOpen,      setToolEditorOpen]     = useState(false)
   const [editingTool,         setEditingTool]        = useState<AgentTool | null>(null)
+  const [editingToolSubIdx,   setEditingToolSubIdx]  = useState<number | null>(null)  // índice do subagente dono da tool sendo editada (null = nível agente)
 
   // Campos de Atualização de Conversa
   const [updateDefs,          setUpdateDefs]         = useState<UpdateDefDraft[]>(
@@ -162,6 +167,9 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       id:                s.id,
       name:              s.name,
       trigger_type:      s.trigger_type,
+      invocation:        (s.invocation || 'auto_context') as SubagentInvocation,
+      delegation_description: s.delegation_description || '',
+      escalation_message:     s.escalation_message || '',
       extraction_prompt: s.extraction_prompt || '',
       extraction_model:  s.extraction_model,
       instructions:      s.instructions,
@@ -169,6 +177,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       model:             s.model,
       is_active:         s.is_active,
       sort_order:        s.sort_order,
+      tools:             (s.tools || []) as AgentTool[],
       datasources:       (s.datasources || []).map(d => ({
         id:                 d.id,
         connection_id:      d.connection_id,
@@ -366,6 +375,9 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
         agent_id:          agentId,
         name:              s.name.trim(),
         trigger_type:      s.trigger_type,
+        invocation:        s.invocation,
+        delegation_description: s.invocation === 'on_demand' ? (s.delegation_description.trim() || null) : null,
+        escalation_message:     s.escalation_message.trim() || null,
         extraction_prompt: s.extraction_prompt.trim() || null,
         extraction_model:  s.extraction_model.trim() || 'gpt-4o-mini',
         instructions:      s.instructions,
@@ -1242,6 +1254,46 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                     </button>
                   </div>
 
+                  {/* Invocação — como o subagente é acionado */}
+                  <div>
+                    <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Quando este subagente é acionado</label>
+                    <select
+                      value={s.invocation}
+                      onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, invocation: e.target.value as SubagentInvocation } : x))}
+                      className="w-full h-8 rounded-md border border-gray-200 bg-white px-2 text-xs"
+                    >
+                      <option value="auto_context">🔁 Sempre (injeta contexto a cada mensagem de texto)</option>
+                      <option value="on_media">📎 Por mídia (gatilho de imagem/documento/áudio)</option>
+                      <option value="on_demand">🎯 Sob demanda (o agente principal delega quando necessário)</option>
+                    </select>
+                  </div>
+
+                  {/* Delegação (on_demand) */}
+                  {s.invocation === 'on_demand' && (
+                    <div className="space-y-3 rounded-lg border border-emerald-100 bg-emerald-50/40 p-3">
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Quando o agente principal deve delegar a este especialista</label>
+                        <textarea
+                          value={s.delegation_description}
+                          onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, delegation_description: e.target.value } : x))}
+                          rows={2}
+                          placeholder="Ex: Use quando o cliente quiser pagar o boleto em outra data, reagendar ou adiar o pagamento."
+                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y bg-white"
+                        />
+                        <p className="text-[10px] text-gray-400 mt-0.5">É a descrição que o orquestrador usa para decidir delegar. Seja específico.</p>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Mensagem ao escalar para humano (opcional)</label>
+                        <input
+                          value={s.escalation_message}
+                          onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, escalation_message: e.target.value } : x))}
+                          placeholder="Ex: Vou te encaminhar para um atendente para tratar essa data. 🙏"
+                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Extração (não p/ áudio) */}
                   {( s.trigger_type === 'image' || s.trigger_type === 'document' ) && (
                     <div>
@@ -1473,6 +1525,43 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                       )
                     })}
                   </div>
+
+                  {/* Ferramentas do subagente (toda ferramenta é consumida por um subagente) */}
+                  <div className="border-t border-gray-200 pt-3">
+                    <label className="text-[11px] font-medium text-gray-500 mb-1 block flex items-center gap-1">
+                      <Wrench className="w-3 h-3" /> Ferramentas do subagente
+                    </label>
+                    {!s.id ? (
+                      <p className="text-[11px] text-amber-600 italic">Salve o agente primeiro para anexar ferramentas a este subagente.</p>
+                    ) : (
+                      <>
+                        {(s.tools || []).length > 0 && (
+                          <div className="space-y-1.5 mb-2">
+                            {(s.tools || []).map(t => (
+                              <div key={t.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-2.5 py-1.5">
+                                <div className="min-w-0">
+                                  <div className="text-xs font-medium text-gray-800 truncate">{t.name}</div>
+                                  <div className="text-[10px] text-gray-400">
+                                    {t.tool_type === 'payment_scheduler' ? '📅 Agendador de Pagamentos' : t.tool_type === 'api_call' ? '🔌 Chamar API' : '🔗 Webhook'}
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => { setEditingTool(t); setEditingToolSubIdx(i); setToolEditorOpen(true) }}
+                                  className="shrink-0 px-2 py-1 text-[11px] text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md"
+                                >Editar</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          onClick={() => { setEditingTool(null); setEditingToolSubIdx(i); setToolEditorOpen(true) }}
+                          className="flex items-center gap-1 px-2.5 py-1 text-[11px] rounded-md border border-dashed border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" /> Adicionar ferramenta
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1480,9 +1569,11 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
 
           <button
             onClick={() => setSubagents([...subagents, {
-              name: '', trigger_type: 'image', extraction_prompt: '', extraction_model: 'gpt-4o-mini',
+              name: '', trigger_type: 'image', invocation: 'on_media',
+              delegation_description: '', escalation_message: '',
+              extraction_prompt: '', extraction_model: 'gpt-4o-mini',
               instructions: '', output_format: '', model: 'gpt-4o-mini', is_active: true, sort_order: subagents.length,
-              datasources: [],
+              datasources: [], tools: [],
             }])}
             className="flex items-center gap-1.5 px-3 py-2 text-xs text-emerald-700 border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
           >
@@ -1513,21 +1604,36 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       {toolEditorOpen && agent && (
         <ToolEditor
           agentId={agent.id}
+          subagentId={editingToolSubIdx !== null ? (subagents[editingToolSubIdx]?.id || null) : null}
           tool={editingTool}
           apiConnections={apiConnections}
           onSaved={(saved) => {
-            setTools(prev => {
-              const idx = prev.findIndex(t => t.id === saved.id)
-              if (idx >= 0) {
-                const next = [...prev]
-                next[idx] = saved
-                return next
-              }
-              return [...prev, saved]
-            })
+            if (editingToolSubIdx !== null) {
+              const si = editingToolSubIdx
+              setSubagents(prev => prev.map((x, j) => {
+                if (j !== si) return x
+                const list = x.tools || []
+                const idx = list.findIndex(t => t.id === saved.id)
+                const tools = idx >= 0 ? list.map((t, k) => k === idx ? saved : t) : [...list, saved]
+                return { ...x, tools }
+              }))
+            } else {
+              setTools(prev => {
+                const idx = prev.findIndex(t => t.id === saved.id)
+                if (idx >= 0) { const next = [...prev]; next[idx] = saved; return next }
+                return [...prev, saved]
+              })
+            }
           }}
-          onDeleted={(toolId) => setTools(prev => prev.filter(t => t.id !== toolId))}
-          onClose={() => { setToolEditorOpen(false); setEditingTool(null) }}
+          onDeleted={(toolId) => {
+            if (editingToolSubIdx !== null) {
+              const si = editingToolSubIdx
+              setSubagents(prev => prev.map((x, j) => j === si ? { ...x, tools: (x.tools || []).filter(t => t.id !== toolId) } : x))
+            } else {
+              setTools(prev => prev.filter(t => t.id !== toolId))
+            }
+          }}
+          onClose={() => { setToolEditorOpen(false); setEditingTool(null); setEditingToolSubIdx(null) }}
         />
       )}
     </div>
