@@ -146,8 +146,8 @@ scripts/
 |---|---|
 | `chat_agents` | Bots (system_prompt, model, include_boletos, escalation_rules, is_default, …). |
 | `chat_agent_rules` | Roteamento por inbox/tag/keyword → agente. |
-| `chat_agent_tools` | Tools de function-calling. `tool_type`: `payment_scheduler` \| `webhook` \| `api_call`. |
-| `chat_subagents` (+ `chat_subagent_datasources`) | Subagentes por gatilho (`text`/`image`/`document`/`audio`) com prompts e **fontes de dados** (consultas/escritas à base). |
+| `chat_agent_tools` | Ferramentas (`tool_type`: `payment_scheduler` \| `webhook` \| `api_call`). Pertencem **sempre a um subagente** (`subagent_id NOT NULL`, CHECK mig. 055). |
+| `chat_subagents` (+ `chat_subagent_datasources`) | Subagentes especialistas. `invocation`: `auto_context` \| `on_media` \| `on_demand` (delegável via `delegar_<slug>`). Prompts, **fontes de dados** e **ferramentas** próprias. Ver §9.0. |
 | `chat_contact_attribute_defs` (+ `chat_contact_attributes`) | Campos capturados do cliente (CPF/e-mail…), com `action` `save` ou `save_and_lookup_sienge`. |
 | `chat_conversation_update_defs` | Campos que o bot pode atualizar (ex.: CSAT) via tool `atualizar_conversa`. |
 | `chat_api_configs` | Construtor de APIs (`/apis`) — base das tools `api_call`. |
@@ -263,18 +263,28 @@ passam a excluir o boleto; a Central reflete "PAGO".
 
 ## 9. Bots, subagentes, tools
 
-### 9.1 Tools de function-calling (`ai-responder`)
+### 9.0 Arquitetura de 3 camadas (desde mig. 054/055)
+**Agente principal (orquestrador) → Subagentes (especialistas) → Ferramentas.**
+- O **agente principal** conversa e decide *quando delegar*. Ele **não tem ferramentas configuráveis próprias** — só os built-ins (`enviar_segunda_via_boleto`, `atualizar_conversa`) e as funções de delegação `delegar_<slug>`.
+- Os **subagentes** (`chat_subagents`) são especialistas com prompt/modelo próprios. Campo **`invocation`**:
+  - `auto_context` — injeta contexto no prompt do principal a cada mensagem de texto (§9.2);
+  - `on_media` — acionado por gatilho de mídia em `process-media` (`trigger_type` image/document/audio);
+  - `on_demand` — **delegável** pelo principal; vira uma função `delegar_<slug>`. Ao ser chamado, o `ai-responder` roda `runSubagent()` — um loop OpenAI aninhado com o prompt + as ferramentas DO subagente — e devolve a resposta (preservando redação/escalação).
+- As **ferramentas** (`chat_agent_tools`) pertencem **sempre a um subagente** (`subagent_id NOT NULL`, travado por CHECK em mig. 055). A "consulta/gravação de tabela" (`chat_subagent_datasources`) também é, conceitualmente, uma ferramenta do subagente.
+- Especialistas atuais: **Agendador de Pagamentos** (`payment_scheduler`, regras em `config`: offsets, prazo máx., limite, escala ao exceder) e **Atendimento ao Cliente** (3 `api_call` Sienge: quitação, extrato, endereço).
+
+### 9.1 Built-ins de function-calling do orquestrador (`ai-responder`)
 - `enviar_segunda_via_boleto` — envia o boleto escolhido (por `vencimento_id` ou IDs Sienge); banco
   primeiro, Sienge fallback.
-- `calcular_datas_pagamento` / `confirmar_agendamento` — agendamento (`payment_scheduler`).
 - `atualizar_conversa` — grava campos (`chat_conversation_update_defs`), ex.: CSAT.
-- **`api_call`** (genérica) — chama qualquer `chat_api_configs` (Sienge: quitação, extrato, endereço…).
+- `delegar_<slug>` — uma por subagente `on_demand` ativo (ver §9.0).
 - Escalação: o modelo emite `ESCALAR_HUMANO: <motivo>` → conversa vira `pending_human`.
 
 ### 9.2 Subagentes (`chat_subagents`)
-Por gatilho: `image`/`document` (comprovante — extração + veredito), `audio` (Whisper + interpretação),
-`text` (consultam a base e injetam contexto). Cada um tem `instructions`, `output_format`, `model` e
-**datasources** (consulta/escrita com `value_map`).
+`invocation` define o acionamento (§9.0). `on_media`: `image`/`document` (comprovante — extração + veredito),
+`audio` (Whisper + interpretação). `auto_context`: texto que consulta a base e injeta contexto. `on_demand`:
+especialista delegável. Cada um tem `instructions`, `output_format`, `model`, **datasources**
+(consulta/escrita com `value_map`) e **ferramentas** (`chat_agent_tools.subagent_id`).
 
 ### 9.3 Captura de atributos
 `chat_contact_attribute_defs` define campos (CPF, e-mail…). `action='save_and_lookup_sienge'` dispara

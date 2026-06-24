@@ -44,7 +44,9 @@ Na dúvida entre escalar ou ajudar, PREFIRA ajudar. Só escale se um dos casos 1
 // Impede vazamento de tokens internos para o cliente. Não depende do agente.
 const SYSTEM_TOKEN_PROTECTION = `
 
-REGRA CRÍTICA: NUNCA inclua tokens internos (como Atualiza_base_dados, UPDATE_DB, ou qualquer instrução no formato token { ... }) na sua resposta ao cliente. Esses tokens são processados internamente e JAMAIS devem aparecer na mensagem enviada ao cliente.`
+REGRA CRÍTICA: NUNCA inclua tokens internos (como Atualiza_base_dados, UPDATE_DB, ou qualquer instrução no formato token { ... }) na sua resposta ao cliente. Esses tokens são processados internamente e JAMAIS devem aparecer na mensagem enviada ao cliente.
+
+DELEGAÇÃO: se uma tarefa de um especialista (função delegar_*) já estiver em andamento na conversa — por exemplo, uma coleta de dados em várias etapas (endereço, agendamento) — continue encaminhando ao MESMO especialista até concluir, em vez de responder por conta própria.`
 
 // Normaliza telefone BR → DDD + 8 últimos dígitos (espelha normalize_phone do SQL)
 function normalizePhone(raw: string): string {
@@ -203,18 +205,6 @@ Deno.serve(async (req) => {
 
     console.log(`Using agent: ${agent?.name || 'fallback'} | model: ${model}`)
 
-    // ── 2b. Buscar ferramentas ativas do agente ───────────────────────────────
-    let agentTools: any[] = []
-    if (agent?.id) {
-      const { data: tools } = await supabase
-        .from('chat_agent_tools')
-        .select('*, api_connection:chat_api_connections(*)')
-        .eq('agent_id', agent.id)
-        .eq('is_active', true)
-        .order('sort_order')
-      agentTools = tools || []
-    }
-
     // ── 2c. Buscar campos de atualização configurados ─────────────────────────
     let updateDefs: any[] = []
     if (agent?.id) {
@@ -226,66 +216,10 @@ Deno.serve(async (req) => {
       updateDefs = defs || []
     }
 
-    // Construir array de tools para OpenAI
+    // Tools para OpenAI. O agente principal é ORQUESTRADOR: NÃO expõe ferramentas
+    // cruas — elas pertencem aos subagentes (ver §2d delegar_<slug>). Aqui ficam
+    // apenas as delegações + os built-ins (atualizar_conversa, enviar_segunda_via_boleto).
     const openAiTools: any[] = []
-    const apiToolFns: Record<string, any> = {}   // nome-da-function → tool (api_call)
-    for (const tool of agentTools) {
-      if (tool.tool_type === 'api_call') {
-        const cfg = tool.config || {}
-        let fn = 'api_' + String(tool.name || tool.id).toLowerCase()
-          .normalize('NFD').replace(/[̀-ͯ]/g, '')
-          .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
-        while (apiToolFns[fn]) fn += '_'
-        const properties: Record<string, any> = {}
-        const required: string[] = []
-        for (const p of (cfg.parameters || [])) {
-          if (!p?.name) continue
-          properties[p.name] = { type: p.type || 'string', description: p.description || '' }
-          if (p.required) required.push(p.name)
-        }
-        apiToolFns[fn] = tool
-        openAiTools.push({
-          type: 'function',
-          function: {
-            name:        fn,
-            description: tool.description || tool.name || 'Chama uma integração externa.',
-            parameters:  { type: 'object', properties, required },
-          },
-        })
-        continue
-      }
-      if (tool.tool_type === 'payment_scheduler') {
-        openAiTools.push({
-          type: 'function',
-          function: {
-            name: 'calcular_datas_pagamento',
-            description: tool.description || 'Calcula as próximas datas úteis disponíveis para o cliente agendar o pagamento do boleto. Use quando o cliente quiser pagar em outra data.',
-            parameters: { type: 'object', properties: {} },
-          },
-        })
-        openAiTools.push({
-          type: 'function',
-          function: {
-            name: 'confirmar_agendamento',
-            description: 'Confirma e registra o agendamento do pagamento para a data escolhida pelo cliente. Use depois que o cliente escolher uma das datas oferecidas.',
-            parameters: {
-              type: 'object',
-              required: ['data_escolhida'],
-              properties: {
-                data_escolhida: {
-                  type: 'string',
-                  description: 'Data escolhida pelo cliente no formato DD/MM/YYYY',
-                },
-                observacoes: {
-                  type: 'string',
-                  description: 'Observações adicionais do cliente sobre o agendamento',
-                },
-              },
-            },
-          },
-        })
-      }
-    }
 
     // ── 2d. Subagentes ON_DEMAND — expostos ao principal como delegar_<slug> ───
     // O agente principal é orquestrador: quando o cliente pede algo que é de um
@@ -854,12 +788,6 @@ Deno.serve(async (req) => {
               pedido: (toolArgs?.pedido as string) || lastUserText,
               fallbackModel: model, temperature, maxTokens,
             })
-          } else if (toolName === 'calcular_datas_pagamento') {
-            const paymentTool = agentTools.find((t: any) => t.tool_type === 'payment_scheduler')
-            toolResult = JSON.stringify(calcularDatasDisponiveis(paymentTool?.config))
-          } else if (toolName === 'confirmar_agendamento') {
-            const paymentTool = agentTools.find((t: any) => t.tool_type === 'payment_scheduler')
-            toolResult = await handleConfirmarAgendamento(toolArgs, conv, contact, boletos, paymentTool)
           } else if (toolName === 'atualizar_conversa') {
             toolResult = await handleAtualizarConversa(toolArgs, conversationId, updateDefs)
           } else if (toolName === 'enviar_segunda_via_boleto') {
@@ -867,32 +795,6 @@ Deno.serve(async (req) => {
               toolArgs, boletos, phoneNumberId, accessToken, contactWaId, conversationId,
               agent?.name, agent?.avatar_emoji,
             )
-          } else if (apiToolFns[toolName]) {
-            const apiTool   = apiToolFns[toolName]
-            const cpfAttr   = Object.values(capturedAttrs).find((a: any) => a.fieldType === 'cpf_cnpj') as any
-            const emailAttr = Object.values(capturedAttrs).find((a: any) => a.fieldType === 'email') as any
-            const contactCtx = {
-              wa_id:       contactWaId,
-              telefone:    contactWaId,
-              cpf:         cpfAttr ? String(cpfAttr.value).replace(/\D/g, '') : '',
-              email:       emailAttr ? String(emailAttr.value) : '',
-              customer_id: (boletos[0] as any)?.customer_id || capturedAttrs['sienge_customer_id']?.value || '',
-            }
-            const { data: apiCfg } = await supabase
-              .from('chat_api_configs').select('*').eq('id', apiTool.config?.api_config_id).maybeSingle()
-            if (!apiCfg) {
-              toolResult = JSON.stringify({ ok: false, erro: 'Integração não configurada.' })
-            } else {
-              const r = await executeApiConfig(apiCfg, { variables: toolArgs, contact: contactCtx })
-              let bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
-              if (bodyStr.length > 3000) bodyStr = bodyStr.slice(0, 3000) + '…'
-              toolResult = JSON.stringify({
-                ok: r.ok, status: r.status, resposta: bodyStr,
-                instrucao: r.ok
-                  ? 'Use os dados acima para responder o cliente de forma clara e curta (sem expor JSON).'
-                  : 'A consulta falhou. Informe que houve um problema e ofereça falar com atendente.',
-              })
-            }
           }
 
           // Segunda chamada ao OpenAI com o resultado da ferramenta.
