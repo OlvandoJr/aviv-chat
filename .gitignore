@@ -43,3 +43,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 supabase/.temp/
+
+# binários locais (ex.: Supabase CLI baixado p/ deploy de edge functions)
+/bin/
