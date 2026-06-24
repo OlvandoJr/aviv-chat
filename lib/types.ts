@@ -257,7 +257,8 @@ export interface ApiToolParam {
 
 export interface AgentTool {
   id:                string
-  agent_id:          string
+  agent_id:          string | null   // ferramenta pode pertencer ao agente OU a um subagente
+  subagent_id?:      string | null
   name:              string
   description:       string
   tool_type:         ToolType
@@ -304,11 +305,20 @@ export interface ScheduledPayment {
 
 export type SubagentTrigger = 'image' | 'document' | 'audio' | 'text'
 
+// Como o subagente é acionado:
+//   auto_context = injeta contexto no prompt do principal a cada mensagem (texto)
+//   on_media     = acionado por gatilho de mídia (imagem/documento/áudio)
+//   on_demand    = delegável pelo agente principal (especialista, ex.: Agendador)
+export type SubagentInvocation = 'auto_context' | 'on_media' | 'on_demand'
+
 export interface Subagent {
   id:                string
   agent_id:          string
   name:              string
   trigger_type:      SubagentTrigger
+  invocation:        SubagentInvocation
+  delegation_description: string | null   // quando o principal deve delegar (on_demand)
+  escalation_message:     string | null
   extraction_prompt: string | null
   extraction_model:  string
   instructions:      string
@@ -317,8 +327,9 @@ export interface Subagent {
   is_active:         boolean
   sort_order:        number
   created_at:        string
-  // join
+  // joins
   datasources?:      SubagentDatasource[]
+  tools?:            AgentTool[]
 }
 
 export type SubagentOperation = 'select' | 'insert' | 'update' | 'upsert'

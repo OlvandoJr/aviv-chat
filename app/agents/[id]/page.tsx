@@ -53,7 +53,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       .order('sort_order'),
     supabase
       .from('chat_subagents')
-      .select('*, datasources:chat_subagent_datasources(*)')
+      .select('*, datasources:chat_subagent_datasources(*), tools:chat_agent_tools(*, api_connection:chat_api_connections(*))')
       .eq('agent_id', id)
       .order('sort_order'),
   ])
