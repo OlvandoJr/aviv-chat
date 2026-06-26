@@ -198,7 +198,7 @@ export async function ensureConversation(
   waId: string,
   name?: string,
   agentId: string | null = COBRANCA_AGENT_ID,
-): Promise<{ conversationId: string; contactId: string } | null> {
+): Promise<{ conversationId: string; contactId: string; created: boolean } | null> {
   waId = normalizeWaId(waId) || waId
   const { data: contact, error: cErr } = await admin
     .from('chat_contacts')
@@ -217,6 +217,7 @@ export async function ensureConversation(
     .limit(1)
     .maybeSingle()
 
+  let created = false
   if (!conv) {
     const { data: newConv } = await admin
       .from('chat_conversations')
@@ -224,12 +225,31 @@ export async function ensureConversation(
       .select('id')
       .single()
     conv = newConv
+    created = !!newConv
   } else if (agentId) {
     // Mantém a thread de cobrança com a Vivi (só preenche se ainda não tem agente)
     await admin.from('chat_conversations').update({ agent_id: agentId }).eq('id', conv.id).is('agent_id', null)
   }
   if (!conv) return null
-  return { conversationId: conv.id, contactId: contact.id }
+  return { conversationId: conv.id, contactId: contact.id, created }
+}
+
+// Remove uma conversa que foi criada AGORA (created) mas ficou sem nenhuma
+// mensagem — ex.: o envio do template falhou após o ensureConversation. Evita
+// "conversas fantasma" na lista. Não toca em conversas pré-existentes.
+export async function cleanupEmptyConversation(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  conv: { conversationId: string; created?: boolean } | null,
+): Promise<void> {
+  if (!conv?.created) return
+  const { count } = await admin
+    .from('chat_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conv.conversationId)
+  if (!count) {
+    await admin.from('chat_conversations').delete().eq('id', conv.conversationId)
+  }
 }
 
 const SLEEP = (ms: number) => new Promise((r) => setTimeout(r, ms))

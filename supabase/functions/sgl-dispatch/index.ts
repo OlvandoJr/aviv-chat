@@ -16,6 +16,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import {
   ensureConversation,
+  cleanupEmptyConversation,
   resolveVariables,
   sendTemplateMessage,
   SLEEP,
@@ -186,6 +187,7 @@ Deno.serve(async (req) => {
         result.sent++
       } else {
         bump(result, await giveUpOrRetry(r.id, r.app_dispatch_attempts || 0, JSON.stringify(res.error).slice(0, 500)))
+        await cleanupEmptyConversation(admin, conv)   // envio falhou → não deixa conversa fantasma
       }
       await SLEEP(DELAY_MS)
     }

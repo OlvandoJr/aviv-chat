@@ -23,6 +23,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import {
   ensureConversation,
+  cleanupEmptyConversation,
   resolveVariables,
   sendTemplateMessage,
   SLEEP,
@@ -191,6 +192,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
         tplToSend = fallbackTpl                                            // → a_vencer2_sem_pdf (texto)
       } else {
         await admin.from('cobranca_regua_log').update({ status: 'failed', error: 'sem PDF e sem template de fallback aprovado' }).eq('id', claim.id)
+        await cleanupEmptyConversation(admin, conv)
         failed++; continue
       }
     }
@@ -212,6 +214,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       sent++
     } else {
       await admin.from('cobranca_regua_log').update({ status: 'failed', error: JSON.stringify(res.error).slice(0, 500) }).eq('id', claim.id)
+      await cleanupEmptyConversation(admin, conv)
       failed++
     }
     await SLEEP(DELAY_MS)
