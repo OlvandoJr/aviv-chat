@@ -6,7 +6,7 @@ import {
   Check, CheckCheck, Mic, FileText, Image as ImageIcon,
   ChevronDown, Bell, UserCheck, UserRound,
   Play, Pause, Download, MapPin, Video as VideoIcon,
-  AlertTriangle, LayoutTemplate,
+  AlertTriangle, LayoutTemplate, Lock,
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -28,9 +28,32 @@ interface Props {
   central?:          any
   initialMessages?:  Message[]
   templateButtons?:  Record<string, { text: string; type: string }[]>
+  reguaInfo?:        Record<string, { name: string; origin: string }>
+  campaignNames?:    Record<string, string>
 }
 
 export type TplButton = { text: string; type: string }
+
+// Selo INTERNO (só a equipe vê — nunca enviado ao cliente): de onde o template
+// saiu (régua/campanha/SGL) + origem dos dados. Derivado do metadata da mensagem.
+function internalSourceLabel(
+  meta: Record<string, any> | null,
+  reguaInfo?: Record<string, { name: string; origin: string }>,
+  campaignNames?: Record<string, string>,
+): { label: string; origin: string | null } | null {
+  if (!meta) return null
+  if (meta.regua_id) {
+    const r = reguaInfo?.[meta.regua_id]
+    return { label: r?.name ? `Régua: ${r.name}` : 'Régua', origin: r?.origin || 'SIENGE' }
+  }
+  if (meta.campaign_id) {
+    return { label: `Campanha: ${campaignNames?.[meta.campaign_id] || '—'}`, origin: null }
+  }
+  if (meta.sgl_classificacao || meta.mensagem_cobranca_id) {
+    return { label: 'Cobrança SGL', origin: 'SGL' }
+  }
+  return null
+}
 
 const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   sienge: { label: 'Sienge',        cls: 'bg-blue-100 text-blue-700' },
@@ -38,7 +61,7 @@ const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages, templateButtons }: Props) {
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages, templateButtons, reguaInfo, campaignNames }: Props) {
   const origem = central?.origem as string | undefined
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -248,6 +271,8 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
                     showSender={showSender}
                     contactName={name}
                     templateButtons={templateButtons}
+                    reguaInfo={reguaInfo}
+                    campaignNames={campaignNames}
                   />
                 </div>
               )
@@ -288,12 +313,16 @@ function MessageBubble({
   showSender,
   contactName,
   templateButtons,
+  reguaInfo,
+  campaignNames,
 }: {
   message:     Message
   showAvatar:  boolean
   showSender:  boolean
   contactName: string
   templateButtons?: Record<string, { text: string; type: string }[]>
+  reguaInfo?:       Record<string, { name: string; origin: string }>
+  campaignNames?:   Record<string, string>
 }) {
   const isIn      = msg.direction === 'in'
   const isOut     = msg.direction === 'out'
@@ -351,6 +380,28 @@ function MessageBubble({
                 )
           )}
         >
+          {/* Selo INTERNO — visível só para a equipe, NUNCA enviado ao cliente */}
+          {(() => {
+            const src = internalSourceLabel(meta, reguaInfo, campaignNames)
+            if (!src) return null
+            return (
+              <div
+                title="Visível só para a equipe — não foi enviado ao cliente"
+                className={cn('flex items-center gap-1 mb-1 text-[10px] leading-none font-medium',
+                  isOut ? 'text-emerald-100/80' : 'text-gray-400')}
+              >
+                <Lock className="w-2.5 h-2.5 opacity-70 shrink-0" />
+                <span className="opacity-90 truncate">{src.label}</span>
+                {src.origin && (
+                  <span className={cn('rounded px-1 py-[1px] text-[9px] font-semibold shrink-0',
+                    isOut ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500')}>
+                    {src.origin}
+                  </span>
+                )}
+              </div>
+            )
+          })()}
+
           <MessageContent message={msg} isOut={isOut} />
 
           {/* Análise de comprovante */}

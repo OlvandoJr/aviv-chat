@@ -53,6 +53,27 @@ export default async function ConversationPage({ params }: Props) {
     }
   }
 
+  // Mapas para o selo INTERNO (régua/campanha + origem) — resolvidos pelos ids
+  // que aparecem no metadata das mensagens. Nunca vão para o cliente.
+  const reguaInfo: Record<string, { name: string; origin: string }> = {}
+  const campaignNames: Record<string, string> = {}
+  {
+    const msgs = (initialMessages || []) as any[]
+    const reguaIds    = [...new Set(msgs.map((m) => m.metadata?.regua_id).filter(Boolean))]
+    const campaignIds = [...new Set(msgs.map((m) => m.metadata?.campaign_id).filter(Boolean))]
+    if (reguaIds.length) {
+      const { data } = await supabase.from('cobranca_regua').select('id, name, audience_filter').in('id', reguaIds)
+      for (const r of data || []) {
+        const src = String((r.audience_filter as any)?.source || '').toLowerCase()
+        reguaInfo[r.id] = { name: r.name, origin: src === 'sgl' ? 'SGL' : src === 'both' ? 'SGL+SIENGE' : 'SIENGE' }
+      }
+    }
+    if (campaignIds.length) {
+      const { data } = await supabase.from('chat_campaigns').select('id, name').in('id', campaignIds)
+      for (const c of data || []) campaignNames[c.id] = c.name
+    }
+  }
+
   // Resumo 360 da Central (precisa do contact_id da conversa)
   const { data: central } = await supabase
     .from('vw_central_clientes')
@@ -102,6 +123,8 @@ export default async function ConversationPage({ params }: Props) {
       central={central || null}
       initialMessages={(initialMessages || []) as any}
       templateButtons={templateButtons}
+      reguaInfo={reguaInfo}
+      campaignNames={campaignNames}
     />
   )
 }
