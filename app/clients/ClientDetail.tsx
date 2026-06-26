@@ -50,12 +50,13 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
   const o = ORIGEM[cliente.origem] || ORIGEM.contato
 
   // ── Resumo de PARCELAS (Sienge + SGL) — não lista uma a uma ────────────────
-  type Parc = { label: string; amount: number; pago: boolean }
+  type Parc = { label: string; amount: number; pago: boolean; origem: 'sienge' | 'sgl' }
   const parcelas: Parc[] = [
     ...boletosSienge.map((b) => ({
       label: b.parcela_descricao || 'Parcela',
       amount: Number(b.amount) || 0,
       pago: statusRank(b.status) >= 3 || !!b.paid_at,
+      origem: 'sienge' as const,
     })),
     // SGL deduplicado por parcela (status mais avançado)
     ...Object.values((() => {
@@ -69,12 +70,20 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
       label: b.contasreceberparcela || 'Parcela',
       amount: sglAmount(b.contasrecebervalor),
       pago: statusRank(b.status) >= 3,
+      origem: 'sgl' as const,
     })),
   ]
   const parcAbertas = parcelas.filter((p) => !p.pago)
   const totalAberto = parcAbertas.reduce((s, p) => s + p.amount, 0)
   const parcPagas   = parcelas.length - parcAbertas.length
   const tipos       = [...new Set(parcelas.map((p) => p.label).filter(Boolean))]
+  // Quebra das parcelas em aberto por ORIGEM (Sienge / SGL)
+  const origemResumo = (['sienge', 'sgl'] as const)
+    .map((org) => {
+      const arr = parcAbertas.filter((p) => p.origem === org)
+      return { org, qtd: arr.length, total: arr.reduce((s, p) => s + p.amount, 0) }
+    })
+    .filter((x) => x.qtd > 0)
 
   // ── Timeline de cobrança ───────────────────────────────────────────────────
   // Rótulo do disparo: 999 é o sentinela da carga (dia do carregamento); senão D±N.
@@ -82,8 +91,8 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
     `${offset === 999 ? 'Carga' : `D${offset >= 0 ? '+' : ''}${offset}`} · venc ${dt(due)}`
   const timeline = [
     // when = created_at (instante real do envio); run_date é só data → renderiza 21:00 por fuso
-    ...reguaLog.map((r) => ({ when: r.created_at || r.run_date, canal: 'Régua Sienge', detalhe: reguaDetalhe(r.offset_days, r.due_date), status: r.status })),
-    ...boletosSgl.filter((m) => m.app_dispatched_at).map((m) => ({ when: m.app_dispatched_at, canal: 'SGL', detalhe: m.classificacao || '—', status: m.status })),
+    ...reguaLog.map((r) => ({ when: r.created_at || r.run_date, origem: 'sienge' as const, canal: 'Régua Sienge', detalhe: reguaDetalhe(r.offset_days, r.due_date), status: r.status })),
+    ...boletosSgl.filter((m) => m.app_dispatched_at).map((m) => ({ when: m.app_dispatched_at, origem: 'sgl' as const, canal: 'SGL', detalhe: m.classificacao || '—', status: m.status })),
   ].sort((a, b) => new Date(b.when).getTime() - new Date(a.when).getTime())
 
   return (
@@ -139,7 +148,10 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
                     {b.empreendimento && <p className="text-[10px] font-medium text-gray-500 uppercase truncate">{b.empreendimento}{b.quadra ? ` · Q${b.quadra}` : ''}{b.unidade_lote ? ` · L${b.unidade_lote}` : ''}</p>}
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-medium text-gray-800 truncate">{b.parcela_descricao || `Boleto venc. ${dt(b.due_date)}`}</span>
-                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0', e.cls)}>{e.label}</span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', ORIGEM.sienge.cls)}>Sienge</span>
+                        <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', e.cls)}>{e.label}</span>
+                      </div>
                     </div>
                     <div className="flex justify-between text-xs">
                       <span className="flex items-center gap-1 text-gray-500"><Calendar className="w-3 h-3" />{dt(b.due_date)}</span>
@@ -176,6 +188,16 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
                     </span>
                   )}
                 </div>
+                {origemResumo.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] text-gray-400">Em aberto por origem:</span>
+                    {origemResumo.map((x) => (
+                      <span key={x.org} className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full', ORIGEM[x.org].cls)}>
+                        {ORIGEM[x.org].label} · {x.qtd} · {formatCurrency(x.total)}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {tipos.length > 0 && (
                   <p className="text-[11px] text-gray-500">Parcelas: {tipos.slice(0, 8).join(', ')}{tipos.length > 8 ? '…' : ''}</p>
                 )}
@@ -215,7 +237,10 @@ export default function ClientDetail({ cliente, boletosEmitidos, boletosSienge, 
                 <div key={i} className="flex items-start gap-2 text-xs">
                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
                   <div className="min-w-0">
-                    <p className="text-gray-700"><span className="font-medium">{t.canal}</span> · {t.detalhe}</p>
+                    <p className="text-gray-700 flex items-center gap-1.5 flex-wrap">
+                      <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full', ORIGEM[t.origem].cls)}>{ORIGEM[t.origem].label}</span>
+                      <span>{t.detalhe}</span>
+                    </p>
                     <p className="text-[11px] text-gray-400">{dtTime(t.when)}{t.status ? ` · ${t.status}` : ''}</p>
                   </div>
                 </div>
