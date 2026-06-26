@@ -12,6 +12,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import {
   ensureConversation,
+  cleanupEmptyConversation,
   sendTemplateMessage,
   SLEEP,
   type TemplateRow,
@@ -132,11 +133,13 @@ async function processCampaign(camp: any) {
     if (precisaMedia && mediaMode === 'boleto') {
       if (!r.boleto_pdf_path) {
         await markRecipient(r.id, 'failed', null, 'sem boleto com PDF para anexar')
+        await cleanupEmptyConversation(admin, conv)
         failed++; continue
       }
       const { data: signed } = await admin.storage.from('boletos').createSignedUrl(r.boleto_pdf_path, 3600)
       if (!signed?.signedUrl) {
         await markRecipient(r.id, 'failed', null, 'falha ao gerar signed URL do boleto')
+        await cleanupEmptyConversation(admin, conv)
         failed++; continue
       }
       sendMedia = { link: signed.signedUrl, filename: 'Boleto.pdf' }
@@ -157,6 +160,7 @@ async function processCampaign(camp: any) {
       sent++
     } else {
       await markRecipient(r.id, 'failed', null, JSON.stringify(res.error).slice(0, 500))
+      await cleanupEmptyConversation(admin, conv)
       failed++
     }
     await SLEEP(DELAY_MS)
