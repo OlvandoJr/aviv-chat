@@ -29,6 +29,102 @@ export async function fetchSegundaVia(
   }
 }
 
+// ── Baixa de boleto (RECEIPT_PROCESSED) — compartilhado webhook + reconciliação ──
+// O webhook só traz { billId, installmentId }. Casamos a baixa, em ordem:
+//   1) sienge_boletos pela chave exata → propaga aos emitidos (client_id+vencimento)
+//   2) boletos_emitidos pela CHAVE DO SIENGE (offline, sem API) — o boleto que enviamos
+//   3) fallback: busca o título no Sienge 1x (consome cota) e grava
+// deno-lint-ignore no-explicit-any
+export async function propagateToEmitidos(admin: any, rows: any[], novoStatus: 'pago' | 'cancelado') {
+  const now = new Date().toISOString()
+  const patch: Record<string, any> = { status: novoStatus, updated_at: now }
+  if (novoStatus === 'pago') patch.paid_at = now
+  for (const sb of rows || []) {
+    if (!sb?.customer_id || !sb?.due_date) continue
+    await admin.from('boletos_emitidos').update(patch)
+      .eq('client_id', sb.customer_id).eq('vencimento', sb.due_date)
+      .not('status', 'in', '("pago","cancelado")')
+  }
+}
+
+// Fallback (consome cota): título não está na base → busca no Sienge, faz upsert em
+// sienge_boletos como pago e devolve {customer_id, due_date} p/ propagar aos emitidos.
+// deno-lint-ignore no-explicit-any
+export async function syncReceiptFromSienge(admin: any, billId: number, installmentId: number): Promise<any[] | null> {
+  try {
+    const auth = siengeAuth()
+    const bResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}`, { headers: { Authorization: auth } })
+    if (!bResp.ok) return null
+    const bill = await bResp.json()
+    const b = bill?.results?.[0] || bill || {}
+    const customerId = b.customerId ?? b.clientId ?? null
+    if (!customerId) return null
+
+    const iResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}/installments`, { headers: { Authorization: auth } })
+    if (!iResp.ok) return null
+    const inst = ((await iResp.json()).results || []).find((i: any) => Number(i.installmentId) === installmentId)
+    if (!inst?.dueDate) return null
+
+    const amount = inst.originalAmount ?? inst.value ?? inst.grossAmount ?? inst.balanceDue ?? null
+    const { data } = await admin.from('sienge_boletos').upsert({
+      receivable_bill_id: billId,
+      installment_id:     installmentId,
+      customer_id:        customerId,
+      customer_name:      b.customerName ?? b.name ?? null,
+      due_date:           inst.dueDate,
+      amount,
+      parcela_descricao:  `Parcela ${installmentId}`,
+      status:             'pago',
+      paid_at:            new Date().toISOString(),
+      updated_at:         new Date().toISOString(),
+    }, { onConflict: 'receivable_bill_id,installment_id' }).select('id, customer_id, due_date')
+
+    // Aprende a chave do Sienge no boleto que enviamos (autocura p/ próximas baixas).
+    if (data?.[0]?.customer_id && data?.[0]?.due_date) {
+      await admin.from('boletos_emitidos')
+        .update({ receivable_bill_id: billId, installment_id: installmentId })
+        .eq('client_id', data[0].customer_id).eq('vencimento', data[0].due_date)
+        .is('receivable_bill_id', null)
+    }
+    return data || []
+  } catch (e) {
+    console.error('syncReceiptFromSienge error:', e)
+    return null
+  }
+}
+
+// Aplica a baixa de um título/parcela. Retorna quantos registros casaram + nota.
+// deno-lint-ignore no-explicit-any
+export async function applyReceipt(admin: any, billId: number, installmentId: number): Promise<{ matched: number; note: string }> {
+  const now = new Date().toISOString()
+  let matched = 0
+  const notes: string[] = []
+
+  // 1) sienge_boletos pela chave exata
+  const { data: sb } = await admin.from('sienge_boletos')
+    .update({ status: 'pago', paid_at: now, updated_at: now })
+    .eq('receivable_bill_id', billId).eq('installment_id', installmentId)
+    .select('id, customer_id, due_date')
+  if (sb?.length) { matched += sb.length; notes.push('sienge_boletos'); await propagateToEmitidos(admin, sb, 'pago') }
+
+  // 2) boletos_emitidos pela chave do Sienge (offline, sem API) — o boleto que enviamos
+  const { data: be } = await admin.from('boletos_emitidos')
+    .update({ status: 'pago', paid_at: now, updated_at: now })
+    .eq('receivable_bill_id', billId).eq('installment_id', installmentId)
+    .not('status', 'in', '("pago","cancelado")')
+    .select('id')
+  if (be?.length) { matched += be.length; notes.push('emitidos(chave)') }
+
+  // 3) nada casou offline → fallback Sienge (1x)
+  if (matched === 0) {
+    const synced = await syncReceiptFromSienge(admin, billId, installmentId)
+    if (synced && synced.length) { matched = synced.length; notes.push('sincronizado do Sienge'); await propagateToEmitidos(admin, synced, 'pago') }
+    else if (synced === null) notes.push('não casou e fallback Sienge falhou')
+    else notes.push('não casou (título não encontrado no Sienge)')
+  }
+  return { matched, note: notes.join(' + ') }
+}
+
 // Telefone do customer → dígitos com DDI 55 (prefere celular; remove 0 de tronco).
 export function bestPhone(c: any): string | null {
   const cands: string[] = []

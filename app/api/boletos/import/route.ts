@@ -124,6 +124,7 @@ export async function POST(req: NextRequest) {
   // ── Extrair + parsear cada PDF ───────────────────────────────────────────────
   type Parsed = {
     clientId: number; nome: string; lote: string
+    titulo: number | null; parcela: number | null
     vencimento: string | null; valor: string | null
     linhaDigitavel: string | null; nossoNumero: string | null; beneficiario: string | null
     pdfBuf: Buffer; baseName: string
@@ -140,6 +141,8 @@ export async function POST(req: NextRequest) {
     let clientId = NaN
     let nome = ''
     let lote = ''
+    let titulo: number | null = null       // receivable_bill_id (só no formato B)
+    let parcela: number | null = null      // installment_id (só no formato B)
     let vencFallback: string | null = null
 
     const partsA = noExt.split(' - ')
@@ -151,8 +154,10 @@ export async function POST(req: NextRequest) {
       nome     = (partsA[1] || '').trim()
       lote     = (partsA[2] || '').trim()
     } else if (mB) {
-      nome = mB[1].trim()
-      lote = mB[2]                                    // nº do título como referência
+      nome    = mB[1].trim()
+      lote    = mB[2]                                  // nº do título como referência
+      titulo  = Number(mB[2]) || null                 // título → chave do Sienge p/ casar a baixa
+      parcela = Number(mB[3]) || null                 // parcela → chave do Sienge
       vencFallback = `${mB[4].slice(0, 2)}/${mB[4].slice(2, 4)}/${mB[4].slice(4)}`  // ddmmaaaa
     } else {
       falhas.push({ arquivo: baseName, motivo: 'nome do arquivo fora dos formatos aceitos ("id - nome - lote" ou "nome_titulo_parcela_data")' })
@@ -173,7 +178,7 @@ export async function POST(req: NextRequest) {
         falhas.push({ arquivo: baseName, motivo: 'linha digitável não encontrada no PDF' })
         continue
       }
-      parsed.push({ clientId, nome, lote, ...f, pdfBuf, baseName })
+      parsed.push({ clientId, nome, lote, titulo, parcela, ...f, pdfBuf, baseName })
     } catch (err) {
       falhas.push({ arquivo: baseName, motivo: 'falha ao ler o PDF: ' + String(err) })
     }
@@ -268,13 +273,15 @@ export async function POST(req: NextRequest) {
       vencimento:      venc,
       valor:           toNumber(p.valor),
       linha_digitavel: (p.linhaDigitavel || '').replace(/\s+/g, ' ').trim() || null,
-      nosso_numero:    p.nossoNumero || null,
-      telefone:        info.tel,
-      lote:            p.lote || null,
-      empreendimento:  p.beneficiario || null,
-      pdf_path:        pdfPath,
-      status:          'aberto',
-      updated_at:      new Date().toISOString(),
+      nosso_numero:       p.nossoNumero || null,
+      telefone:           info.tel,
+      lote:               p.lote || null,
+      receivable_bill_id: p.titulo ?? null,    // chave do Sienge (formato B) → casa a baixa offline
+      installment_id:     p.parcela ?? null,
+      empreendimento:     p.beneficiario || null,
+      pdf_path:           pdfPath,
+      status:             'aberto',
+      updated_at:         new Date().toISOString(),
     })
   }
 
