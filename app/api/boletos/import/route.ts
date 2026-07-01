@@ -101,14 +101,43 @@ export async function POST(req: NextRequest) {
   if (!caller) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
   // Carregar boletos é operação do dia a dia — liberado para qualquer atendente logado.
 
-  // ── Receber o ZIP ──────────────────────────────────────────────────────────
+  const contentType = req.headers.get('content-type') || ''
+
+  // ── Fluxo por Storage (JSON) — evita o limite de ~4.5 MB do corpo na Vercel ──
+  if (contentType.includes('application/json')) {
+    const body = await req.json().catch(() => ({}))
+
+    // 1) URL assinada p/ o navegador subir o ZIP direto no Storage (sem limite)
+    if (body?.action === 'sign') {
+      const path = `imports/${crypto.randomUUID()}.zip`
+      const { data, error } = await admin.storage.from('boletos').createSignedUploadUrl(path)
+      if (error || !data) return NextResponse.json({ error: 'Falha ao preparar o upload: ' + (error?.message || '') }, { status: 500 })
+      return NextResponse.json({ path: data.path, token: data.token })
+    }
+
+    // 2) processar o ZIP já enviado ao Storage
+    if (body?.path) {
+      const { data, error } = await admin.storage.from('boletos').download(String(body.path))
+      if (error || !data) return NextResponse.json({ error: 'ZIP não encontrado no Storage.' }, { status: 400 })
+      const resp = await processarZip(Buffer.from(await data.arrayBuffer()), caller, String(body.filename || '') || null)
+      await admin.storage.from('boletos').remove([String(body.path)]).catch(() => {})   // limpa o temporário
+      return resp
+    }
+
+    return NextResponse.json({ error: 'Requisição inválida.' }, { status: 400 })
+  }
+
+  // ── Fluxo antigo (multipart, arquivos pequenos) ─────────────────────────────
   const form = await req.formData()
   const file = form.get('file') as File | null
   if (!file) return NextResponse.json({ error: 'Envie o arquivo ZIP no campo "file".' }, { status: 400 })
+  return processarZip(Buffer.from(await file.arrayBuffer()), caller, file.name)
+}
 
+async function processarZip(zipBuf: Buffer, caller: { id: string; role: string | null }, filename: string | null): Promise<NextResponse> {
   let zip: JSZip
   try {
-    zip = await JSZip.loadAsync(Buffer.from(await file.arrayBuffer()))
+    zip = await JSZip.loadAsync(zipBuf)
   } catch {
     return NextResponse.json({ error: 'Arquivo inválido — não é um ZIP legível.' }, { status: 400 })
   }
@@ -296,7 +325,7 @@ export async function POST(req: NextRequest) {
     const { data: lote } = await admin.from('boleto_lotes').insert({
       uploaded_by:      caller.id,
       uploaded_by_name: me?.name || null,
-      filename:         file.name || null,
+      filename:         filename || null,
       lote:             loteRemessa,
       recebidos:        entries.length,
       gravados:         rows.length,

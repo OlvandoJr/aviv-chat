@@ -3,6 +3,14 @@
 import { useRef, useState } from 'react'
 import { useRouter }        from 'next/navigation'
 import { UploadCloud, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { createClient }     from '@/lib/supabase/client'
+
+// Lê a resposta com segurança: se não for JSON (ex.: 413 "Request Entity Too
+// Large" em texto), devolve o texto como erro em vez de estourar JSON.parse.
+async function readJson(r: Response): Promise<any> {
+  const t = await r.text()
+  try { return JSON.parse(t) } catch { return { error: (t || '').trim().slice(0, 200) || `Erro ${r.status}` } }
+}
 
 interface Resultado {
   ok: boolean
@@ -25,14 +33,31 @@ export default function BoletoUpload() {
     if (!/\.zip$/i.test(file.name)) { setErro('Selecione um arquivo .zip'); return }
     setErro(null); setRes(null); setLoading(true)
     try {
-      const fd = new FormData()
-      fd.append('file', file)
-      const r = await fetch('/api/boletos/import', { method: 'POST', body: fd })
-      const data = await r.json()
+      // 1) pede uma URL assinada e sobe o ZIP DIRETO no Storage — evita o limite
+      //    de ~4.5 MB do corpo da requisição nas funções da Vercel.
+      const signResp = await fetch('/api/boletos/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sign' }),
+      })
+      const sign = await readJson(signResp)
+      if (!signResp.ok || !sign?.token) throw new Error(sign?.error || 'Falha ao preparar o upload')
+
+      const supabase = createClient()
+      const { error: upErr } = await supabase.storage
+        .from('boletos')
+        .uploadToSignedUrl(sign.path, sign.token, file, { contentType: 'application/zip' })
+      if (upErr) throw new Error('Falha ao enviar o ZIP: ' + upErr.message)
+
+      // 2) processa o ZIP a partir do Storage (corpo minúsculo = só o caminho)
+      const r = await fetch('/api/boletos/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: sign.path, filename: file.name }),
+      })
+      const data = await readJson(r)
       if (!r.ok) { setErro(data.error || 'Falha ao importar'); if (data.falhas) setRes({ ...data, ok: false }) }
       else { setRes(data); router.refresh() }
     } catch (e) {
-      setErro(String(e))
+      setErro(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
