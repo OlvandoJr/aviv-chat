@@ -280,9 +280,22 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
   // ── Upload dos PDFs + montar as linhas ───────────────────────────────────────
   const rows: any[] = []
   let comPdf = 0
+  const vistos = new Set<string>()   // dedupe por (client_id, vencimento) — chave única da tabela
   for (const p of parsed) {
     const venc = toISODate(p.vencimento)!     // garantido acima
     const info = telById[p.clientId] || { tel: null, nome: null }
+
+    // O ZIP pode trazer 2 PDFs que caem na MESMA chave (arquivo duplicado ou duas
+    // parcelas do mesmo cliente no mesmo dia). O upsert em lote não pode tocar a
+    // mesma linha 2x ("ON CONFLICT ... cannot affect row a second time") e o
+    // schema só comporta 1 boleto por (cliente, vencimento). Mantém o primeiro
+    // e manda o restante para revisão manual.
+    const chave = `${p.clientId}|${venc}`
+    if (vistos.has(chave)) {
+      falhas.push({ arquivo: p.baseName, motivo: `duplicado no ZIP (cliente ${p.clientId}, venc ${venc}) — mantido o primeiro PDF; revisar manualmente` })
+      continue
+    }
+    vistos.add(chave)
 
     // Sobe o PDF (idempotente por client_id/vencimento)
     let pdfPath: string | null = `${p.clientId}/${venc}.pdf`
@@ -344,7 +357,12 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
     const { error, count } = await admin
       .from('boletos_emitidos')
       .upsert(rows, { onConflict: 'client_id,vencimento', count: 'exact' })
-    if (error) return NextResponse.json({ error: error.message, falhas }, { status: 500 })
+    if (error) {
+      // Nada foi gravado — remove o registro do lote para não deixar um lote
+      // órfão ("Nenhum boleto neste lote") na tela de carregamentos.
+      if (loteId) await admin.from('boleto_lotes').delete().eq('id', loteId)
+      return NextResponse.json({ error: error.message, falhas }, { status: 500 })
+    }
     gravados = count ?? rows.length
   }
 
