@@ -112,16 +112,29 @@ async function processCampaign(camp: any) {
     headerMedia = { link: signed.signedUrl, filename: camp.header_media_filename || undefined }
   }
 
-  // Lote de pendentes
+  // Lote de pendentes ainda não reservados (ou com reserva travada há >10min = crash).
+  const staleISO = new Date(Date.now() - 10 * 60 * 1000).toISOString()
   const { data: recipients } = await admin
     .from('chat_campaign_recipients')
     .select('id, wa_id, name, variables, boleto_pdf_path')
     .eq('campaign_id', camp.id)
     .eq('status', 'pending')
+    .or(`claimed_at.is.null,claimed_at.lt.${staleISO}`)
     .limit(BATCH)
 
   let sent = 0, failed = 0
   for (const r of recipients || []) {
+    // TRAVA ATÔMICA: reserva o destinatário antes de enviar. Se outra execução
+    // concorrente já reservou (claimed_at recente), o UPDATE não casa → pula.
+    // Impede o duplo envio (caso Indique e Ganhe — Tapejara).
+    const { data: claim } = await admin
+      .from('chat_campaign_recipients')
+      .update({ claimed_at: new Date().toISOString() })
+      .eq('id', r.id).eq('status', 'pending')
+      .or(`claimed_at.is.null,claimed_at.lt.${staleISO}`)
+      .select('id').maybeSingle()
+    if (!claim) continue   // já reservado por outra execução — não reenvia
+
     // Conversa nasce com o PROPRIETÁRIO da campanha (assignee) — só ele + admin/gerente a veem.
     const conv = await ensureConversation(admin, camp.inbox_id, r.wa_id, r.name || undefined, COBRANCA_AGENT_ID, camp.owner_id || null)
     if (!conv) {
