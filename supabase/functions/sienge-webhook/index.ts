@@ -123,7 +123,9 @@ async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: strin
 // convivem (o que chegar por último vence). Idempotente. Gated ESTRITAMENTE pelo
 // header x-sienge-event (não colide com RECEIPT_PROCESSED, que tem o mesmo {billId}).
 // Retorna null se NÃO for esse evento (segue a lógica de baixa).
-const slipBoletoPath = (clientId: number, venc: string) => `${clientId}/${venc}.pdf`
+// Path do PDF inclui o ref do boleto → 2 boletos do mesmo cliente/dia não colidem.
+const slipBoletoPath = (clientId: number, venc: string, ref: string) =>
+  `${clientId}/${venc}${ref ? '-' + ref : ''}.pdf`
 
 // Resolve client_id + vencimento + valor da parcela: base local primeiro, Sienge 1x se faltar.
 async function resolveTitulo(billId: number, instId: number): Promise<
@@ -175,8 +177,22 @@ async function handlePaymentSlip(body: any, hookEvent = ''): Promise<{ event: st
   const via = await fetchSegundaVia(billId, instId)
   if (!via?.url) return { event: evName, matched: 0, note: `2ª via sem urlReport (bill=${billId} inst=${instId})` }
 
+  // Identidade + ADOÇÃO: se o mesmo boleto já foi gravado por outro canal (ZIP)
+  // com ref diferente (ex.: baseado no nosso_numero), atualiza ESSA linha em vez
+  // de duplicar. Com N linhas por (client, venc), o maybeSingle antigo quebraria.
+  const refNovo = `t${billId}p${instId}`
+  const { data: existentes } = await supabase.from('boletos_emitidos')
+    .select('id, status, boleto_ref, receivable_bill_id, installment_id')
+    .eq('client_id', tit.customer_id).eq('vencimento', tit.due_date)
+  const match = (existentes || []).find((e: any) => e.boleto_ref === refNovo)
+    || (existentes || []).find((e: any) => e.receivable_bill_id === billId && e.installment_id === instId)
+    || ((existentes || []).length === 1 && (existentes || [])[0].receivable_bill_id == null
+        ? (existentes || [])[0] : undefined)   // única linha sem chave Sienge → é este boleto (comportamento pré-multi)
+  const ref = match?.boleto_ref ?? refNovo
+  const preservaStatus = match && ['pago', 'cancelado'].includes(String(match.status))
+
   // Baixa o PDF e sobe no bucket privado `boletos` (mesma convenção do ZIP).
-  let pdfPath: string | null = slipBoletoPath(tit.customer_id, tit.due_date)
+  let pdfPath: string | null = slipBoletoPath(tit.customer_id, tit.due_date, ref)
   try {
     const pdfResp = await fetch(via.url)
     if (!pdfResp.ok) return { event: evName, matched: 0, note: `download do PDF falhou (${pdfResp.status})` }
@@ -192,11 +208,6 @@ async function handlePaymentSlip(body: any, hookEvent = ''): Promise<{ event: st
   const { data: cli } = await supabase.from('sienge_clientes')
     .select('telefone, nome').eq('client_id', tit.customer_id).maybeSingle()
 
-  // Não rebaixar um boleto já pago/cancelado: preserva o status nesse caso.
-  const { data: existing } = await supabase.from('boletos_emitidos')
-    .select('status').eq('client_id', tit.customer_id).eq('vencimento', tit.due_date).maybeSingle()
-  const preservaStatus = existing && ['pago', 'cancelado'].includes(String(existing.status))
-
   const row: Record<string, any> = {
     client_id:          tit.customer_id,
     customer_name:      tit.customer_name || cli?.nome || null,
@@ -205,6 +216,7 @@ async function handlePaymentSlip(body: any, hookEvent = ''): Promise<{ event: st
     linha_digitavel:    (via.digitavel || '').replace(/\s+/g, ' ').trim() || null,
     telefone:           cli?.telefone || null,
     lote:               'sienge-webhook',
+    boleto_ref:         ref,
     receivable_bill_id: billId,     // chave do Sienge → permite casar a baixa offline
     installment_id:     instId,
     pdf_path:           pdfPath,
@@ -213,7 +225,7 @@ async function handlePaymentSlip(body: any, hookEvent = ''): Promise<{ event: st
   if (!preservaStatus) row.status = 'aberto'
 
   const { error, count } = await supabase.from('boletos_emitidos')
-    .upsert(row, { onConflict: 'client_id,vencimento', count: 'exact' })
+    .upsert(row, { onConflict: 'client_id,vencimento,boleto_ref', count: 'exact' })
   if (error) return { event: evName, matched: 0, note: 'erro upsert: ' + error.message }
   return {
     event: evName, matched: count || 1,
@@ -311,7 +323,7 @@ Deno.serve(async (req) => {
         if (novo === 'pago') patch.paid_at = new Date().toISOString()
         const { data, error } = await supabase.from('sienge_boletos')
           .update(patch, { count: 'exact' })
-          .in('receivable_bill_id', body.receivableBillId.map(Number)).select('id, customer_id, due_date')
+          .in('receivable_bill_id', body.receivableBillId.map(Number)).select('id, customer_id, due_date, receivable_bill_id, installment_id')
         if (error) note = `erro update: ${error.message}`
         matched = data?.length || 0
         await propagateToEmitidos(supabase, data || [], novo)

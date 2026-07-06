@@ -304,15 +304,16 @@ Deno.serve(async (req) => {
           name: 'enviar_segunda_via_boleto',
           description:
             'Envia ao cliente o boleto (PDF como documento) e retorna a linha digitável para pagamento. ' +
-            'Identifique o boleto escolhido pela sua VENCIMENTO (campo vencimento_id, formato AAAA-MM-DD) exatamente como aparece na lista "BOLETOS CADASTRADOS" do contexto. ' +
-            'Se houver MAIS DE UM boleto em aberto, primeiro liste-os (vencimento e valor) e pergunte qual o cliente deseja — só chame esta função após o cliente escolher. ' +
+            'Identifique o boleto escolhido pelo campo emitido_id da lista "BOLETOS CADASTRADOS" do contexto (preferido — é único mesmo quando dois boletos vencem no MESMO dia); use vencimento só como fallback. ' +
+            'Se houver MAIS DE UM boleto em aberto (inclusive dois no mesmo vencimento), primeiro liste-os (parcela, vencimento e valor) e pergunte qual o cliente deseja — só chame esta função após o cliente escolher. ' +
             'Se houver apenas UM, pode chamar diretamente quando o cliente pedir o boleto. ' +
             'NUNCA ofereça pagar parcelas futuras/antecipação por aqui — para isso, escale para atendente.',
           parameters: {
             type: 'object',
             required: [],
             properties: {
-              vencimento:         { type: 'string', description: 'Vencimento do boleto escolhido no formato AAAA-MM-DD (campo vencimento_id da lista). Use SEMPRE que possível.' },
+              emitido_id:         { type: 'string', description: 'ID do boleto escolhido (campo emitido_id da lista). Use SEMPRE que disponível.' },
+              vencimento:         { type: 'string', description: 'Fallback — vencimento do boleto no formato AAAA-MM-DD (campo vencimento_id da lista).' },
               receivable_bill_id: { type: 'number', description: 'Opcional — ID do título Sienge, se a lista exibir [IDs: ...].' },
               installment_id:     { type: 'number', description: 'Opcional — ID da parcela Sienge, se a lista exibir [IDs: ...].' },
             },
@@ -542,9 +543,10 @@ Deno.serve(async (req) => {
           b.status === 'cancelado'            ? '❌ Cancelado'            :
                                                '🔵 Em aberto'
 
-        // Identificador para a IA acionar a 2ª via: emitido → vencimento; Sienge → IDs
+        // Identificador para a IA acionar a 2ª via: emitido → emitido_id (único por
+        // boleto — vencimento fica ambíguo com 2 boletos no mesmo dia); Sienge → IDs
         const ids = boletoSource === 'emitido'
-          ? ` [vencimento_id=${vIso}]`
+          ? ` [emitido_id=${(b as any).emitido_id}, vencimento_id=${vIso}]`
           : (b.receivable_bill_id && b.installment_id)
             ? ` [IDs: receivable_bill_id=${b.receivable_bill_id}, installment_id=${b.installment_id}]`
             : ''
@@ -1687,9 +1689,13 @@ async function handleEnviarBoleto(
   phoneNumberId: string, accessToken: string, waId: string, conversationId: string,
   agentName?: string | null, agentEmoji?: string | null,
 ): Promise<string> {
-  // 1. Resolver qual boleto o cliente escolheu
+  // 1. Resolver qual boleto o cliente escolheu (emitido_id primeiro — único por
+  // boleto, funciona mesmo com 2 boletos no mesmo vencimento)
   let target: any = null
-  if (args.receivable_bill_id && args.installment_id) {
+  if (args.emitido_id) {
+    target = boletos.find((b) => String(b.emitido_id) === String(args.emitido_id))
+  }
+  if (!target && args.receivable_bill_id && args.installment_id) {
     target = boletos.find((b) =>
       Number(b.receivable_bill_id) === Number(args.receivable_bill_id) &&
       Number(b.installment_id) === Number(args.installment_id))

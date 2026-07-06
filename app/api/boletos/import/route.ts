@@ -277,28 +277,46 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
     for (const c of clientes || []) telById[c.client_id] = { tel: cleanWaId(c.telefone), nome: c.nome }
   }
 
+  // ── Identidade do boleto (boleto_ref) + regra de adoção ─────────────────────
+  // A chave única é (client_id, vencimento, boleto_ref) — permite N boletos do
+  // mesmo cliente no mesmo dia. ref: t{titulo}p{parcela} (formato B) ou
+  // n{nosso_numero} (formato A). Adoção: se já existe linha do mesmo boleto
+  // gravada por OUTRO canal (ref diferente mas mesmo nosso_numero ou mesma
+  // chave Sienge), usamos o ref existente para ATUALIZAR em vez de duplicar.
+  const soDigitos = (s?: string | null) => String(s || '').replace(/\D/g, '')
+  const { data: existentes } = ids.length
+    ? await admin.from('boletos_emitidos')
+        .select('id, client_id, vencimento, boleto_ref, nosso_numero, receivable_bill_id, installment_id')
+        .in('client_id', ids)
+    : { data: [] as any[] }
+
   // ── Upload dos PDFs + montar as linhas ───────────────────────────────────────
   const rows: any[] = []
   let comPdf = 0
-  const vistos = new Set<string>()   // dedupe por (client_id, vencimento) — chave única da tabela
+  const vistos = new Set<string>()   // dedupe por (client_id, vencimento, boleto_ref)
   for (const p of parsed) {
     const venc = toISODate(p.vencimento)!     // garantido acima
     const info = telById[p.clientId] || { tel: null, nome: null }
 
-    // O ZIP pode trazer 2 PDFs que caem na MESMA chave (arquivo duplicado ou duas
-    // parcelas do mesmo cliente no mesmo dia). O upsert em lote não pode tocar a
-    // mesma linha 2x ("ON CONFLICT ... cannot affect row a second time") e o
-    // schema só comporta 1 boleto por (cliente, vencimento). Mantém o primeiro
-    // e manda o restante para revisão manual.
-    const chave = `${p.clientId}|${venc}`
+    const refNovo = (p.titulo && p.parcela) ? `t${p.titulo}p${p.parcela}`
+      : soDigitos(p.nossoNumero) ? `n${soDigitos(p.nossoNumero)}` : ''
+    const cand = (existentes || []).filter((e: any) =>
+      e.client_id === p.clientId && String(e.vencimento).slice(0, 10) === venc)
+    const adotado = cand.find((e: any) => e.boleto_ref === refNovo)
+      || cand.find((e: any) => soDigitos(e.nosso_numero) && soDigitos(e.nosso_numero) === soDigitos(p.nossoNumero))
+      || cand.find((e: any) => p.titulo && p.parcela && e.receivable_bill_id === p.titulo && e.installment_id === p.parcela)
+    const ref = adotado ? adotado.boleto_ref : refNovo
+
+    // PDF de fato duplicado no ZIP (mesmo boleto 2x) → mantém o primeiro
+    const chave = `${p.clientId}|${venc}|${ref}`
     if (vistos.has(chave)) {
-      falhas.push({ arquivo: p.baseName, motivo: `duplicado no ZIP (cliente ${p.clientId}, venc ${venc}) — mantido o primeiro PDF; revisar manualmente` })
+      falhas.push({ arquivo: p.baseName, motivo: `duplicado no ZIP (cliente ${p.clientId}, venc ${venc}, mesmo boleto) — mantido o primeiro PDF` })
       continue
     }
     vistos.add(chave)
 
-    // Sobe o PDF (idempotente por client_id/vencimento)
-    let pdfPath: string | null = `${p.clientId}/${venc}.pdf`
+    // Sobe o PDF (path inclui o ref → 2 boletos no mesmo dia não colidem)
+    let pdfPath: string | null = `${p.clientId}/${venc}${ref ? '-' + ref : ''}.pdf`
     const { error: upErr } = await admin.storage
       .from('boletos')
       .upload(pdfPath, p.pdfBuf, { contentType: 'application/pdf', upsert: true })
@@ -318,6 +336,7 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
       nosso_numero:       p.nossoNumero || null,
       telefone:           info.tel,
       lote:               p.lote || null,
+      boleto_ref:         ref,
       receivable_bill_id: p.titulo ?? null,    // chave do Sienge (formato B) → casa a baixa offline
       installment_id:     p.parcela ?? null,
       empreendimento:     p.beneficiario || null,
@@ -356,7 +375,7 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
   if (rows.length) {
     const { error, count } = await admin
       .from('boletos_emitidos')
-      .upsert(rows, { onConflict: 'client_id,vencimento', count: 'exact' })
+      .upsert(rows, { onConflict: 'client_id,vencimento,boleto_ref', count: 'exact' })
     if (error) {
       // Nada foi gravado — remove o registro do lote para não deixar um lote
       // órfão ("Nenhum boleto neste lote") na tela de carregamentos.

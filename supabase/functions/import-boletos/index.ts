@@ -68,11 +68,18 @@ Deno.serve(async (req) => {
 
     const rows: any[] = []
     const erros: any[] = []
+    const vistos = new Set<string>()   // dedupe por (client, venc, ref) dentro do mesmo lote
     for (const b of list) {
       const clientId = Number(b.clientId)
       const venc = toISODate(b.vencimento)
       if (isNaN(clientId) || !venc) { erros.push({ b, motivo: 'clientId/vencimento inválido' }); continue }
       const info = telById[clientId] || { tel: null, nome: null }
+      // Identidade do boleto (chave única: client_id, vencimento, boleto_ref)
+      const nn = String(b.nossoNumero || '').replace(/\D/g, '')
+      const ref = nn ? `n${nn}` : ''
+      const chave = `${clientId}|${venc}|${ref}`
+      if (vistos.has(chave)) { erros.push({ b, motivo: 'duplicado no lote (mesmo boleto)' }); continue }
+      vistos.add(chave)
       rows.push({
         client_id:       clientId,
         customer_name:   b.nome || info.nome || null,
@@ -80,6 +87,7 @@ Deno.serve(async (req) => {
         valor:           toNumber(b.valor),
         linha_digitavel: (b.linhaDigitavel || '').toString().replace(/\s+/g, ' ').trim() || null,
         nosso_numero:    b.nossoNumero || null,
+        boleto_ref:      ref,
         telefone:        info.tel,
         lote:            b.lote || null,
         status:          'aberto',
@@ -91,7 +99,7 @@ Deno.serve(async (req) => {
     if (rows.length) {
       const { error, count } = await admin
         .from('boletos_emitidos')
-        .upsert(rows, { onConflict: 'client_id,vencimento', count: 'exact' })
+        .upsert(rows, { onConflict: 'client_id,vencimento,boleto_ref', count: 'exact' })
       if (error) return json({ error: error.message }, 500)
       upserted = count ?? rows.length
     }

@@ -116,7 +116,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
 
   // Audiência: on_load = data efetiva de disparo (carga) é hoje; offset = vencendo na(s) data(s)-alvo.
   let vq = admin.from('vw_cobranca_boletos')
-    .select('phone_norm, source, customer_name, customer_phone, empreendimento, quadra, lote, parcela, due_date, amount, link_boleto')
+    .select('phone_norm, source, customer_name, customer_phone, empreendimento, quadra, lote, parcela, due_date, amount, link_boleto, emitido_id, pdf_path, boleto_ref')
   vq = step.on_load ? vq.eq('load_dispatch_date', runDate) : vq.in('due_date', targetDues)
   const af = regua.audience_filter || {}
   if (af.source && af.source !== 'both') vq = vq.eq('source', af.source)
@@ -157,13 +157,15 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
   for (const r of audience) {
     const waId = String(r.customer_phone).replace(/\D/g, '')
 
-    // Claim atômico via UNIQUE(regua_id, offset_days, phone_norm, due_date)
+    // Claim atômico POR BOLETO via UNIQUE(regua_id, offset_days, phone_norm, due_date, boleto_ref)
+    // — cliente com 2 boletos no mesmo vencimento recebe 2 mensagens (1 por boleto).
     const { data: claim } = await admin.from('cobranca_regua_log')
       .upsert({
         regua_id: regua.id, step_id: step.id, offset_days: step.offset_days,
         phone_norm: r.phone_norm, due_date: r.due_date, wa_id: waId,
+        boleto_ref: r.boleto_ref || '',
         parcela: r.parcela, run_date: runDate, status: 'pending',
-      }, { onConflict: 'regua_id,offset_days,phone_norm,due_date', ignoreDuplicates: true })
+      }, { onConflict: 'regua_id,offset_days,phone_norm,due_date,boleto_ref', ignoreDuplicates: true })
       .select('id').maybeSingle()
 
     if (!claim?.id) { skipped++; continue }
@@ -179,11 +181,10 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
     let tplToSend: any = tpl
     let mediaArg: { link: string; filename?: string } | null = null
     if (precisaPdf) {
-      // pdf_path vem de boletos_emitidos (chave phone_norm + vencimento).
-      const { data: be } = await admin.from('boletos_emitidos')
-        .select('pdf_path').eq('phone_norm', r.phone_norm).eq('vencimento', r.due_date).maybeSingle()
-      const signedUrl = be?.pdf_path
-        ? (await admin.storage.from('boletos').createSignedUrl(be.pdf_path, 600)).data?.signedUrl
+      // pdf_path vem da própria linha da audiência (por boleto) — a busca antiga
+      // por phone+venc com maybeSingle quebraria com 2 boletos no mesmo dia.
+      const signedUrl = r.pdf_path
+        ? (await admin.storage.from('boletos').createSignedUrl(r.pdf_path, 600)).data?.signedUrl
         : null
       if (signedUrl) {
         const venc = String(r.due_date || '').slice(0, 10)
