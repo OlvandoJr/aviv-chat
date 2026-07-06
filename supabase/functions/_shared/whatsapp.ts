@@ -198,6 +198,7 @@ export async function ensureConversation(
   waId: string,
   name?: string,
   agentId: string | null = COBRANCA_AGENT_ID,
+  assigneeId: string | null = null,   // dono humano (ex.: proprietário da campanha)
 ): Promise<{ conversationId: string; contactId: string; created: boolean } | null> {
   waId = normalizeWaId(waId) || waId
   const { data: contact, error: cErr } = await admin
@@ -221,14 +222,20 @@ export async function ensureConversation(
   if (!conv) {
     const { data: newConv } = await admin
       .from('chat_conversations')
-      .insert({ inbox_id: inboxId, contact_id: contact.id, status: 'open', ...(agentId ? { agent_id: agentId } : {}) })
+      .insert({
+        inbox_id: inboxId, contact_id: contact.id, status: 'open',
+        ...(agentId ? { agent_id: agentId } : {}),
+        ...(assigneeId ? { assignee_id: assigneeId } : {}),
+      })
       .select('id')
       .single()
     conv = newConv
     created = !!newConv
-  } else if (agentId) {
+  } else {
     // Mantém a thread de cobrança com a Vivi (só preenche se ainda não tem agente)
-    await admin.from('chat_conversations').update({ agent_id: agentId }).eq('id', conv.id).is('agent_id', null)
+    if (agentId) await admin.from('chat_conversations').update({ agent_id: agentId }).eq('id', conv.id).is('agent_id', null)
+    // Dono humano: só preenche se a conversa ainda não tem responsável (não rouba atendimento)
+    if (assigneeId) await admin.from('chat_conversations').update({ assignee_id: assigneeId }).eq('id', conv.id).is('assignee_id', null)
   }
   if (!conv) return null
   return { conversationId: conv.id, contactId: contact.id, created }

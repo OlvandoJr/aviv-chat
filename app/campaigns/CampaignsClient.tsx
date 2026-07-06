@@ -61,7 +61,7 @@ export default function CampaignsClient({ initial }: { initial: any[] }) {
                       </span>
                     </div>
                     <p className="text-xs text-gray-400 mt-0.5 truncate">
-                      {c.template?.name || '—'} · {c.inbox?.name || '—'}
+                      {c.template?.name || '—'} · {c.inbox?.name || '—'}{c.owner?.name ? <> · <span className="text-emerald-600">👤 {c.owner.name}</span></> : ''}
                     </p>
                   </div>
                   <div className="text-right shrink-0">

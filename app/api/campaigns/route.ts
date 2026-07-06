@@ -14,16 +14,21 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
-    const { name, inboxId, templateId, variableMapping = {}, scheduledAt = null,
+    const { name, inboxId, templateId, ownerId, variableMapping = {}, scheduledAt = null,
             headerMediaPath = null, headerMediaFilename = null, headerMediaMode = 'upload' } = await req.json()
     if (!name || !inboxId || !templateId) {
       return NextResponse.json({ error: 'name, inboxId e templateId são obrigatórios' }, { status: 400 })
+    }
+    // Proprietário dos disparos é OBRIGATÓRIO: as conversas nascem atribuídas a ele.
+    if (!ownerId) {
+      return NextResponse.json({ error: 'Selecione o proprietário dos disparos (ownerId).' }, { status: 400 })
     }
 
     const { data, error } = await admin.from('chat_campaigns').insert({
       name,
       inbox_id:         inboxId,
       template_id:      templateId,
+      owner_id:         ownerId,
       variable_mapping: variableMapping,
       scheduled_at:     scheduledAt,
       header_media_mode:     headerMediaMode === 'boleto' ? 'boleto' : 'upload',

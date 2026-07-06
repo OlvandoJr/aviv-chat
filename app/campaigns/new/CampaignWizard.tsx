@@ -13,7 +13,13 @@ interface Tpl {
   header_type: string | null; header_text: string | null; body_text: string; footer_text?: string | null
   header_var_count: number; body_var_count: number
 }
-interface Props { inboxes: { id: string; name: string }[]; templates: Tpl[]; campaign?: any }
+interface Props {
+  inboxes: { id: string; name: string }[]
+  templates: Tpl[]
+  campaign?: any
+  attendants?: { id: string; name: string; role: string }[]
+  memberships?: { attendant_id: string; inbox_id: string }[]
+}
 
 function varNums(text: string): number[] {
   const s = new Set<number>()
@@ -26,7 +32,7 @@ function defaultFormat(col: string): 'currency' | 'date' | undefined {
   return undefined
 }
 
-export default function CampaignWizard({ inboxes, templates, campaign }: Props) {
+export default function CampaignWizard({ inboxes, templates, campaign, attendants = [], memberships = [] }: Props) {
   const router = useRouter()
   const supabase = createClient()
   const isEdit = !!campaign
@@ -53,6 +59,14 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
   const tpl = templates.find(t => t.id === templateId) || null
+
+  // Proprietário dos disparos (OBRIGATÓRIO): as conversas da campanha nascem
+  // atribuídas a ele — só ele (e admin/gerente) as vê. Opções: atendentes
+  // vinculados à caixa selecionada + admins/gerentes (veem tudo).
+  const [ownerId, setOwnerId] = useState<string>(campaign?.owner_id || '')
+  const inboxOwners = attendants.filter(a =>
+    a.role === 'admin' || a.role === 'manager' ||
+    memberships.some(m => m.attendant_id === a.id && m.inbox_id === inboxId))
 
   // Template com header de mídia (DOCUMENT/IMAGE/VIDEO) → exige anexar o arquivo.
   const mediaType = (tpl?.header_type || '').toUpperCase()
@@ -97,6 +111,7 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
   async function calcAudience() {
     setError(null)
     if (!name || !inboxId || !templateId) { setError('Preencha nome, inbox e template.'); return }
+    if (!ownerId) { setError('Selecione o proprietário dos disparos.'); return }
     if (!mappingReady) { setError('Mapeie todas as variáveis do template.'); return }
     if (isMediaTemplate && headerMediaMode === 'upload' && !headerMediaPath) { setError(`Anexe o ${mediaLabel} do template antes de continuar.`); return }
     setBusy(true)
@@ -111,7 +126,7 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
           : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
       }
       const usaUpload = isMediaTemplate && headerMediaMode === 'upload'
-      const payload = { name, inboxId, templateId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null,
+      const payload = { name, inboxId, templateId, ownerId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null,
         headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
         headerMediaPath: usaUpload ? headerMediaPath : null,
         headerMediaFilename: usaUpload ? headerMediaFilename : null }
@@ -174,7 +189,13 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-xs font-medium text-gray-600 mb-1 block">Caixa de entrada</label>
-              <select value={inboxId} onChange={e => { setInboxId(e.target.value); setTemplateId('') }}
+              <select value={inboxId} onChange={e => {
+                  const ib = e.target.value
+                  setInboxId(ib); setTemplateId('')
+                  // Dono precisa pertencer à nova caixa (ou ser admin/gerente)
+                  const okOwner = attendants.some(a => a.id === ownerId && (a.role !== 'agent' || memberships.some(m => m.attendant_id === a.id && m.inbox_id === ib)))
+                  if (!okOwner) setOwnerId('')
+                }}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
                 {inboxes.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
               </select>
@@ -187,6 +208,20 @@ export default function CampaignWizard({ inboxes, templates, campaign }: Props) 
                 {inboxTemplates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Proprietário dos disparos — as conversas da campanha nascem atribuídas
+              a ele (só ele + admin/gerente as veem). Opções: vinculados à caixa. */}
+          <div>
+            <label className="text-xs font-medium text-gray-600 mb-1 block">Proprietário dos disparos *</label>
+            <select value={ownerId} onChange={e => setOwnerId(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              <option value="">Selecione o responsável…</option>
+              {inboxOwners.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+            <p className="text-[11px] text-gray-400 mt-1">
+              As conversas disparadas ficam atribuídas a este usuário — apenas ele (e administradores/gerentes) as verá.
+            </p>
           </div>
 
           {/* Mídia do template (header DOCUMENT/IMAGE/VIDEO): mesmo arquivo p/ todos OU boleto de cada cliente */}
