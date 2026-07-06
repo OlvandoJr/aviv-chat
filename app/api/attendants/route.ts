@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão para criar usuários' }, { status: 403 })
   }
 
-  const { name, email, password, role, sector } = await req.json()
+  const { name, email, password, role, sector, inboxIds } = await req.json()
 
   // Gerente só pode criar Atendentes
   if (caller.role === 'manager' && role !== 'agent') {
@@ -62,7 +62,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: dbError.message }, { status: 400 })
   }
 
+  await setInboxes(authData.user.id, inboxIds)
+
   return NextResponse.json({ attendant }, { status: 201 })
+}
+
+// Vínculos usuário↔caixa de entrada (visibilidade das conversas p/ role=agent).
+// undefined = não mexer; [] = remover todos.
+async function setInboxes(attendantId: string, inboxIds?: string[]) {
+  if (!Array.isArray(inboxIds)) return
+  await admin.from('chat_attendant_inboxes').delete().eq('attendant_id', attendantId)
+  const rows = [...new Set(inboxIds)].filter(Boolean).map((inbox_id) => ({ attendant_id: attendantId, inbox_id }))
+  if (rows.length) await admin.from('chat_attendant_inboxes').insert(rows)
 }
 
 // ── PATCH — editar usuário ────────────────────────────────────────────────────
@@ -73,7 +84,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão para editar usuários' }, { status: 403 })
   }
 
-  const { id, name, sector, role, is_active, action } = await req.json()
+  const { id, name, sector, role, is_active, action, inboxIds } = await req.json()
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
 
   // ── Reset de senha: gera nova senha forte e devolve para exibir ─────────────
@@ -98,14 +109,19 @@ export async function PATCH(req: NextRequest) {
   if (role      !== undefined) patch.role      = role
   if (is_active !== undefined) patch.is_active = is_active
 
-  const { data: attendant, error } = await admin
-    .from('chat_attendants')
-    .update(patch)
-    .eq('id', id)
-    .select()
-    .single()
+  let attendant: any = null
+  if (Object.keys(patch).length) {
+    const { data, error } = await admin
+      .from('chat_attendants')
+      .update(patch)
+      .eq('id', id)
+      .select()
+      .single()
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+    attendant = data
+  }
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+  await setInboxes(id, inboxIds)
 
   return NextResponse.json({ attendant })
 }

@@ -13,7 +13,8 @@ export default async function ConversationPage({ params }: Props) {
   // Dependem só do id da rota → rodam em paralelo
   const [
     { data: conversation },
-    { data: attendants },
+    { data: allAttendants },
+    { data: attendantInboxes },
     { data: initialMessages },
   ] = await Promise.all([
     supabase
@@ -27,9 +28,11 @@ export default async function ConversationPage({ params }: Props) {
       .single(),
     supabase
       .from('chat_attendants')
-      .select('id, name, avatar_url')
+      .select('id, name, avatar_url, role')
       .eq('is_active', true)
+      .is('deleted_at', null)
       .order('name'),
+    supabase.from('chat_attendant_inboxes').select('attendant_id, inbox_id'),
     supabase
       .from('chat_messages')
       .select('*, attendant:chat_attendants(id, name)')
@@ -39,6 +42,11 @@ export default async function ConversationPage({ params }: Props) {
   ])
 
   if (!conversation) notFound()
+
+  // "Atribuir" só oferece quem pode VER a conversa: vinculados à caixa + admin/gerente
+  const attendants = (allAttendants || []).filter((a: any) =>
+    a.role === 'admin' || a.role === 'manager' ||
+    (attendantInboxes || []).some((m: any) => m.attendant_id === a.id && m.inbox_id === conversation.inbox_id))
 
   const contact = conversation.contact as any
 

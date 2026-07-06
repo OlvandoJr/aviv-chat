@@ -29,7 +29,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (b.name !== undefined) patch.name = b.name
 
     const mudaConfig = b.inboxId !== undefined || b.templateId !== undefined
-      || b.variableMapping !== undefined || b.scheduledAt !== undefined
+      || b.variableMapping !== undefined || b.scheduledAt !== undefined || b.ownerId !== undefined
       || b.headerMediaPath !== undefined || b.headerMediaFilename !== undefined || b.headerMediaMode !== undefined
     if (mudaConfig) {
       if (!EDITAVEL.includes(camp.status)) {
@@ -37,6 +37,10 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       }
       if (b.inboxId !== undefined)            patch.inbox_id = b.inboxId
       if (b.templateId !== undefined)         patch.template_id = b.templateId
+      if (b.ownerId !== undefined) {
+        if (!b.ownerId) return NextResponse.json({ error: 'Proprietário dos disparos é obrigatório.' }, { status: 400 })
+        patch.owner_id = b.ownerId
+      }
       if (b.variableMapping !== undefined)    patch.variable_mapping = b.variableMapping
       if (b.scheduledAt !== undefined)        patch.scheduled_at = b.scheduledAt || null
       const mode = b.headerMediaMode === 'boleto' ? 'boleto' : (b.headerMediaMode === 'upload' ? 'upload' : undefined)

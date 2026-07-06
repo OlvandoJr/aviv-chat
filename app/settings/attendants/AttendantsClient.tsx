@@ -28,6 +28,8 @@ interface Props {
   initialAttendants: Attendant[]
   currentUserRole:   AttendantRole
   currentUserId:     string
+  inboxes:           { id: string; name: string }[]
+  memberships:       { attendant_id: string; inbox_id: string }[]
 }
 
 type TeamOption = { id: string; name: string; sector: string | null }
@@ -43,15 +45,21 @@ type DeleteState = {
 
 type CreateForm = {
   name: string; email: string; password: string
-  role: AttendantRole; sector: string
+  role: AttendantRole; sector: string; inboxIds: string[]
 }
 
 type EditForm = {
-  name: string; sector: string; role: AttendantRole; is_active: boolean
+  name: string; sector: string; role: AttendantRole; is_active: boolean; inboxIds: string[]
 }
 
-export default function AttendantsClient({ initialAttendants, currentUserRole, currentUserId }: Props) {
+export default function AttendantsClient({ initialAttendants, currentUserRole, currentUserId, inboxes, memberships }: Props) {
   const [attendants, setAttendants] = useState(initialAttendants)
+  // Vínculos usuário↔caixa (define a visibilidade das conversas p/ Atendentes)
+  const [members, setMembers] = useState<Record<string, string[]>>(() => {
+    const m: Record<string, string[]> = {}
+    for (const r of memberships) (m[r.attendant_id] ||= []).push(r.inbox_id)
+    return m
+  })
   const [showForm,   setShowForm]   = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState<string | null>(null)
@@ -120,8 +128,30 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
   }
 
   const [form, setForm] = useState<CreateForm>({
-    name: '', email: '', password: '', role: 'agent', sector: '',
+    name: '', email: '', password: '', role: 'agent', sector: '', inboxIds: [],
   })
+
+  // Seletor de caixas de entrada (chips) — para Atendentes define O QUE eles veem;
+  // Admin/Gerente enxergam tudo independentemente do vínculo.
+  function InboxPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+    if (inboxes.length === 0) return <p className="text-[11px] text-gray-400">Nenhuma caixa de entrada ativa.</p>
+    return (
+      <div className="flex flex-wrap gap-2">
+        {inboxes.map((i) => {
+          const on = value.includes(i.id)
+          return (
+            <button
+              type="button" key={i.id}
+              onClick={() => onChange(on ? value.filter((x) => x !== i.id) : [...value, i.id])}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${on ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}
+            >
+              {on ? '✓ ' : ''}{i.name}
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
 
   // ── Criar ──────────────────────────────────────────────────────────────────
   async function handleCreate(e: React.FormEvent) {
@@ -143,15 +173,16 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
     }
 
     setAttendants((prev) => [result.attendant, ...prev])
+    setMembers((prev) => ({ ...prev, [result.attendant.id]: form.inboxIds }))
     setShowForm(false)
-    setForm({ name: '', email: '', password: '', role: 'agent', sector: '' })
+    setForm({ name: '', email: '', password: '', role: 'agent', sector: '', inboxIds: [] })
     setLoading(false)
   }
 
   // ── Editar ─────────────────────────────────────────────────────────────────
   function startEdit(a: Attendant) {
     setEditingId(a.id)
-    setEditForm({ name: a.name || '', sector: a.sector || '', role: a.role, is_active: a.is_active })
+    setEditForm({ name: a.name || '', sector: a.sector || '', role: a.role, is_active: a.is_active, inboxIds: members[a.id] || [] })
   }
 
   function cancelEdit() { setEditingId(null); setEditForm(null) }
@@ -175,6 +206,7 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
     }
 
     setAttendants((prev) => prev.map((x) => x.id === result.attendant.id ? result.attendant : x))
+    setMembers((prev) => ({ ...prev, [a.id]: editForm.inboxIds }))
     cancelEdit()
     setLoading(false)
   }
@@ -334,6 +366,15 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
                 </select>
               </div>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Caixas de entrada</label>
+              <InboxPicker value={form.inboxIds} onChange={(v) => setForm({ ...form, inboxIds: v })} />
+              <p className="text-[11px] text-gray-400 mt-1">
+                {form.role === 'agent'
+                  ? 'O Atendente só vê conversas das caixas vinculadas (as dele + as sem responsável).'
+                  : 'Administradores e Gerentes veem todas as caixas — o vínculo é apenas informativo.'}
+              </p>
+            </div>
             {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button type="submit" size="sm" disabled={loading}>
@@ -394,6 +435,10 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
                       </select>
                     </div>
                   </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Caixas de entrada</label>
+                    <InboxPicker value={editForm.inboxIds} onChange={(v) => setEditForm({ ...editForm, inboxIds: v })} />
+                  </div>
                   <div className="flex items-center gap-2">
                     <Button size="sm" disabled={loading} onClick={() => saveEdit(a)}>
                       <Check className="w-3.5 h-3.5 mr-1" />
@@ -414,6 +459,13 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900">{a.name}</p>
                     <p className="text-xs text-gray-400">{a.email}{a.sector ? ` · ${a.sector}` : ''}</p>
+                    {a.role === 'agent' && (
+                      <p className="text-[11px] text-gray-400 truncate">
+                        {(members[a.id]?.length || 0) > 0
+                          ? `📥 ${members[a.id]!.map((iid) => inboxes.find((i) => i.id === iid)?.name || '?').join(', ')}`
+                          : '⚠️ Sem caixa vinculada — não vê nenhuma conversa'}
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${ROLE_BADGE[a.role]}`}>

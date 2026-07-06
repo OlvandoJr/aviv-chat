@@ -14,6 +14,7 @@ import {
   ensureConversation,
   cleanupEmptyConversation,
   sendTemplateMessage,
+  COBRANCA_AGENT_ID,
   SLEEP,
   type TemplateRow,
 } from '../_shared/whatsapp.ts'
@@ -40,7 +41,7 @@ Deno.serve(async (req) => {
       .is('deleted_at', null)
       .lte('scheduled_at', new Date().toISOString())
 
-    const CAMP_COLS = 'id, inbox_id, template_id, status, header_media_path, header_media_filename'
+    const CAMP_COLS = 'id, inbox_id, template_id, status, owner_id, header_media_path, header_media_filename'
     let q = admin.from('chat_campaigns')
       .select(CAMP_COLS)
       .eq('status', 'running')
@@ -121,7 +122,8 @@ async function processCampaign(camp: any) {
 
   let sent = 0, failed = 0
   for (const r of recipients || []) {
-    const conv = await ensureConversation(admin, camp.inbox_id, r.wa_id, r.name || undefined)
+    // Conversa nasce com o PROPRIETÁRIO da campanha (assignee) — só ele + admin/gerente a veem.
+    const conv = await ensureConversation(admin, camp.inbox_id, r.wa_id, r.name || undefined, COBRANCA_AGENT_ID, camp.owner_id || null)
     if (!conv) {
       await markRecipient(r.id, 'failed', null, 'falha ao criar conversa')
       failed++
