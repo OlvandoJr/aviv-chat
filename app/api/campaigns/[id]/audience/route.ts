@@ -23,7 +23,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
     const { id } = await ctx.params
-    const { mode = 'view', filter = {}, rows = [] } = await req.json()
+    const { mode = 'view', base = 'boletos', filter = {}, rows = [] } = await req.json()
 
     const { data: camp } = await admin
       .from('chat_campaigns')
@@ -38,7 +38,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     // ── Montar as linhas de origem ────────────────────────────────────────────
     let sourceRows: Record<string, any>[] = []
 
-    if (mode === 'view') {
+    if (mode === 'view' && base === 'clientes') {
+      // "Selecionar da base — qualquer cliente": TODA a Central (não só boletos em
+      // aberto), com filtros de origem/empreendimento/situação do contrato.
+      let q = admin.from('vw_central_clientes')
+        .select('phone_norm, telefone, nome, cpf, email, origem, empreendimento, contrato_situacao')
+      if (filter.origem && filter.origem !== 'todos') q = q.eq('origem', filter.origem)
+      if (filter.empreendimento) q = q.ilike('empreendimento', `%${filter.empreendimento}%`)
+      if (filter.contrato)       q = q.ilike('contrato_situacao', `%${filter.contrato}%`)
+      const { data, error } = await q.limit(5000)
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      sourceRows = (data || []).map(r => ({
+        wa_id: r.telefone || (r.phone_norm ? '55' + r.phone_norm : ''),
+        name: r.nome, phone_norm: r.phone_norm,
+        customer_name: r.nome, empreendimento: r.empreendimento, cpf: r.cpf, email: r.email,
+      }))
+    } else if (mode === 'view') {
       let q = admin.from('vw_clientes_boletos')
         .select('phone_norm, source, customer_name, customer_phone, empreendimento, quadra, lote, parcela, due_date, amount, link_boleto')
       if (filter.source && filter.source !== 'both') q = q.eq('source', filter.source)
@@ -105,7 +120,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       total: recipients.length,
       sent: 0,
       failed: 0,
-      audience: { mode, filter },
+      audience: { mode, base, filter, ...(mode === 'manual' ? { manualCount: recipients.length } : {}) },
       updated_at: new Date().toISOString(),
     }).eq('id', id)
 
