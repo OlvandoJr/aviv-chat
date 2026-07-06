@@ -454,14 +454,27 @@ function mapEmitido(b: any) {
   }
 }
 
-async function getBoletoEmitido(waId: string, cpfCnpj?: string): Promise<any | null> {
+async function getBoletoEmitido(waId: string, cpfCnpj?: string, valorHint?: number): Promise<any | null> {
   const sel = 'emitido_id, client_id, customer_name, customer_cpf, parcela_descricao, due_date, amount, receivable_bill_id, installment_id'
+  // Com N boletos por cliente (inclusive 2 no MESMO vencimento), escolhe o
+  // candidato pelo VALOR do comprovante quando disponível; senão o mais antigo.
+  const escolher = (rows: any[] | null): any | null => {
+    if (!rows?.length) return null
+    if (valorHint && valorHint > 0) {
+      return [...rows].sort((a, b) =>
+        Math.abs(Number(a.amount || 0) - valorHint) - Math.abs(Number(b.amount || 0) - valorHint)
+        || String(a.due_date).localeCompare(String(b.due_date)))[0]
+    }
+    return rows[0]   // já vem ordenado por due_date asc
+  }
+
   // 1. Por telefone
   const { data: byPhone } = await supabase
     .from('vw_boleto_chat').select(sel)
     .eq('phone_norm', normalizePhone(waId))
-    .order('due_date', { ascending: true }).limit(1).maybeSingle()
-  if (byPhone) { console.log('Boleto emitido por telefone:', byPhone.parcela_descricao); return mapEmitido(byPhone) }
+    .order('due_date', { ascending: true }).limit(10)
+  const p = escolher(byPhone)
+  if (p) { console.log('Boleto emitido por telefone:', p.parcela_descricao); return mapEmitido(p) }
 
   // 2. Por CPF (quando o comprovante traz CPF e há match Sienge na view)
   if (cpfCnpj) {
@@ -470,8 +483,9 @@ async function getBoletoEmitido(waId: string, cpfCnpj?: string): Promise<any | n
       const { data: byCpf } = await supabase
         .from('vw_boleto_chat').select(sel)
         .eq('customer_cpf', d)
-        .order('due_date', { ascending: true }).limit(1).maybeSingle()
-      if (byCpf) { console.log('Boleto emitido por CPF:', byCpf.parcela_descricao); return mapEmitido(byCpf) }
+        .order('due_date', { ascending: true }).limit(10)
+      const c = escolher(byCpf)
+      if (c) { console.log('Boleto emitido por CPF:', c.parcela_descricao); return mapEmitido(c) }
     }
   }
   return null
@@ -761,7 +775,7 @@ async function analyzeImage(
   // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ───────
   // Fonte PRIMÁRIA: boleto EMITIDO (valor real → sem divergência). Não consulta o
   // Sienge (preserva cota): o "pago" vem do webhook. Sienge/SGL só como fallback.
-  let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj)
+  let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
   let siengeStatus: 'pago' | 'pendente' | null = null
   if (!boleto) {
     boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
@@ -908,7 +922,7 @@ async function analyzePdf(
 
     // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ──
     // Fonte PRIMÁRIA: boleto EMITIDO (valor real → sem divergência). Sienge/SGL só fallback.
-    let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj)
+    let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
     let siengeStatus: 'pago' | 'pendente' | null = null
     if (!boleto) {
       boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)

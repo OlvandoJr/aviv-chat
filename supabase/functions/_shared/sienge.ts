@@ -34,16 +34,33 @@ export async function fetchSegundaVia(
 //   1) sienge_boletos pela chave exata → propaga aos emitidos (client_id+vencimento)
 //   2) boletos_emitidos pela CHAVE DO SIENGE (offline, sem API) — o boleto que enviamos
 //   3) fallback: busca o título no Sienge 1x (consome cota) e grava
+// Com N boletos por (cliente, vencimento), a propagação precisa ser SELETIVA:
+// prefere a chave exata do Sienge (não afeta o boleto "irmão" do mesmo dia);
+// o fallback por (cliente, vencimento) só age quando há exatamente 1 aberto.
 // deno-lint-ignore no-explicit-any
 export async function propagateToEmitidos(admin: any, rows: any[], novoStatus: 'pago' | 'cancelado') {
   const now = new Date().toISOString()
   const patch: Record<string, any> = { status: novoStatus, updated_at: now }
   if (novoStatus === 'pago') patch.paid_at = now
   for (const sb of rows || []) {
+    // 1) chave exata (rbid, parcela)
+    if (sb?.receivable_bill_id != null && sb?.installment_id != null) {
+      const { data } = await admin.from('boletos_emitidos').update(patch)
+        .eq('receivable_bill_id', sb.receivable_bill_id).eq('installment_id', sb.installment_id)
+        .not('status', 'in', '("pago","cancelado")')
+        .select('id')
+      if (data?.length) continue
+    }
+    // 2) fallback (cliente, vencimento) — só sem ambiguidade
     if (!sb?.customer_id || !sb?.due_date) continue
-    await admin.from('boletos_emitidos').update(patch)
+    const { data: abertos } = await admin.from('boletos_emitidos').select('id')
       .eq('client_id', sb.customer_id).eq('vencimento', sb.due_date)
-      .not('status', 'in', '("pago","cancelado")')
+      .not('status', 'in', '("pago","cancelado")').limit(2)
+    if ((abertos || []).length === 1) {
+      await admin.from('boletos_emitidos').update(patch).eq('id', abertos![0].id)
+    } else if ((abertos || []).length > 1) {
+      console.warn(`propagateToEmitidos: ${abertos!.length} boletos abertos p/ client ${sb.customer_id} venc ${sb.due_date} — ambíguo, não propaga`)
+    }
   }
 }
 
@@ -77,14 +94,19 @@ export async function syncReceiptFromSienge(admin: any, billId: number, installm
       status:             'pago',
       paid_at:            new Date().toISOString(),
       updated_at:         new Date().toISOString(),
-    }, { onConflict: 'receivable_bill_id,installment_id' }).select('id, customer_id, due_date')
+    }, { onConflict: 'receivable_bill_id,installment_id' }).select('id, customer_id, due_date, receivable_bill_id, installment_id')
 
-    // Aprende a chave do Sienge no boleto que enviamos (autocura p/ próximas baixas).
+    // Aprende a chave do Sienge no boleto que enviamos (autocura p/ próximas
+    // baixas) — SÓ quando há exatamente 1 candidato sem chave (senão é ambíguo).
     if (data?.[0]?.customer_id && data?.[0]?.due_date) {
-      await admin.from('boletos_emitidos')
-        .update({ receivable_bill_id: billId, installment_id: installmentId })
+      const { data: cands } = await admin.from('boletos_emitidos').select('id')
         .eq('client_id', data[0].customer_id).eq('vencimento', data[0].due_date)
-        .is('receivable_bill_id', null)
+        .is('receivable_bill_id', null).limit(2)
+      if ((cands || []).length === 1) {
+        await admin.from('boletos_emitidos')
+          .update({ receivable_bill_id: billId, installment_id: installmentId })
+          .eq('id', cands![0].id)
+      }
     }
     return data || []
   } catch (e) {
@@ -104,7 +126,7 @@ export async function applyReceipt(admin: any, billId: number, installmentId: nu
   const { data: sb } = await admin.from('sienge_boletos')
     .update({ status: 'pago', paid_at: now, updated_at: now })
     .eq('receivable_bill_id', billId).eq('installment_id', installmentId)
-    .select('id, customer_id, due_date')
+    .select('id, customer_id, due_date, receivable_bill_id, installment_id')
   if (sb?.length) { matched += sb.length; notes.push('sienge_boletos'); await propagateToEmitidos(admin, sb, 'pago') }
 
   // 2) boletos_emitidos pela chave do Sienge (offline, sem API) — o boleto que enviamos
