@@ -131,6 +131,20 @@ Deno.serve(async (req) => {
         continue
       }
 
+      // GUARDA: registro sem dados de cobrança (link do boleto ou vencimento) —
+      // tipicamente linha de estado do fluxo n8n legado que polui esta tabela,
+      // não uma cobrança do SGL (o webhook de cobrança SEMPRE traz o link).
+      // NUNCA cobrar sem boleto: marca tratado com o motivo (auditoria) e pula.
+      const semLink = !String(r.linkboleto || '').trim()
+      if (semLink || !r.contasrecebervencimento) {
+        await admin.from('mensagens_cobranca').update({
+          app_dispatched_at:  new Date().toISOString(),
+          app_dispatch_error: `não enviado: registro sem ${semLink ? 'linkboleto' : 'vencimento'}`,
+        }).eq('id', r.id)
+        result.skipped++
+        continue
+      }
+
       // Sem mapa (vence_hoje, vencida_5_dias, etc.) ou telefone inválido → marca e pula
       if (!m || waId.length < 10) {
         await markDispatched(r.id)
