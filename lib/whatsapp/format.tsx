@@ -24,9 +24,11 @@ export function renderWhatsApp(text: string | null | undefined): React.ReactNode
       const mm = t.match(/^(.*?)([.,;:!?)\]]*)$/)
       const url  = mm?.[1] || t
       const tail = mm?.[2] || ''
+      // Cor HERDADA do balão (branco no verde de saída, escuro no branco de
+      // entrada) — nunca pintar de emerald, que some no balão verde.
       out.push(
         <a key={key++} href={url} target="_blank" rel="noopener noreferrer"
-           className="text-emerald-600 underline break-all">{url}</a>
+           className="underline break-all text-inherit">{url}</a>
       )
       if (tail) out.push(tail)
     }
