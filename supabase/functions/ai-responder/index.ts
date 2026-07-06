@@ -1,5 +1,11 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { executeApiConfig } from '../_shared/apiExec.ts'
+import {
+  sendTemplateMessage,
+  ensureConversation,
+  normalizeWaId,
+  type TemplateRow,
+} from '../_shared/whatsapp.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -135,6 +141,15 @@ Deno.serve(async (req) => {
         .single()
       if (inbox?.phone_number_id) phoneNumberId = inbox.phone_number_id
       if (inbox?.access_token)    accessToken   = inbox.access_token
+    }
+
+    // ── 1c. Roteador de fluxos de subagente (gatilho + fluxo ativo) ───────────
+    // Se a mensagem pertence a um fluxo de subagente (ex.: "Indique e Ganhe"),
+    // ele responde e encerramos aqui — o bot de cobrança não entra.
+    if (await routeSubagentFlow({ conversationId, conv, phoneNumberId, accessToken })) {
+      return new Response(JSON.stringify({ ok: true, routed: 'subagent_flow' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     // ── 2. Buscar agente (regra da janela de 24h do template) ─────────────────
@@ -1136,6 +1151,7 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
 
   const tools: any[] = []
   const apiFns: Record<string, any> = {}
+  const msgFns: Record<string, any> = {}
   let schedulerTool: any = null
 
   for (const t of subTools || []) {
@@ -1173,6 +1189,25 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
       apiFns[fn] = t
       tools.push({ type: 'function', function: {
         name: fn, description: t.description || t.name || 'Chama uma integração externa.',
+        parameters: { type: 'object', properties, required },
+      } })
+    } else if (t.tool_type === 'send_message') {
+      // Ferramenta de MENSAGEM: notifica um terceiro (ex.: o corretor) por WhatsApp.
+      const cfg = t.config || {}
+      let fn = 'msg_' + String(t.name || t.id).toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+      while (msgFns[fn] || apiFns[fn]) fn += '_'
+      const properties: Record<string, any> = {}
+      const required: string[] = []
+      for (const p of (cfg.parameters || [])) {
+        if (!p?.name) continue
+        properties[p.name] = { type: p.type || 'string', description: p.description || '' }
+        if (p.required) required.push(p.name)
+      }
+      msgFns[fn] = t
+      tools.push({ type: 'function', function: {
+        name: fn, description: t.description || t.name || 'Envia uma mensagem WhatsApp para um destinatário.',
         parameters: { type: 'object', properties, required },
       } })
     }
@@ -1250,6 +1285,15 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
             if (bodyStr.length > 3000) bodyStr = bodyStr.slice(0, 3000) + '…'
             result = JSON.stringify({ ok: r.ok, status: r.status, resposta: bodyStr })
           }
+          markTerminal(ctx, sub, apiFns[name], result)
+        } else if (msgFns[name]) {
+          result = JSON.stringify(await executeSendMessage(msgFns[name].config || {}, args, {
+            inboxId: ctx.conv?.inbox_id,
+            phoneNumberId: ctx.phoneNumberId,
+            accessToken: ctx.accessToken,
+            clientWaId: ctx.contactWaId,
+          }))
+          markTerminal(ctx, sub, msgFns[name], result)
         } else {
           result = JSON.stringify({ ok: false, erro: 'ferramenta desconhecida' })
         }
@@ -1264,6 +1308,191 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
     break
   }
   return sub.escalation_message || 'Vou te encaminhar para um atendente para tratar isso. 🙏'
+}
+
+// ── Roteador de fluxos de subagente (gatilho determinístico + fluxo ativo) ─────
+// Antes do bot principal, decide se a mensagem pertence a um FLUXO de subagente
+// (ex.: resposta de campanha "Indique e Ganhe"). Se sim, roda o subagente com a
+// mesma engine do delegar_ e encerra — o principal (cobrança) não responde.
+async function routeSubagentFlow(env: {
+  conversationId: string; conv: any; phoneNumberId: string; accessToken: string;
+}): Promise<boolean> {
+  const { conversationId, conv } = env
+
+  const { data: inMsg } = await supabase
+    .from('chat_messages').select('type, content')
+    .eq('conversation_id', conversationId).eq('direction', 'in')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (!inMsg) return false
+  const text = String(inMsg.content || '').trim()
+
+  // 1) Fluxo já ativo nesta conversa? → roda o subagente dono do fluxo.
+  let sub: any = null
+  const { data: flow } = await supabase
+    .from('chat_active_flows').select('subagent_id, status')
+    .eq('conversation_id', conversationId).eq('status', 'active').maybeSingle()
+  if (flow) {
+    const { data } = await supabase.from('chat_subagents')
+      .select('*').eq('id', flow.subagent_id).eq('is_active', true).maybeSingle()
+    if (!data) {
+      await supabase.from('chat_active_flows').update({ status: 'done' }).eq('conversation_id', conversationId)
+      return false
+    }
+    sub = data
+  } else {
+    // 2) Gatilho de início (resposta de campanha com reply_flow).
+    sub = await matchTriggerSubagent(conversationId, inMsg)
+    if (!sub) return false
+    await supabase.from('chat_active_flows').upsert({
+      conversation_id: conversationId, subagent_id: sub.id, status: 'active',
+      updated_at: new Date().toISOString(),
+    })
+  }
+
+  // 3) Executa o subagente (engine configurável — mesmas ferramentas do subagente).
+  const { data: contact } = await supabase.from('chat_contacts').select('*').eq('id', conv.contact_id).maybeSingle()
+  const contactWaId = normalizeWaId(contact?.wa_id || '') || String(contact?.wa_id || '')
+  const { data: hist } = await supabase.from('chat_messages')
+    .select('direction, content').eq('conversation_id', conversationId)
+    .order('created_at', { ascending: false }).limit(16)
+
+  const ctx: any = {
+    conv, contact, contactWaId, boletos: [], capturedAttrs: {},
+    phoneNumberId: env.phoneNumberId, accessToken: env.accessToken, conversationId,
+    history: (hist || []).reverse(), customerContext: '', pedido: text,
+    fallbackModel: sub.model || 'gpt-4o-mini', temperature: Number(sub.temperature ?? 0.3), maxTokens: 700,
+  }
+  let reply = await runSubagent(sub, ctx)
+
+  if (typeof reply === 'string' && reply.startsWith('ESCALAR_HUMANO')) {
+    await supabase.from('chat_conversations').update({ handled_by: 'pending_human' }).eq('id', conversationId)
+    await supabase.from('chat_active_flows').update({ status: 'done', updated_at: new Date().toISOString() }).eq('conversation_id', conversationId)
+    reply = sub.escalation_message || 'Vou te encaminhar para um de nossos atendentes. 🙏'
+  } else if (ctx._terminalDone) {
+    // A ferramenta terminal (ex.: notificar corretor) rodou → fluxo concluído.
+    await supabase.from('chat_active_flows').update({ status: 'done', updated_at: new Date().toISOString() }).eq('conversation_id', conversationId)
+  }
+
+  if (reply) {
+    await sendPlainText(
+      { phone_number_id: env.phoneNumberId, access_token: env.accessToken },
+      contactWaId, reply, conversationId,
+    )
+  }
+  return true
+}
+
+// Acha um subagente cujo GATILHO casa com a resposta de campanha desta conversa.
+async function matchTriggerSubagent(conversationId: string, inMsg: any): Promise<any | null> {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const { data: tmsg } = await supabase.from('chat_messages')
+    .select('metadata').eq('conversation_id', conversationId)
+    .eq('direction', 'out').eq('type', 'template')
+    .gte('created_at', since).order('created_at', { ascending: false }).limit(1).maybeSingle()
+  const campaignId = tmsg?.metadata?.campaign_id
+  if (!campaignId) return null
+  const { data: camp } = await supabase.from('chat_campaigns').select('reply_flow').eq('id', campaignId).maybeSingle()
+  const replyFlow = camp?.reply_flow
+  if (!replyFlow) return null
+
+  const { data: subs } = await supabase.from('chat_subagents')
+    .select('*').eq('is_active', true).not('trigger', 'is', null)
+  const content = String(inMsg.content || '').toLowerCase()
+  for (const s of subs || []) {
+    const trg = s.trigger || {}
+    if (trg.kind !== 'campaign_reply') continue
+    if (trg.reply_flow && trg.reply_flow !== replyFlow) continue
+    const buttons: string[] = Array.isArray(trg.buttons) ? trg.buttons : []
+    if (inMsg.type === 'button' && (buttons.length === 0 || buttons.some((b) => content.includes(String(b).toLowerCase())))) {
+      return s
+    }
+  }
+  return null
+}
+
+// Marca o fluxo como concluído quando a ferramenta TERMINAL do subagente roda com ok.
+function markTerminal(ctx: any, sub: any, tool: any, resultJson: string) {
+  if (!sub?.terminal_tool || !tool?.name || tool.name !== sub.terminal_tool) return
+  try { if (JSON.parse(resultJson)?.ok) ctx._terminalDone = true } catch { /* ignore */ }
+}
+
+// Ferramenta send_message: envia template/texto WhatsApp a um destinatário (3º).
+async function executeSendMessage(
+  cfg: any, args: Record<string, any>,
+  env: { inboxId: string | null; phoneNumberId: string; accessToken: string; clientWaId: string },
+): Promise<{ ok: boolean; erro?: string; status?: number }> {
+  if (!env.inboxId) return { ok: false, erro: 'sem inbox' }
+  const to = normalizeWaId(String(args[cfg.to_param || 'telefone'] || ''))
+  if (!to || to.length < 12) return { ok: false, erro: 'telefone do destinatário inválido' }
+
+  const special: Record<string, string> = { cliente_telefone: formatBrPhone(env.clientWaId) }
+
+  const conv = await ensureConversation(
+    supabase, env.inboxId, to, String(args[cfg.name_param || 'nome'] || '') || undefined, null,
+  )
+  if (!conv) return { ok: false, erro: 'falha ao criar conversa do destinatário' }
+  // Destinatário é interno (corretor) → atendimento humano, o bot não responde por cima.
+  await supabase.from('chat_conversations').update({ handled_by: 'human' }).eq('id', conv.conversationId)
+
+  const inbox = { phone_number_id: env.phoneNumberId, access_token: env.accessToken }
+
+  if ((cfg.message_type || 'template') === 'text') {
+    const body = interpolate(String(cfg.text || ''), { ...args, ...special })
+    return { ok: await sendPlainText(inbox, to, body, conv.conversationId) }
+  }
+
+  const { data: tpl } = await supabase
+    .from('chat_wa_templates')
+    .select('id, name, language, header_text, header_var_count, body_var_count, body_text, header_type')
+    .eq('inbox_id', env.inboxId).eq('name', cfg.template_name).eq('status', 'APPROVED')
+    .limit(1).maybeSingle()
+  if (!tpl) return { ok: false, erro: `template "${cfg.template_name}" não aprovado nesta inbox` }
+
+  const variables = (cfg.variables || []).map((v: string) =>
+    special[v] !== undefined ? special[v] : String(args[v] ?? ''))
+
+  const res = await sendTemplateMessage({
+    admin: supabase, inbox, toWaId: to, tpl: tpl as TemplateRow,
+    variables, conversationId: conv.conversationId,
+    metaExtra: { via: 'send_message', cliente_wa: env.clientWaId },
+  })
+  return { ok: res.ok, status: res.ok ? 200 : undefined }
+}
+
+async function sendPlainText(
+  inbox: { phone_number_id: string; access_token: string },
+  to: string, body: string, conversationId: string,
+): Promise<boolean> {
+  let waMessageId: string | null = null
+  const resp = await fetch(`https://graph.facebook.com/v20.0/${inbox.phone_number_id}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${inbox.access_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body } }),
+  })
+  if (resp.ok) waMessageId = (await resp.json()).messages?.[0]?.id || null
+  else { console.error('sendPlainText erro', resp.status, await resp.text().catch(() => '')); return false }
+  await supabase.from('chat_messages').insert({
+    conversation_id: conversationId, wa_message_id: waMessageId, direction: 'out', type: 'text',
+    content: body, metadata: { sent_by: 'bot', via: 'send_message' },
+  })
+  await supabase.from('chat_conversations').update({
+    last_message_at: new Date().toISOString(), last_message_preview: body.slice(0, 120),
+  }).eq('id', conversationId)
+  return true
+}
+
+function interpolate(tpl: string, vars: Record<string, any>): string {
+  return tpl.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
+}
+
+function formatBrPhone(wa: string): string {
+  const d = String(wa || '').replace(/\D/g, '')
+  const local = d.startsWith('55') ? d.slice(2) : d
+  if (local.length < 10) return '+' + d
+  const ddd = local.slice(0, 2), num = local.slice(2)
+  const meio = num.length === 9 ? num.slice(0, 5) : num.slice(0, 4)
+  const fim = num.length === 9 ? num.slice(5) : num.slice(4)
+  return `+55 (${ddd}) ${meio}-${fim}`
 }
 
 // ── Confirmar agendamento de pagamento ────────────────────────────────────────
