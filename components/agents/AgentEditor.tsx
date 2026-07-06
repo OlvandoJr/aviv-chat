@@ -49,6 +49,9 @@ interface SubagentDraft {
   invocation:        SubagentInvocation
   delegation_description: string
   escalation_message:     string
+  triggerReplyFlow:  string
+  triggerButtons:    string
+  terminalTool:      string
   extraction_prompt: string
   extraction_model:  string
   instructions:      string
@@ -170,6 +173,9 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       invocation:        (s.invocation || 'auto_context') as SubagentInvocation,
       delegation_description: s.delegation_description || '',
       escalation_message:     s.escalation_message || '',
+      triggerReplyFlow:  (s.trigger as any)?.reply_flow || '',
+      triggerButtons:    ((s.trigger as any)?.buttons || []).join(', '),
+      terminalTool:      s.terminal_tool || '',
       extraction_prompt: s.extraction_prompt || '',
       extraction_model:  s.extraction_model,
       instructions:      s.instructions,
@@ -378,6 +384,12 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
         invocation:        s.invocation,
         delegation_description: s.invocation === 'on_demand' ? (s.delegation_description.trim() || null) : null,
         escalation_message:     s.escalation_message.trim() || null,
+        trigger:                s.invocation === 'flow'
+          ? { kind: 'campaign_reply',
+              reply_flow: s.triggerReplyFlow.trim() || null,
+              buttons: s.triggerButtons.split(',').map(b => b.trim()).filter(Boolean) }
+          : null,
+        terminal_tool:          s.invocation === 'flow' ? (s.terminalTool.trim() || null) : null,
         extraction_prompt: s.extraction_prompt.trim() || null,
         extraction_model:  s.extraction_model.trim() || 'gpt-4o-mini',
         instructions:      s.instructions,
@@ -1222,8 +1234,57 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                       <option value="auto_context">🔁 Sempre (injeta contexto a cada mensagem de texto)</option>
                       <option value="on_media">📎 Por mídia (gatilho de imagem/documento/áudio)</option>
                       <option value="on_demand">🎯 Sob demanda (o agente principal delega quando necessário)</option>
+                      <option value="flow">🧩 Fluxo (acionado por gatilho — ex.: resposta de campanha)</option>
                     </select>
                   </div>
+
+                  {/* Fluxo (flow) — gatilho determinístico */}
+                  {s.invocation === 'flow' && (
+                    <div className="space-y-3 rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">reply_flow da campanha</label>
+                          <input
+                            value={s.triggerReplyFlow}
+                            onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, triggerReplyFlow: e.target.value } : x))}
+                            placeholder="indique_ganhe"
+                            className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Botões que iniciam</label>
+                          <input
+                            value={s.triggerButtons}
+                            onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, triggerButtons: e.target.value } : x))}
+                            placeholder="indicar"
+                            className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-gray-400 -mt-1">
+                        Aciona quando a resposta for um botão que contenha esse texto, numa conversa de campanha marcada com esse <code>reply_flow</code>. Separe botões por vírgula.
+                      </p>
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Ferramenta que encerra o fluxo (terminal)</label>
+                        <input
+                          value={s.terminalTool}
+                          onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, terminalTool: e.target.value } : x))}
+                          placeholder="Notificar corretor"
+                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
+                        />
+                        <p className="text-[10px] text-gray-400 mt-0.5">Nome exato de uma ferramenta abaixo. Quando ela roda com sucesso, o fluxo é dado como concluído.</p>
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-medium text-gray-500 mb-0.5 block">Mensagem ao escalar para humano (opcional)</label>
+                        <input
+                          value={s.escalation_message}
+                          onChange={(e) => setSubagents(subagents.map((x, j) => j === i ? { ...x, escalation_message: e.target.value } : x))}
+                          placeholder="Ex: Vou te encaminhar para um de nossos atendentes. 🙏"
+                          className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   {/* Delegação (on_demand) */}
                   {s.invocation === 'on_demand' && (
@@ -1528,6 +1589,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
             onClick={() => setSubagents([...subagents, {
               name: '', trigger_type: 'image', invocation: 'on_media',
               delegation_description: '', escalation_message: '',
+              triggerReplyFlow: '', triggerButtons: '', terminalTool: '',
               extraction_prompt: '', extraction_model: 'gpt-4o-mini',
               instructions: '', output_format: '', model: 'gpt-4o-mini', is_active: true, sort_order: subagents.length,
               datasources: [], tools: [],

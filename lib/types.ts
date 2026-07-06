@@ -246,7 +246,7 @@ export interface ApiConfig {
 
 // ── Agent Tools & Integrations ────────────────────────────────────────────────
 
-export type ToolType = 'payment_scheduler' | 'webhook' | 'api_call'
+export type ToolType = 'payment_scheduler' | 'webhook' | 'api_call' | 'send_message'
 
 export interface ApiToolParam {
   name:        string
@@ -309,7 +309,15 @@ export type SubagentTrigger = 'image' | 'document' | 'audio' | 'text'
 //   auto_context = injeta contexto no prompt do principal a cada mensagem (texto)
 //   on_media     = acionado por gatilho de mídia (imagem/documento/áudio)
 //   on_demand    = delegável pelo agente principal (especialista, ex.: Agendador)
-export type SubagentInvocation = 'auto_context' | 'on_media' | 'on_demand'
+//   flow         = acionado por gatilho determinístico (roteador), ex.: Indique e Ganhe
+export type SubagentInvocation = 'auto_context' | 'on_media' | 'on_demand' | 'flow'
+
+// Gatilho de início de um subagente 'flow' (quando o roteador o aciona).
+export interface SubagentTriggerConfig {
+  kind:        'campaign_reply'
+  reply_flow?: string      // casa com chat_campaigns.reply_flow
+  buttons?:    string[]    // textos de botão que iniciam (substring, minúsculas)
+}
 
 export interface Subagent {
   id:                string
@@ -319,6 +327,8 @@ export interface Subagent {
   invocation:        SubagentInvocation
   delegation_description: string | null   // quando o principal deve delegar (on_demand)
   escalation_message:     string | null
+  trigger:                SubagentTriggerConfig | null   // gatilho (invocation='flow')
+  terminal_tool:          string | null                 // ferramenta que encerra o fluxo
   extraction_prompt: string | null
   extraction_model:  string
   instructions:      string

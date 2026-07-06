@@ -30,6 +30,12 @@ const TOOL_TYPES: { value: ToolType; label: string; icon: string; description: s
     description: 'O AI chama uma integração configurada em /apis (ex.: Sienge) com parâmetros que ele coleta na conversa, e usa a resposta para responder o cliente.',
   },
   {
+    value:       'send_message',
+    label:       'Enviar mensagem (WhatsApp)',
+    icon:        '💬',
+    description: 'O AI envia um WhatsApp (template aprovado ou texto) para um destinatário — ex.: notificar o corretor. O telefone e os dados vêm dos parâmetros que o AI coleta.',
+  },
+  {
     value:       'webhook',
     label:       'Webhook',
     icon:        '🔗',
@@ -50,6 +56,14 @@ export default function ToolEditor({ agentId, subagentId, tool, apiConnections, 
   const [apiConfigId,     setApiConfigId]    = useState<string>((tool?.config as any)?.api_config_id || '')
   const [params,          setParams]         = useState<ApiToolParam[]>(((tool?.config as any)?.parameters as ApiToolParam[]) || [])
   const [apiConfigs,      setApiConfigs]     = useState<{ id: string; name: string; method: string; url: string }[]>([])
+
+  // Enviar mensagem (send_message)
+  const [msgType,      setMsgType]      = useState<'template' | 'text'>(((tool?.config as any)?.message_type) || 'template')
+  const [templateName, setTemplateName] = useState<string>((tool?.config as any)?.template_name || '')
+  const [toParam,      setToParam]      = useState<string>((tool?.config as any)?.to_param || 'telefone')
+  const [nameParam,    setNameParam]    = useState<string>((tool?.config as any)?.name_param || 'nome')
+  const [msgVariables, setMsgVariables] = useState<string>((((tool?.config as any)?.variables as string[]) || []).join(', '))
+  const [msgText,      setMsgText]      = useState<string>((tool?.config as any)?.text || '')
 
   // Regras do Agendador (payment_scheduler)
   const [schedOffsets,    setSchedOffsets]   = useState<string>(((((tool?.config as any)?.business_day_offsets) as number[]) || [3, 5, 10]).join(', '))
@@ -74,6 +88,7 @@ export default function ToolEditor({ agentId, subagentId, tool, apiConnections, 
     if (!name.trim()) { setError('Nome obrigatório'); return }
     if (!description.trim()) { setError('Descrição obrigatória'); return }
     if (toolType === 'api_call' && !apiConfigId) { setError('Selecione a integração (API)'); return }
+    if (toolType === 'send_message' && msgType === 'template' && !templateName.trim()) { setError('Informe o nome do template aprovado'); return }
 
     setLoading(true)
     setError('')
@@ -87,6 +102,21 @@ export default function ToolEditor({ agentId, subagentId, tool, apiConnections, 
       config.parameters    = params
         .filter(p => p.name.trim())
         .map(p => ({ name: p.name.trim(), type: p.type || 'string', description: p.description || '', required: !!p.required }))
+    }
+    if (toolType === 'send_message') {
+      config.channel      = 'whatsapp_cloud'
+      config.message_type = msgType
+      config.to_param     = toParam.trim()   || 'telefone'
+      config.name_param   = nameParam.trim() || 'nome'
+      config.parameters   = params
+        .filter(p => p.name.trim())
+        .map(p => ({ name: p.name.trim(), type: p.type || 'string', description: p.description || '', required: !!p.required }))
+      if (msgType === 'template') {
+        config.template_name = templateName.trim()
+        config.variables     = msgVariables.split(',').map(s => s.trim()).filter(Boolean)
+      } else {
+        config.text = msgText
+      }
     }
     if (toolType === 'payment_scheduler') {
       const offsets = schedOffsets.split(/[,\s]+/).map(n => parseInt(n, 10)).filter(n => Number.isFinite(n) && n > 0)
@@ -358,6 +388,94 @@ export default function ToolEditor({ agentId, subagentId, tool, apiConnections, 
                   onClick={() => setParams([...params, { name: '', type: 'string', description: '', required: false }])}
                   className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 mt-1"
                 >
+                  <Plus className="w-3 h-3" /> parâmetro
+                </button>
+              </div>
+            </>
+          )}
+
+          {toolType === 'send_message' && (
+            <>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block font-medium">Tipo de mensagem</label>
+                <div className="flex gap-2">
+                  {(['template', 'text'] as const).map(mt => (
+                    <label key={mt} className={cn(
+                      'flex-1 text-center px-3 py-2 rounded-lg border cursor-pointer text-xs',
+                      msgType === mt ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600',
+                    )}>
+                      <input type="radio" name="msg_type" checked={msgType === mt} onChange={() => setMsgType(mt)} className="hidden" />
+                      {mt === 'template' ? 'Template aprovado' : 'Texto livre'}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[11px] text-amber-600 mt-1">
+                  Mensagem fria (fora de 24h) exige <strong>template aprovado</strong>. Texto livre só entrega se o destinatário falou com o número nas últimas 24h.
+                </p>
+              </div>
+
+              {msgType === 'template' ? (
+                <>
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1 block font-medium">Nome do template (Meta) *</label>
+                    <input value={templateName} onChange={(e) => setTemplateName(e.target.value)}
+                      placeholder="indicacao_corretor"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1 block font-medium">Variáveis do template (na ordem {'{{1}}, {{2}}…'})</label>
+                    <input value={msgVariables} onChange={(e) => setMsgVariables(e.target.value)}
+                      placeholder="corretor_nome, cliente_nome, cliente_telefone, empreendimento"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono" />
+                    <p className="text-[11px] text-gray-400 mt-1">
+                      Cada nome deve ser um parâmetro abaixo. Especiais automáticos: <code className="bg-gray-100 px-1 rounded">cliente_telefone</code> (telefone do cliente atual).
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block font-medium">Texto (use {'{{parametro}}'})</label>
+                  <textarea value={msgText} onChange={(e) => setMsgText(e.target.value)} rows={3}
+                    placeholder="Nova indicação de {{cliente_nome}} ({{cliente_telefone}})."
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none" />
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block font-medium">Parâmetro do telefone destino</label>
+                  <input value={toParam} onChange={(e) => setToParam(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder="telefone_corretor"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1 block font-medium">Parâmetro do nome destino</label>
+                  <input value={nameParam} onChange={(e) => setNameParam(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    placeholder="corretor_nome"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono" />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block font-medium">Parâmetros que o AI deve coletar</label>
+                {params.length === 0 && <p className="text-[11px] text-gray-400 mb-1">Inclua ao menos o telefone e o nome do destinatário.</p>}
+                {params.map((p, i) => (
+                  <div key={i} className="flex items-center gap-1 mb-1">
+                    <input value={p.name} onChange={(e) => updateParam(i, { name: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
+                      placeholder="nome" className="w-28 border border-gray-200 rounded px-1.5 py-1 text-[11px] font-mono" />
+                    <input value={p.description} onChange={(e) => updateParam(i, { description: e.target.value })}
+                      placeholder="descrição p/ o AI" className="flex-1 border border-gray-200 rounded px-1.5 py-1 text-[11px]" />
+                    <label className="flex items-center gap-1 text-[10px] text-gray-500 shrink-0">
+                      <input type="checkbox" checked={p.required} onChange={(e) => updateParam(i, { required: e.target.checked })} className="accent-emerald-500" />
+                      obrig.
+                    </label>
+                    <button onClick={() => setParams(params.filter((_, k) => k !== i))} className="text-gray-400 hover:text-red-500 shrink-0">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => setParams([...params, { name: '', type: 'string', description: '', required: false }])}
+                  className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 mt-1">
                   <Plus className="w-3 h-3" /> parâmetro
                 </button>
               </div>
