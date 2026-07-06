@@ -581,10 +581,14 @@ Deno.serve(async (req) => {
           ? '\nHá MAIS DE UM boleto em aberto. Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja. Após a escolha, chame a função enviar_segunda_via_boleto com os IDs correspondentes.\n'
           : '\nQuando o cliente pedir o boleto, chame a função enviar_segunda_via_boleto com os IDs deste boleto.\n'
       } else if (boletoSource === 'sgl') {
-        // Clientes legados do SGL: o link de pagamento JÁ está na base — NÃO usar a 2ª via do Sienge
-        customerContext += boletos.length > 1
-          ? '\nOs boletos acima já possuem LINK de pagamento (no campo "Link para pagamento"). Quando o cliente pedir o boleto, LISTE as opções (vencimento e valor) e pergunte qual ele deseja; depois ENVIE o link correspondente diretamente no texto. NUNCA use a função enviar_segunda_via_boleto para estes boletos.\n'
-          : '\nO boleto acima já possui LINK de pagamento (campo "Link para pagamento"). Quando o cliente pedir, ENVIE esse link diretamente no texto. NUNCA use a função enviar_segunda_via_boleto para este boleto.\n'
+        // Clientes legados do SGL: o link de pagamento JÁ está na base — NÃO usar a 2ª via do Sienge.
+        // Só a ÚLTIMA cobrança é oferecida (o SGL não manda baixa; as parcelas antigas
+        // podem já estar pagas). Qualquer outra parcela → atendente humano.
+        customerContext +=
+          '\nO boleto acima já possui LINK de pagamento (campo "Link para pagamento"). Quando o cliente pedir, ENVIE esse link diretamente no texto. NUNCA use a função enviar_segunda_via_boleto para este boleto.\n' +
+          'IMPORTANTE: ofereça SOMENTE o boleto acima (a última cobrança enviada — o boleto do mês). ' +
+          'Se o cliente quiser pagar OUTRA parcela (atrasada ou futura), antecipar, quitar ou negociar, NÃO tente resolver e NÃO invente valores ou links — ' +
+          'diga que vai encaminhar para um atendente e use ESCALAR_HUMANO: cliente quer tratar de outras parcelas (SGL).\n'
       }
     } else if (includeBoletos) {
       customerContext += '\nEste número ainda não possui boletos vinculados no sistema. ' +
@@ -1016,7 +1020,12 @@ async function loadSglBoletos(waId: string): Promise<any[]> {
     if (seen.has(k)) continue
     seen.add(k); uniq.push(b)
   }
-  return uniq.slice(0, 10).map((b: any) => ({
+  // mensagens_cobranca é um LOG de cobranças, não um extrato: o SGL não manda
+  // baixa — parcela paga simplesmente PARA de ser cobrada, e as linhas antigas
+  // ficam com status de "aberta" para sempre. Enquanto não houver baixa
+  // automática do SGL, o bot oferece SOMENTE a ÚLTIMA cobrança enviada (o
+  // boleto do mês); outras parcelas → escalar para humano (instrução no prompt).
+  return uniq.slice(0, 1).map((b: any) => ({
     parcela_descricao: [
       b.contasreceberparcela, b.unidadeempreendimento,
       [b.unidadequadraandar, b.unidadeloteapartamento].filter(Boolean).join(' — '),
