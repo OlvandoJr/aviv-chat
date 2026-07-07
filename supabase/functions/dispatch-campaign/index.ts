@@ -172,6 +172,11 @@ async function processCampaign(camp: any) {
     })
     if (res.ok) {
       await markRecipient(r.id, 'sent', res.waMessageId, null)
+      // Ao receber uma campanha, a conversa volta para o bot de IA — assim ele
+      // trata as respostas (ex.: fluxo Indique e Ganhe), mesmo que estivesse em
+      // atendimento humano.
+      await admin.from('chat_conversations')
+        .update({ handled_by: 'bot' }).eq('id', conv.conversationId)
       sent++
     } else {
       await markRecipient(r.id, 'failed', null, JSON.stringify(res.error).slice(0, 500))
