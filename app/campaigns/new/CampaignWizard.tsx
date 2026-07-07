@@ -565,12 +565,16 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
 
         {/* Ações */}
         {audienceTotal !== null && audienceTotal > 0 && (
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button onClick={() => router.push('/campaigns')} disabled={busy}
+              className="px-5 py-2.5 rounded-xl text-sm font-medium border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+              Salvar
+            </button>
             <button onClick={start} disabled={busy}
               className={cn('flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium text-white transition-colors',
                 busy ? 'bg-gray-300' : 'bg-emerald-600 hover:bg-emerald-700')}>
               <Send className="w-4 h-4" />
-              {scheduledAt ? 'Agendar campanha' : `Enviar para ${audienceTotal}`}
+              {scheduledAt ? 'Salvar e agendar' : 'Salvar e enviar'}
             </button>
           </div>
         )}
