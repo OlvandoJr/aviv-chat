@@ -47,7 +47,7 @@ BEGIN
       || E'4) Se a consulta NÃO encontrar reserva ou corretor, responda exatamente: '
       || E'ESCALAR_HUMANO: indicação sem cadastro localizado.',
       'gpt-4o-mini', true, 200,
-      '{"kind":"campaign_reply","reply_flow":"indique_ganhe","buttons":["indicar","saber"]}'::jsonb,
+      '{"kind":"campaign_reply","reply_flow":"indique_ganhe","template_match":"indique_ganhe","buttons":["indicar","saber"]}'::jsonb,
       'Notificar corretor'
     ) RETURNING id INTO v_sub;
   END IF;
