@@ -47,9 +47,14 @@ export default function ConversationActions({ conversation, attendants, onUpdate
 
   async function updateStatus(status: 'open' | 'resolved' | 'archived') {
     setLoading(true)
-    // Resolver/arquivar encerra também a pendência de validação de comprovante.
+    // Ao resolver/arquivar, a conversa fica LIMPA: sai de atendimento humano e
+    // volta para a IA, e encerra os marcadores (validação de comprovante /
+    // "aguarda atendente" some junto do handled_by='bot').
     const patch: Record<string, unknown> = { status }
-    if (status !== 'open') patch.receipt_validation = false
+    if (status !== 'open') {
+      patch.receipt_validation = false
+      patch.handled_by = 'bot'
+    }
     const { data } = await supabase
       .from('chat_conversations')
       .update(patch)
