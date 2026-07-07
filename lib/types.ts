@@ -90,6 +90,7 @@ export interface Conversation {
   unread_count:         number
   sector:               string | null
   receipt_validation:   boolean
+  is_internal:          boolean
   created_at:           string
   updated_at:           string
   // joins
