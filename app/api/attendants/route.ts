@@ -35,7 +35,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão para criar usuários' }, { status: 403 })
   }
 
-  const { name, email, password, role, sector, inboxIds } = await req.json()
+  const body = await req.json()
+  const { name, email, password, role, sector, inboxIds } = body
 
   // Gerente só pode criar Atendentes
   if (caller.role === 'manager' && role !== 'agent') {
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
 
   const { data: attendant, error: dbError } = await admin
     .from('chat_attendants')
-    .insert({ id: authData.user.id, name, email, role, sector: sector || null })
+    .insert({ id: authData.user.id, name, email, role, sector: sector || null, ...accessCols(body) })
     .select()
     .single()
 
@@ -69,6 +70,17 @@ export async function POST(req: NextRequest) {
 
 // Vínculos usuário↔caixa de entrada (visibilidade das conversas p/ role=agent).
 // undefined = não mexer; [] = remover todos.
+// Config de acesso a conversas (só as chaves presentes no body). camelCase → colunas.
+function accessCols(b: any): Record<string, unknown> {
+  const p: Record<string, unknown> = {}
+  if (typeof b.accessOwn === 'boolean')        p.access_own        = b.accessOwn
+  if (typeof b.accessAi === 'boolean')         p.access_ai         = b.accessAi
+  if (typeof b.accessUnassigned === 'boolean') p.access_unassigned = b.accessUnassigned
+  if (Array.isArray(b.accessUserIds))          p.access_user_ids   = [...new Set(b.accessUserIds.filter((x: any) => typeof x === 'string'))]
+  if (Array.isArray(b.accessSectors))          p.access_sectors    = [...new Set(b.accessSectors.filter((x: any) => typeof x === 'string'))]
+  return p
+}
+
 async function setInboxes(attendantId: string, inboxIds?: string[]) {
   if (!Array.isArray(inboxIds)) return
   await admin.from('chat_attendant_inboxes').delete().eq('attendant_id', attendantId)
@@ -84,7 +96,8 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Sem permissão para editar usuários' }, { status: 403 })
   }
 
-  const { id, name, sector, role, is_active, action, inboxIds } = await req.json()
+  const body = await req.json()
+  const { id, name, sector, role, is_active, action, inboxIds } = body
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
 
   // ── Reset de senha: gera nova senha forte e devolve para exibir ─────────────
@@ -108,6 +121,7 @@ export async function PATCH(req: NextRequest) {
   if (sector    !== undefined) patch.sector    = sector || null
   if (role      !== undefined) patch.role      = role
   if (is_active !== undefined) patch.is_active = is_active
+  Object.assign(patch, accessCols(body))
 
   let attendant: any = null
   if (Object.keys(patch).length) {

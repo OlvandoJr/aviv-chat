@@ -73,6 +73,12 @@ export interface Attendant {
   role:       AttendantRole
   sector?:    string | null
   is_active:  boolean
+  // Acesso a conversas (role=agent; supervisores veem tudo)
+  access_own?:        boolean
+  access_ai?:         boolean
+  access_unassigned?: boolean
+  access_user_ids?:   string[]
+  access_sectors?:    string[]
   created_at: string
 }
 
