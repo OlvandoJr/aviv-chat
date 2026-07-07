@@ -747,6 +747,14 @@ function AiAnalysisCard({ analysis }: { analysis: any }) {
           value={`${analysis.sienge_boleto.parcela} — ${formatCurrency(analysis.sienge_boleto.valor)}`}
         />
       )}
+      {analysis.verdict && (
+        <div className="mt-1 pt-1.5 border-t border-gray-100">
+          <p className="text-[9px] font-semibold text-gray-400 uppercase tracking-wide mb-0.5 flex items-center gap-1">
+            <Lock className="w-2.5 h-2.5" /> Veredito · interno
+          </p>
+          <p className="text-[11px] text-gray-600 whitespace-pre-wrap leading-snug">{analysis.verdict}</p>
+        </div>
+      )}
     </div>
   )
 }
