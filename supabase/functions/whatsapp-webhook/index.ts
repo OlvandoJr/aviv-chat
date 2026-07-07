@@ -70,6 +70,9 @@ Deno.serve(async (req) => {
           .update({ wa_status: status.status })
           .eq('wa_message_id', status.id)
 
+        // Propagar entrega/leitura para o destinatário de campanha (no-op se não for de campanha).
+        await propagateCampaignStatus(status.id, status.status)
+
         // Detectar janela de 24h fechada (erro 131047 via webhook assíncrono)
         if (status.status === 'failed') {
           const errCode = status.errors?.[0]?.code
@@ -240,6 +243,11 @@ async function processMessage(msg: any, value: any, inboxId: string) {
     .select('id')
     .single()
 
+  // Resposta via botão de template de campanha → marca replied_at no destinatário.
+  if (msgType === 'button' && message) {
+    await markCampaignReply(msg)
+  }
+
   // Atualizar conversa
   await supabase
     .from('chat_conversations')
@@ -277,6 +285,39 @@ async function processMessage(msg: any, value: any, inboxId: string) {
       },
     })
   }
+}
+
+// ── Indicadores de campanha (delivered/read/replied) ─────────────────────────
+// Propaga o status da Meta para o destinatário de campanha, casando por wa_message_id.
+// Idempotente (timestamp só se null) e monotônico (nunca rebaixa o status).
+async function propagateCampaignStatus(waMessageId: string, waStatus: string) {
+  if (!waMessageId) return
+  const now = new Date().toISOString()
+  const T = () => supabase.from('chat_campaign_recipients')
+
+  if (waStatus === 'delivered') {
+    await T().update({ delivered_at: now }).eq('wa_message_id', waMessageId).is('delivered_at', null)
+    await T().update({ status: 'delivered' }).eq('wa_message_id', waMessageId).eq('status', 'sent')
+  } else if (waStatus === 'read') {
+    await T().update({ read_at: now }).eq('wa_message_id', waMessageId).is('read_at', null)
+    await T().update({ delivered_at: now }).eq('wa_message_id', waMessageId).is('delivered_at', null)
+    await T().update({ status: 'read' }).eq('wa_message_id', waMessageId).in('status', ['sent', 'delivered'])
+  } else if (waStatus === 'failed') {
+    await T().update({ status: 'failed' }).eq('wa_message_id', waMessageId).eq('status', 'sent')
+  }
+}
+
+// Marca replied_at quando o cliente clica no botão DO template da campanha.
+// A resposta de botão traz context.id = id da mensagem que está respondendo (o
+// template enviado). O destinatário guarda esse mesmo id em wa_message_id — casa
+// exatamente e ignora cliques em botões de cobrança (context.id de outra mensagem).
+async function markCampaignReply(msg: any) {
+  const ctxId = msg?.context?.id
+  if (!ctxId) return
+  await supabase.from('chat_campaign_recipients')
+    .update({ replied_at: new Date().toISOString() })
+    .eq('wa_message_id', ctxId)
+    .is('replied_at', null)
 }
 
 // ── Tratamento de reações ────────────────────────────────────────────────────
