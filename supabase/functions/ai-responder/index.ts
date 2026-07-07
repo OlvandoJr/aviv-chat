@@ -1391,9 +1391,18 @@ async function matchTriggerSubagent(conversationId: string, inMsg: any): Promise
     .gte('created_at', since).order('created_at', { ascending: false }).limit(1).maybeSingle()
   const campaignId = tmsg?.metadata?.campaign_id
   if (!campaignId) return null
-  const { data: camp } = await supabase.from('chat_campaigns').select('reply_flow').eq('id', campaignId).maybeSingle()
-  const replyFlow = camp?.reply_flow
-  if (!replyFlow) return null
+  const { data: camp } = await supabase.from('chat_campaigns')
+    .select('reply_flow, template_id').eq('id', campaignId).maybeSingle()
+  if (!camp) return null
+
+  // Nome do template da campanha — permite reconhecer o fluxo pelo TEMPLATE,
+  // não só pela flag reply_flow (que não é setada em toda campanha).
+  let tplName = ''
+  if (camp.template_id) {
+    const { data: tpl } = await supabase.from('chat_wa_templates')
+      .select('name').eq('id', camp.template_id).maybeSingle()
+    tplName = String(tpl?.name || '').toLowerCase()
+  }
 
   const { data: subs } = await supabase.from('chat_subagents')
     .select('*').eq('is_active', true).not('trigger', 'is', null)
@@ -1401,7 +1410,10 @@ async function matchTriggerSubagent(conversationId: string, inMsg: any): Promise
   for (const s of subs || []) {
     const trg = s.trigger || {}
     if (trg.kind !== 'campaign_reply') continue
-    if (trg.reply_flow && trg.reply_flow !== replyFlow) continue
+    // A campanha casa por reply_flow OU pelo template (substring configurável).
+    const flowOk = trg.reply_flow && camp.reply_flow === trg.reply_flow
+    const tplOk  = trg.template_match && tplName.includes(String(trg.template_match).toLowerCase())
+    if (!flowOk && !tplOk) continue
     const buttons: string[] = Array.isArray(trg.buttons) ? trg.buttons : []
     if (inMsg.type === 'button' && (buttons.length === 0 || buttons.some((b) => content.includes(String(b).toLowerCase())))) {
       return s
