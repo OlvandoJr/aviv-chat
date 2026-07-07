@@ -1494,7 +1494,7 @@ async function sendPlainText(
   else { console.error('sendPlainText erro', resp.status, await resp.text().catch(() => '')); return false }
   await supabase.from('chat_messages').insert({
     conversation_id: conversationId, wa_message_id: waMessageId, direction: 'out', type: 'text',
-    content: body, metadata: { sent_by: 'bot', via: 'send_message' },
+    content: body, metadata: { sent_by: 'bot', via: 'flow' },
   })
   await supabase.from('chat_conversations').update({
     last_message_at: new Date().toISOString(), last_message_preview: body.slice(0, 120),
