@@ -23,7 +23,7 @@ BEGIN
       '{{env.CV_BASE_URL}}/api/v1/comercial/reservas',
       'none',
       '[{"key":"email","value":"{{env.CV_EMAIL}}","enabled":true},{"key":"token","value":"{{env.CV_TOKEN}}","enabled":true}]'::jsonb,
-      '[{"key":"documento","value":"{{variables.cpf}}","enabled":true},{"key":"apenas_ativas","value":"true","enabled":true}]'::jsonb,
+      '[{"key":"documento","value":"{{variables.cpf}}","enabled":true},{"key":"situacao","value":"todas","enabled":true}]'::jsonb,
       'none', true
     ) RETURNING id INTO v_api;
   END IF;
