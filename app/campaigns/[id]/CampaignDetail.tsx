@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2 } from 'lucide-react'
+import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2, CheckCheck, Eye, Reply } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const STATUS_LABEL: Record<string, string> = {
@@ -56,6 +56,11 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
   const editavel = ['draft', 'scheduled', 'paused'].includes(camp.status)
 
   const pct = camp.total ? Math.round(((camp.sent + camp.failed) / camp.total) * 100) : 0
+
+  // Indicadores de entrega/leitura/resposta — calculados dos recipients (mantidos vivos por realtime).
+  const recebidas    = recipients.filter(r => r.delivered_at || r.read_at).length
+  const visualizadas = recipients.filter(r => r.read_at).length
+  const respondidas  = recipients.filter(r => r.replied_at).length
 
   return (
     <>
@@ -110,10 +115,13 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
         <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
           <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
         </div>
-        <div className="flex gap-6 mt-4 text-sm">
+        <div className="flex flex-wrap gap-x-6 gap-y-2 mt-4 text-sm">
           <span className="flex items-center gap-1.5 text-emerald-600"><CheckCircle2 className="w-4 h-4" /> {camp.sent} enviados</span>
           <span className="flex items-center gap-1.5 text-red-500"><XCircle className="w-4 h-4" /> {camp.failed} falhas</span>
           <span className="flex items-center gap-1.5 text-gray-400"><Clock className="w-4 h-4" /> {camp.total - camp.sent - camp.failed} pendentes</span>
+          <span className="flex items-center gap-1.5 text-emerald-600"><CheckCheck className="w-4 h-4" /> {recebidas} recebidas</span>
+          <span className="flex items-center gap-1.5 text-blue-600"><Eye className="w-4 h-4" /> {visualizadas} visualizadas</span>
+          <span className="flex items-center gap-1.5 text-violet-600"><Reply className="w-4 h-4" /> {respondidas} respondidas</span>
         </div>
       </div>
 
@@ -128,7 +136,10 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
                 <span className="text-gray-400 ml-2 text-xs">{r.wa_id}</span>
                 {r.error && <p className="text-xs text-red-500 truncate max-w-md">{r.error}</p>}
               </div>
-              <RecipientStatus status={r.status} />
+              <div className="flex items-center gap-2 shrink-0">
+                {r.replied_at && <span className="text-xs font-medium text-violet-600">Respondida</span>}
+                <RecipientStatus status={r.status} />
+              </div>
             </div>
           ))}
         </div>

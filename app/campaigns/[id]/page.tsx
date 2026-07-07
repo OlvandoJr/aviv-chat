@@ -18,7 +18,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
   const { data: recipients } = await supabase
     .from('chat_campaign_recipients')
-    .select('id, wa_id, name, status, error, sent_at')
+    .select('id, wa_id, name, status, error, sent_at, delivered_at, read_at, replied_at')
     .eq('campaign_id', id)
     .order('created_at', { ascending: true })
     .limit(1000)
