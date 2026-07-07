@@ -57,11 +57,11 @@ export interface Contact {
 
 export type AttendantRole   = 'admin' | 'manager' | 'agent'
 export type AttendantSector =
-  | 'Financeiro' | 'Contabilidade' | 'Fiscal'
+  | 'Atendimento' | 'Financeiro' | 'Contabilidade' | 'Fiscal'
   | 'Comercial/Marketing' | 'Engenharia' | 'Arquitetura'
 
 export const ATTENDANT_SECTORS: AttendantSector[] = [
-  'Financeiro', 'Contabilidade', 'Fiscal',
+  'Atendimento', 'Financeiro', 'Contabilidade', 'Fiscal',
   'Comercial/Marketing', 'Engenharia', 'Arquitetura',
 ]
 
