@@ -112,14 +112,22 @@ async function processCampaign(camp: any) {
     headerMedia = { link: signed.signedUrl, filename: camp.header_media_filename || undefined }
   }
 
-  // Lote de pendentes ainda não reservados (ou com reserva travada há >10min = crash).
+  // Reservas travadas há >10min (execução que morreu no meio) voltam a ficar
+  // reclamáveis. Usamos .lt (filtro simples) porque .or() NÃO funciona em UPDATE
+  // no PostgREST — casa 0 linhas — só em SELECT.
   const staleISO = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+  await admin.from('chat_campaign_recipients')
+    .update({ claimed_at: null })
+    .eq('campaign_id', camp.id).eq('status', 'pending')
+    .lt('claimed_at', staleISO)
+
+  // Lote de pendentes ainda não reservados.
   const { data: recipients } = await admin
     .from('chat_campaign_recipients')
     .select('id, wa_id, name, variables, boleto_pdf_path')
     .eq('campaign_id', camp.id)
     .eq('status', 'pending')
-    .or(`claimed_at.is.null,claimed_at.lt.${staleISO}`)
+    .is('claimed_at', null)
     .limit(BATCH)
 
   let sent = 0, failed = 0
@@ -131,7 +139,7 @@ async function processCampaign(camp: any) {
       .from('chat_campaign_recipients')
       .update({ claimed_at: new Date().toISOString() })
       .eq('id', r.id).eq('status', 'pending')
-      .or(`claimed_at.is.null,claimed_at.lt.${staleISO}`)
+      .is('claimed_at', null)
       .select('id').maybeSingle()
     if (!claim) continue   // já reservado por outra execução — não reenvia
 
