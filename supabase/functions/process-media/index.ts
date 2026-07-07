@@ -835,12 +835,26 @@ async function analyzeImage(
 
   // Sinaliza a conversa para VALIDAÇÃO DE COMPROVANTE quando o veredito não foi
   // "100% válido" (e não está pago). Mostra a tag + alimenta o filtro na lista.
-  const needsHuman = siengeStatus !== 'pago' && !/100\s*%?\s*v[aá]lid/i.test(verdict || '')
+  const needsHuman = siengeStatus !== 'pago' && receiptNeedsHuman(verdict)
   await supabase.from('chat_conversations').update({ receipt_validation: needsHuman }).eq('id', convId)
 
   // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ─────
   const sglMsgId = await markSglComprovante(waId, extractedData, !boleto || boleto._source === 'sgl')
   await runWriteOps(sub.id, writeVars(waId, extractedData, verdict, boleto, siengeStatus, { sgl_msg_id: sglMsgId }))
+}
+
+// Decide se o comprovante precisa de VALIDAÇÃO HUMANA a partir do veredito.
+// Alinhado ao limiar do bot (≥80% = válido → confirma baixa, sem tag). O veredito
+// tem o formato "Comprovante X% válido…" — lemos a porcentagem. Sem % explícita,
+// só dispensa humano se o texto disser claramente "válido" (e não "inválido"/"não é
+// comprovante").
+function receiptNeedsHuman(verdict: string): boolean {
+  const v = String(verdict || '')
+  const m = v.match(/(\d{1,3})\s*%/)
+  if (m) return Number(m[1]) < 80
+  const dizValido   = /\bv[aá]lid[oa]\b/i.test(v)
+  const dizProblema = /\binv[aá]lid|n[ãa]o\s+(?:é|e)\s+comprovante|parcial/i.test(v)
+  return !dizValido || dizProblema
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -984,7 +998,7 @@ async function analyzePdf(
     }).eq('id', messageId)
 
     // Sinaliza VALIDAÇÃO DE COMPROVANTE (veredito não "100% válido" e não pago).
-    const needsHuman = siengeStatus !== 'pago' && !/100\s*%?\s*v[aá]lid/i.test(verdict || '')
+    const needsHuman = siengeStatus !== 'pago' && receiptNeedsHuman(verdict)
     await supabase.from('chat_conversations').update({ receipt_validation: needsHuman }).eq('id', convId)
 
     // ── Operações de escrita configuradas (ex.: atualizar status do boleto) ───
