@@ -636,7 +636,8 @@ function buildSiengeContext(boleto: any): string {
     `- Vencimento: ${dueDate}`,
     '',
     'REGRAS DE CONFERÊNCIA:',
-    '- VALOR: este "Valor esperado" já é o valor REAL do boleto (com juros/multa). Considere PAGO quando o valor do comprovante for igual ou MAIOR que o esperado (acréscimos são normais). Pequenas diferenças para mais NÃO são divergência.',
+    '- VALOR: compare o valor do comprovante com o "Valor esperado". Só é OK quando for EXATAMENTE igual. Qualquer diferença — para MAIOR ou para MENOR — é divergência de valor (não trate acréscimo como OK). Nunca invente valores.',
+    '- VENCIMENTO: NÃO use a data de vencimento no veredito e NUNCA invente datas — a data de pagamento costuma diferir do vencimento.',
     '- PAGADOR: aceite nome PARCIAL/CONTIDO e ignore acentos/maiúsculas (ex.: "MARIA DA SILVA SANTOS" casa com "MARIA DA SILVA"). Terceiro pagando (nome diferente) é comum e NÃO invalida o pagamento — registre, mas não trate como divergência grave.',
   ].join('\n')
 }
@@ -820,6 +821,8 @@ async function analyzeImage(
     console.error('Image validation failed:', verdictResp.status, await verdictResp.text())
   }
 
+  verdict = valueGuardVerdict(verdict, extractedData.valor, boleto)
+
   await supabase.from('chat_messages').update({
     ai_analysis: {
       ...extractedData,
@@ -855,6 +858,25 @@ function receiptNeedsHuman(verdict: string): boolean {
   const dizValido   = /\bv[aá]lid[oa]\b/i.test(v)
   const dizProblema = /\binv[aá]lid|n[ãa]o\s+(?:é|e)\s+comprovante|parcial/i.test(v)
   return !dizValido || dizProblema
+}
+
+// Trava determinística: se o VALOR do comprovante confere com o boleto casado na
+// base (igual ou maior — acréscimos/juros são normais), o pagamento É válido.
+// Sobrepõe vereditos do LLM que rebaixam por divergências inventadas (ex.: data de
+// vencimento alucinada). Só atua quando há boleto casado (beneficiário/cliente já
+// identificado pelo lookup). Assim comprovantes que batem não viram pendência falsa.
+function valueGuardVerdict(verdict: string, valorComprov: any, boleto: any): string {
+  if (!boleto || boleto.amount == null) return verdict
+  const c = parseMoney(valorComprov)
+  const b = Number(boleto.amount) || 0
+  if (c <= 0 || b <= 0) return verdict
+  // Regra do negócio: valor EXATAMENTE igual = ok (100% nesse critério, com o
+  // boleto/beneficiário já casado na base → válido). Qualquer diferença (para
+  // MAIOR ou para MENOR) = divergência de valor → no máximo 50% (validação humana).
+  if (Math.abs(c - b) <= 0.01) {
+    return 'Comprovante 100% válido: valor pago igual ao boleto da base e beneficiário identificado. Sem necessidade de validação humana.'
+  }
+  return 'Comprovante 50% válido: valor pago diferente do esperado na base (para maior ou menor). Recomenda-se validação humana.'
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -982,6 +1004,8 @@ async function analyzePdf(
     } else {
       console.error('PDF analysis failed:', analysisResp.status, await analysisResp.text())
     }
+
+    verdict = valueGuardVerdict(verdict, extractedData.valor, boleto)
 
     // ── Salvar análise ────────────────────────────────────────────────────
     await supabase.from('chat_messages').update({
