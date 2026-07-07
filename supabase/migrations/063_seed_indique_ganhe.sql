@@ -74,14 +74,13 @@ BEGIN
       v_sub, NULL, 'Notificar corretor',
       'Envia um WhatsApp (template aprovado) ao corretor avisando da indicação do cliente.',
       'send_message',
-      ('{"channel":"whatsapp_cloud","message_type":"template","template_name":"indicacao_corretor",'
+      ('{"channel":"whatsapp_cloud","message_type":"template","template_name":"novo_lead_indique_ganhe",'
       || '"to_param":"telefone_corretor","name_param":"corretor_nome",'
-      || '"variables":["corretor_nome","cliente_nome","cliente_telefone","empreendimento"],'
+      || '"variables":["cliente_nome","cliente_wa_link"],'
       || '"parameters":['
       || '{"name":"telefone_corretor","type":"string","required":true,"description":"Telefone do corretor retornado pela consulta"},'
-      || '{"name":"corretor_nome","type":"string","required":true,"description":"Nome do corretor"},'
-      || '{"name":"cliente_nome","type":"string","required":true,"description":"Nome do cliente (titular)"},'
-      || '{"name":"empreendimento","type":"string","required":false,"description":"Empreendimento do cliente"}]}')::jsonb,
+      || '{"name":"corretor_nome","type":"string","required":false,"description":"Nome do corretor"},'
+      || '{"name":"cliente_nome","type":"string","required":true,"description":"Nome do cliente (titular)"}]}')::jsonb,
       true, 2
     );
   END IF;

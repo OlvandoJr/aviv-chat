@@ -1425,7 +1425,16 @@ async function executeSendMessage(
   const to = normalizeWaId(String(args[cfg.to_param || 'telefone'] || ''))
   if (!to || to.length < 12) return { ok: false, erro: 'telefone do destinatário inválido' }
 
-  const special: Record<string, string> = { cliente_telefone: formatBrPhone(env.clientWaId) }
+  // Variáveis automáticas do cliente atual (não dependem do modelo):
+  //   cliente_telefone → formatado p/ leitura
+  //   cliente_wa       → dígitos crus do wa_id
+  //   cliente_wa_link  → link wa.me que abre a conversa do cliente
+  const cliDigits = String(env.clientWaId || '').replace(/\D/g, '')
+  const special: Record<string, string> = {
+    cliente_telefone: formatBrPhone(env.clientWaId),
+    cliente_wa:       cliDigits,
+    cliente_wa_link:  cliDigits ? `https://wa.me/${cliDigits}` : '',
+  }
 
   const conv = await ensureConversation(
     supabase, env.inboxId, to, String(args[cfg.name_param || 'nome'] || '') || undefined, null,
