@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useTransition, useRef } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Search, Bell, Loader2, ChevronDown, FileCheck2, Check } from 'lucide-react'
+import { Search, Bell, Loader2, ChevronDown, FileCheck2, Check, Lock } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -32,10 +32,12 @@ export default function ConversationList() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [pendingCount,  setPendingCount]  = useState(0)
   const [receiptCount,  setReceiptCount]  = useState(0)
+  const [internalCount, setInternalCount] = useState(0)
   const [search,        setSearch]        = useState('')
   const [statuses,      setStatuses]      = useState<StatusFilter[]>(['open'])
   const [attendance,    setAttendance]    = useState<AttendanceFilter>('all')
   const [receiptOnly,   setReceiptOnly]   = useState(false)
+  const [internalOnly,  setInternalOnly]  = useState(false)
   const [loading,       setLoading]       = useState(true)
   const [isPending, startTransition]      = useTransition()
   const [optimisticId, setOptimisticId]   = useState<string | null>(null)
@@ -70,6 +72,8 @@ export default function ConversationList() {
       query = query.in('handled_by', ['human', 'pending_human'])
     }
     if (receiptOnly) query = query.eq('receipt_validation', true)
+    // Conversas internas (notificações a corretores) ficam ocultas por padrão.
+    query = internalOnly ? query.eq('is_internal', true) : query.eq('is_internal', false)
     if (search.trim()) query = query.ilike('contact.name', `%${search}%`)
 
     const { data } = await query
@@ -82,18 +86,21 @@ export default function ConversationList() {
 
     setConversations(list)
     setLoading(false)
-  }, [statuses, attendance, receiptOnly, search])
+  }, [statuses, attendance, receiptOnly, internalOnly, search])
 
   // Contadores globais (independentes dos filtros ativos)
   const fetchCounts = useCallback(async () => {
-    const [{ count: pend }, { count: rec }] = await Promise.all([
+    const [{ count: pend }, { count: rec }, { count: intern }] = await Promise.all([
       supabase.from('chat_conversations').select('id', { count: 'exact', head: true })
-        .eq('status', 'open').eq('handled_by', 'pending_human'),
+        .eq('status', 'open').eq('handled_by', 'pending_human').eq('is_internal', false),
       supabase.from('chat_conversations').select('id', { count: 'exact', head: true })
-        .eq('status', 'open').eq('receipt_validation', true),
+        .eq('status', 'open').eq('receipt_validation', true).eq('is_internal', false),
+      supabase.from('chat_conversations').select('id', { count: 'exact', head: true })
+        .eq('status', 'open').eq('is_internal', true),
     ])
     setPendingCount(pend || 0)
     setReceiptCount(rec || 0)
+    setInternalCount(intern || 0)
   }, [])
 
   useEffect(() => {
@@ -136,7 +143,7 @@ export default function ConversationList() {
           <div className="flex items-center gap-1.5 flex-wrap justify-end">
             {pendingCount > 0 && (
               <button
-                onClick={() => { setStatuses(['open']); setAttendance('human'); setReceiptOnly(false) }}
+                onClick={() => { setStatuses(['open']); setAttendance('human'); setReceiptOnly(false); setInternalOnly(false) }}
                 className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-700 text-[11px] font-semibold animate-pulse hover:bg-amber-100 transition-colors"
                 title="Ver conversas aguardando atendente"
               >
@@ -146,7 +153,7 @@ export default function ConversationList() {
             )}
             {receiptCount > 0 && (
               <button
-                onClick={() => { setStatuses(['open']); setReceiptOnly(true); setAttendance('all') }}
+                onClick={() => { setStatuses(['open']); setReceiptOnly(true); setAttendance('all'); setInternalOnly(false) }}
                 className={cn(
                   'flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition-colors',
                   receiptOnly
@@ -157,6 +164,21 @@ export default function ConversationList() {
               >
                 <FileCheck2 className="w-3 h-3" />
                 {receiptCount} comprovante
+              </button>
+            )}
+            {internalCount > 0 && (
+              <button
+                onClick={() => { setStatuses(['open']); setInternalOnly(true); setReceiptOnly(false); setAttendance('all') }}
+                className={cn(
+                  'flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition-colors',
+                  internalOnly
+                    ? 'bg-slate-600 border-slate-600 text-white'
+                    : 'bg-slate-50 border-slate-300 text-slate-600 hover:bg-slate-100'
+                )}
+                title="Ver conversas internas (notificações a corretores)"
+              >
+                <Lock className="w-3 h-3" />
+                {internalCount} internas
               </button>
             )}
           </div>
@@ -213,6 +235,18 @@ export default function ConversationList() {
             <span className="ml-1 text-violet-400">✕ limpar</span>
           </button>
         )}
+
+        {/* Filtro ativo de internas */}
+        {internalOnly && (
+          <button
+            onClick={() => setInternalOnly(false)}
+            className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-medium hover:bg-slate-200 transition-colors"
+          >
+            <Lock className="w-3 h-3" />
+            Filtrando: Internas (corretores)
+            <span className="ml-1 text-slate-400">✕ limpar</span>
+          </button>
+        )}
       </div>
 
       {/* Lista */}
@@ -231,7 +265,9 @@ export default function ConversationList() {
           </div>
         ) : conversations.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-400">
-            {receiptOnly ? 'Nenhuma conversa aguardando validação de comprovante.' : 'Nenhuma conversa encontrada.'}
+            {receiptOnly ? 'Nenhuma conversa aguardando validação de comprovante.'
+              : internalOnly ? 'Nenhuma conversa interna.'
+              : 'Nenhuma conversa encontrada.'}
           </div>
         ) : (
           conversations.map((conv) => (
@@ -396,7 +432,13 @@ function ConversationItem({
               Validação de comprovante
             </span>
           )}
-          {conv.handled_by === 'human' && (
+          {conv.is_internal && (
+            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 shrink-0 flex items-center gap-1">
+              <Lock className="w-2.5 h-2.5" />
+              Interna
+            </span>
+          )}
+          {conv.handled_by === 'human' && !conv.is_internal && (
             <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 shrink-0">
               Humano
             </span>

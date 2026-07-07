@@ -1452,8 +1452,10 @@ async function executeSendMessage(
     supabase, env.inboxId, to, String(args[cfg.name_param || 'nome'] || '') || undefined, null,
   )
   if (!conv) return { ok: false, erro: 'falha ao criar conversa do destinatário' }
-  // Destinatário é interno (corretor) → atendimento humano, o bot não responde por cima.
-  await supabase.from('chat_conversations').update({ handled_by: 'human' }).eq('id', conv.conversationId)
+  // Destinatário é interno (corretor) → atendimento humano + marca a conversa como
+  // INTERNA (fica oculta da lista de clientes; visível só no filtro "Internas").
+  await supabase.from('chat_conversations')
+    .update({ handled_by: 'human', is_internal: true }).eq('id', conv.conversationId)
 
   const inbox = { phone_number_id: env.phoneNumberId, access_token: env.accessToken }
 
