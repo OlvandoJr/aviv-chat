@@ -43,13 +43,22 @@ type DeleteState = {
   error: string | null
 }
 
+type AccessFields = {
+  accessOwn: boolean; accessAi: boolean; accessUnassigned: boolean
+  accessUserIds: string[]; accessSectors: string[]
+}
+
 type CreateForm = {
   name: string; email: string; password: string
   role: AttendantRole; sector: string; inboxIds: string[]
-}
+} & AccessFields
 
 type EditForm = {
   name: string; sector: string; role: AttendantRole; is_active: boolean; inboxIds: string[]
+} & AccessFields
+
+const ACCESS_DEFAULTS: AccessFields = {
+  accessOwn: true, accessAi: false, accessUnassigned: true, accessUserIds: [], accessSectors: [],
 }
 
 export default function AttendantsClient({ initialAttendants, currentUserRole, currentUserId, inboxes, memberships }: Props) {
@@ -128,7 +137,7 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
   }
 
   const [form, setForm] = useState<CreateForm>({
-    name: '', email: '', password: '', role: 'agent', sector: '', inboxIds: [],
+    name: '', email: '', password: '', role: 'agent', sector: '', inboxIds: [], ...ACCESS_DEFAULTS,
   })
 
   // Seletor de caixas de entrada (chips) — para Atendentes define O QUE eles veem;
@@ -149,6 +158,63 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
             </button>
           )
         })}
+      </div>
+    )
+  }
+
+  // Chips genéricos (usuários / setores)
+  function ChipPicker({ options, value, onChange, empty }: {
+    options: { id: string; label: string }[]; value: string[]; onChange: (v: string[]) => void; empty?: string
+  }) {
+    if (options.length === 0) return <p className="text-[11px] text-gray-400">{empty || '—'}</p>
+    return (
+      <div className="flex flex-wrap gap-2">
+        {options.map((o) => {
+          const on = value.includes(o.id)
+          return (
+            <button type="button" key={o.id}
+              onClick={() => onChange(on ? value.filter((x) => x !== o.id) : [...value, o.id])}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${on ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}
+            >
+              {on ? '✓ ' : ''}{o.label}
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
+
+  // Config de acesso a conversas (só para role=agent; supervisores veem tudo)
+  function AccessConfig({ value, onPatch, selfId }: {
+    value: AccessFields; onPatch: (p: Partial<AccessFields>) => void; selfId?: string
+  }) {
+    const userOpts = attendants
+      .filter((a) => a.is_active && a.id !== selfId)
+      .map((a) => ({ id: a.id, label: a.name || a.email }))
+    const check = (label: string, k: keyof AccessFields, on: boolean) => (
+      <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+        <input type="checkbox" checked={on} onChange={(e) => onPatch({ [k]: e.target.checked } as Partial<AccessFields>)} className="accent-emerald-500" />
+        {label}
+      </label>
+    )
+    return (
+      <div className="space-y-2.5 rounded-lg border border-gray-100 bg-gray-50/60 p-3">
+        <div>
+          <p className="text-[11px] font-semibold text-gray-500 mb-1.5">Pode acessar</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {check('Suas conversas', 'accessOwn', value.accessOwn)}
+            {check('Conversas de Agentes de IA', 'accessAi', value.accessAi)}
+            {check('Conversas não atribuídas', 'accessUnassigned', value.accessUnassigned)}
+          </div>
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold text-gray-500 mb-1.5">Outras conversas · Usuários</p>
+          <ChipPicker options={userOpts} value={value.accessUserIds} onChange={(v) => onPatch({ accessUserIds: v })} empty="Nenhum outro usuário ativo." />
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold text-gray-500 mb-1.5">Outras conversas · Setores</p>
+          <ChipPicker options={SECTORS.map((s) => ({ id: s, label: s }))} value={value.accessSectors} onChange={(v) => onPatch({ accessSectors: v })} />
+        </div>
       </div>
     )
   }
@@ -175,14 +241,18 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
     setAttendants((prev) => [result.attendant, ...prev])
     setMembers((prev) => ({ ...prev, [result.attendant.id]: form.inboxIds }))
     setShowForm(false)
-    setForm({ name: '', email: '', password: '', role: 'agent', sector: '', inboxIds: [] })
+    setForm({ name: '', email: '', password: '', role: 'agent', sector: '', inboxIds: [], ...ACCESS_DEFAULTS })
     setLoading(false)
   }
 
   // ── Editar ─────────────────────────────────────────────────────────────────
   function startEdit(a: Attendant) {
     setEditingId(a.id)
-    setEditForm({ name: a.name || '', sector: a.sector || '', role: a.role, is_active: a.is_active, inboxIds: members[a.id] || [] })
+    setEditForm({
+      name: a.name || '', sector: a.sector || '', role: a.role, is_active: a.is_active, inboxIds: members[a.id] || [],
+      accessOwn: a.access_own ?? true, accessAi: a.access_ai ?? false, accessUnassigned: a.access_unassigned ?? true,
+      accessUserIds: a.access_user_ids || [], accessSectors: a.access_sectors || [],
+    })
   }
 
   function cancelEdit() { setEditingId(null); setEditForm(null) }
@@ -371,10 +441,16 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
               <InboxPicker value={form.inboxIds} onChange={(v) => setForm({ ...form, inboxIds: v })} />
               <p className="text-[11px] text-gray-400 mt-1">
                 {form.role === 'agent'
-                  ? 'O Atendente só vê conversas das caixas vinculadas (as dele + as sem responsável).'
-                  : 'Administradores e Gerentes veem todas as caixas — o vínculo é apenas informativo.'}
+                  ? 'O Atendente vê conversas das caixas vinculadas, conforme o acesso abaixo.'
+                  : 'Administradores e Gerentes veem todas as conversas — vínculo e acesso são apenas informativos.'}
               </p>
             </div>
+            {form.role === 'agent' && (
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Acesso a conversas</label>
+                <AccessConfig value={form} onPatch={(p) => setForm({ ...form, ...p })} />
+              </div>
+            )}
             {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button type="submit" size="sm" disabled={loading}>
@@ -439,6 +515,12 @@ export default function AttendantsClient({ initialAttendants, currentUserRole, c
                     <label className="block text-[11px] font-medium text-gray-500 mb-1">Caixas de entrada</label>
                     <InboxPicker value={editForm.inboxIds} onChange={(v) => setEditForm({ ...editForm, inboxIds: v })} />
                   </div>
+                  {editForm.role === 'agent' && (
+                    <div>
+                      <label className="block text-[11px] font-medium text-gray-500 mb-1">Acesso a conversas</label>
+                      <AccessConfig value={editForm} onPatch={(p) => setEditForm({ ...editForm, ...p })} selfId={a.id} />
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Button size="sm" disabled={loading} onClick={() => saveEdit(a)}>
                       <Check className="w-3.5 h-3.5 mr-1" />
