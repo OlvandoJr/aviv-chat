@@ -55,13 +55,16 @@ export default function ConversationList() {
 
   const fetchConversations = useCallback(async () => {
     const activeStatuses = statuses.length ? statuses : ['open']
+    const searching = search.trim()
+    // Ao buscar, o join do contato vira !inner — só assim o filtro por nome
+    // FILTRA as conversas. Com left join (padrão), o PostgREST apenas anula o
+    // contato ("Desconhecido") e mantém a linha, retornando tudo.
+    const contactEmbed = searching
+      ? 'contact:chat_contacts!inner(id, wa_id, name, profile_picture_url)'
+      : 'contact:chat_contacts(id, wa_id, name, profile_picture_url)'
     let query = supabase
       .from('chat_conversations')
-      .select(`
-        *,
-        contact:chat_contacts(id, wa_id, name, profile_picture_url),
-        assignee:chat_attendants(id, name, avatar_url)
-      `)
+      .select(`*, ${contactEmbed}, assignee:chat_attendants(id, name, avatar_url)`)
       .in('status', activeStatuses)
       .order('last_message_at', { ascending: false })
       .limit(50)
@@ -74,7 +77,7 @@ export default function ConversationList() {
     if (receiptOnly) query = query.eq('receipt_validation', true)
     // Conversas internas (notificações a corretores) ficam ocultas por padrão.
     query = internalOnly ? query.eq('is_internal', true) : query.eq('is_internal', false)
-    if (search.trim()) query = query.ilike('contact.name', `%${search}%`)
+    if (searching) query = query.ilike('contact.name', `%${searching}%`)
 
     const { data } = await query
     const list = (data as Conversation[]) || []
