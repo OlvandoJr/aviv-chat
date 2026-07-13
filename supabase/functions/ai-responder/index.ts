@@ -756,10 +756,40 @@ Deno.serve(async (req) => {
       openAiMessages.push({ role: 'user', content: 'Olá' })
     }
 
+    // ── 7b. Botão determinístico → subagente on_demand ─────────────────────────
+    // Botões de template (ex.: "Agendar Pagamento." da régua) NÃO dependem do LLM
+    // decidir delegar — roteiam DIRETO para o subagente cujo trigger casa
+    // (trigger.kind='button', buttons=[substrings]). Sem isso, o principal às
+    // vezes respondia por conta própria e "confirmava" agendamento sem ferramenta.
+    let buttonSub: any = null
+    const lastInMsg = [...history].reverse().find((m: any) => m.direction === 'in')
+    if (lastInMsg?.type === 'button') {
+      const btnText = String(lastInMsg.content || '').toLowerCase()
+      for (const sub of Object.values(onDemandSubs)) {
+        const trg = (sub as any).trigger || {}
+        if (trg.kind !== 'button') continue
+        const buttons: string[] = Array.isArray(trg.buttons) ? trg.buttons : []
+        if (buttons.some((b) => btnText.includes(String(b).toLowerCase()))) {
+          buttonSub = sub
+          break
+        }
+      }
+    }
+
     // ── 8. Chamar OpenAI ──────────────────────────────────────────────────────
     let botReply = ''
 
-    if (!OPENAI_API_KEY) {
+    if (buttonSub) {
+      console.log(`Button route → subagente "${buttonSub.name}" (trigger kind=button)`)
+      botReply = await runSubagent(buttonSub, {
+        conv, contact, contactWaId, boletos, capturedAttrs,
+        phoneNumberId, accessToken, conversationId,
+        history, customerContext,
+        pedido: String(lastInMsg?.content || ''),
+        fallbackModel: model, temperature, maxTokens,
+        firstTool: (buttonSub.trigger as any)?.first_tool || null,
+      })
+    } else if (!OPENAI_API_KEY) {
       console.error('CRITICAL: OPENAI_API_KEY vazio!')
       botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
     } else {
@@ -1238,6 +1268,12 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
   for (let round = 0; round < 4; round++) {
     const body: any = { model, max_completion_tokens: ctx.maxTokens, temperature: ctx.temperature, messages }
     if (tools.length) { body.tools = tools; body.tool_choice = 'auto' }
+    // Primeira rodada com ferramenta OBRIGATÓRIA (trigger.first_tool): garante,
+    // por exemplo, que o Agendador SEMPRE calcule/ofereça as datas antes de
+    // responder — sem depender do modelo decidir chamar a ferramenta.
+    if (round === 0 && ctx.firstTool && tools.some((t: any) => t.function?.name === ctx.firstTool)) {
+      body.tool_choice = { type: 'function', function: { name: ctx.firstTool } }
+    }
 
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
