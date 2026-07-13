@@ -781,14 +781,28 @@ Deno.serve(async (req) => {
 
     if (buttonSub) {
       console.log(`Button route → subagente "${buttonSub.name}" (trigger kind=button)`)
-      botReply = await runSubagent(buttonSub, {
+      // Abre o FLUXO ativo: as PRÓXIMAS mensagens (ex.: a data escolhida) caem
+      // direto neste subagente via routeSubagentFlow, sem depender do LLM
+      // re-delegar — era aí que o agendamento se perdia ("agendado" sem registrar).
+      await supabase.from('chat_active_flows').upsert({
+        conversation_id: conversationId, subagent_id: buttonSub.id, status: 'active',
+        updated_at: new Date().toISOString(),
+      })
+      const subCtx: any = {
         conv, contact, contactWaId, boletos, capturedAttrs,
         phoneNumberId, accessToken, conversationId,
         history, customerContext,
         pedido: String(lastInMsg?.content || ''),
         fallbackModel: model, temperature, maxTokens,
         firstTool: (buttonSub.trigger as any)?.first_tool || null,
-      })
+      }
+      botReply = await runSubagent(buttonSub, subCtx)
+      // Ferramenta terminal rodou (ex.: agendamento registrado) ou escalou → fecha o fluxo.
+      if (subCtx._terminalDone || (typeof botReply === 'string' && botReply.startsWith('ESCALAR_HUMANO'))) {
+        await supabase.from('chat_active_flows')
+          .update({ status: 'done', updated_at: new Date().toISOString() })
+          .eq('conversation_id', conversationId)
+      }
     } else if (!OPENAI_API_KEY) {
       console.error('CRITICAL: OPENAI_API_KEY vazio!')
       botReply = 'Olá! Recebi sua mensagem. Nossa equipe está analisando e retornará em breve. 😊'
@@ -1302,6 +1316,7 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
             const parsed = JSON.parse(result)
             if (parsed?.escalate) return `ESCALAR_HUMANO: ${parsed.reason || 'agendamento fora das regras'}`
           } catch { /* ignore */ }
+          markTerminal(ctx, sub, { name }, result)
         } else if (apiFns[name]) {
           const apiTool = apiFns[name]
           const cpfAttr   = Object.values(ctx.capturedAttrs || {}).find((a: any) => a.fieldType === 'cpf_cnpj') as any
@@ -1367,9 +1382,18 @@ async function routeSubagentFlow(env: {
   // 1) Fluxo já ativo nesta conversa? → roda o subagente dono do fluxo.
   let sub: any = null
   const { data: flow } = await supabase
-    .from('chat_active_flows').select('subagent_id, status')
+    .from('chat_active_flows').select('subagent_id, status, updated_at')
     .eq('conversation_id', conversationId).eq('status', 'active').maybeSingle()
   if (flow) {
+    // Fluxo parado há mais de 48h → expira (não sequestra a conversa para sempre).
+    const age = Date.now() - new Date(flow.updated_at || 0).getTime()
+    if (age > 48 * 60 * 60 * 1000) {
+      await supabase.from('chat_active_flows').update({ status: 'done' }).eq('conversation_id', conversationId)
+      return false
+    }
+    // Mídia sem texto (comprovante, áudio…) não pertence ao fluxo — segue o
+    // pipeline normal; o fluxo continua ativo para a próxima mensagem de texto.
+    if (!text && inMsg.type !== 'button') return false
     const { data } = await supabase.from('chat_subagents')
       .select('*').eq('id', flow.subagent_id).eq('is_active', true).maybeSingle()
     if (!data) {
@@ -1377,6 +1401,8 @@ async function routeSubagentFlow(env: {
       return false
     }
     sub = data
+    // Mantém o fluxo "vivo" enquanto o cliente interage (janela de expiração).
+    await supabase.from('chat_active_flows').update({ updated_at: new Date().toISOString() }).eq('conversation_id', conversationId)
   } else {
     // 2) Gatilho de início (resposta de campanha com reply_flow).
     sub = await matchTriggerSubagent(conversationId, inMsg)
@@ -1460,10 +1486,15 @@ async function matchTriggerSubagent(conversationId: string, inMsg: any): Promise
   return null
 }
 
-// Marca o fluxo como concluído quando a ferramenta TERMINAL do subagente roda com ok.
+// Marca o fluxo como concluído quando a ferramenta TERMINAL do subagente roda com
+// sucesso (aceita {ok:true} das ferramentas send_message/api e {success:true} das
+// built-ins, ex.: confirmar_agendamento).
 function markTerminal(ctx: any, sub: any, tool: any, resultJson: string) {
   if (!sub?.terminal_tool || !tool?.name || tool.name !== sub.terminal_tool) return
-  try { if (JSON.parse(resultJson)?.ok) ctx._terminalDone = true } catch { /* ignore */ }
+  try {
+    const p = JSON.parse(resultJson)
+    if (p?.ok || p?.success) ctx._terminalDone = true
+  } catch { /* ignore */ }
 }
 
 // Ferramenta send_message: envia template/texto WhatsApp a um destinatário (3º).
