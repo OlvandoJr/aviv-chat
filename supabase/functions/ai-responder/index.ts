@@ -729,7 +729,9 @@ Deno.serve(async (req) => {
       } else if ((msg.type === 'image' || msg.type === 'document') && (msg.ai_analysis as any)) {
         const analysis = msg.ai_analysis as any
         if (analysis.nao_comprovante) {
-          content = `[Cliente enviou ${msg.type === 'image' ? 'uma imagem' : 'um documento'} — não identificado como comprovante de pagamento]`
+          content = analysis.doc_kind === 'boleto'
+            ? `[Cliente enviou um BOLETO/cobrança, NÃO um comprovante de pagamento. NÃO confirme pagamento nem baixa. Explique gentilmente que isso é o boleto (a cobrança) e peça que ele envie o COMPROVANTE do pagamento efetivado (PIX/transferência/pagamento realizado).]`
+            : `[Cliente enviou ${msg.type === 'image' ? 'uma imagem' : 'um documento'} — não identificado como comprovante de pagamento]`
         } else if (analysis.verdict) {
           content = `[Cliente enviou comprovante de pagamento]\nResultado da análise: ${analysis.verdict}`
         } else if (analysis.sienge_status) {
