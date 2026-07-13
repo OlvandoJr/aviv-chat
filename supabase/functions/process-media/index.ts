@@ -230,6 +230,23 @@ function normVenc(s: unknown): string {
   return ''
 }
 
+// TRAVA determinística: o documento é PROVA DE PAGAMENTO efetivado (comprovante) e
+// não uma cobrança (BOLETO)? Um boleto tem beneficiário/valor/vencimento/pagador
+// iguais a um comprovante — o único jeito seguro de distinguir é exigir sinal de
+// pagamento EFETIVADO. Confia primeiro na classificação do extrator
+// (tipo_documento / pagamento_efetuado) e só cai na data de pagamento como fallback
+// (boleto tem apenas vencimento). Baixo falso-positivo: PIX/TED/pagamento de boleto
+// sempre trazem data/autenticação. Ver plano "Bloquear boleto como comprovante".
+function isPaymentProof(d: any): boolean {
+  const tipo = String(d?.tipo_documento || '').toLowerCase()
+  if (tipo.startsWith('boleto') || tipo.startsWith('cobran')) return false
+  if (d?.pagamento_efetuado === false) return false
+  if (d?.pagamento_efetuado === true)  return true
+  if (tipo === 'comprovante') return true
+  // Prompt antigo / parse falho: exige data de pagamento válida (boleto só tem vencimento).
+  return !!normVenc(d?.data_pagamento)
+}
+
 // Acha a parcela SGL (mensagens_cobranca) que o comprovante quita — casa por
 // VENCIMENTO do comprovante, senão por VALOR mais próximo, senão a mais vencida.
 // Se doUpdate, marca TODAS as linhas dessa parcela como comprovante_recebido
@@ -765,10 +782,18 @@ async function analyzeImage(
     console.error('Image extraction failed:', extractResp.status, await extractResp.text())
   }
 
-  // Não é comprovante — salvar e sair
-  if (extractedData.nao_comprovante) {
+  // Não é comprovante (ou é um BOLETO/cobrança, não prova de pagamento) — salvar e
+  // sair ANTES de qualquer baixa. Bloqueia o caso do cliente mandar o boleto e o bot
+  // dar baixa indevida. O bot pede o comprovante (doc_kind='boleto' → hint no ai-responder).
+  if (extractedData.nao_comprovante || !isPaymentProof(extractedData)) {
+    const isBoleto = !extractedData.nao_comprovante
     await supabase.from('chat_messages').update({
-      ai_analysis: { nao_comprovante: true, validated_at: new Date().toISOString() },
+      ai_analysis: {
+        ...extractedData,
+        nao_comprovante: true,
+        doc_kind:        isBoleto ? 'boleto' : 'outro',
+        validated_at:    new Date().toISOString(),
+      },
     }).eq('id', messageId)
     return
   }
@@ -821,7 +846,7 @@ async function analyzeImage(
     console.error('Image validation failed:', verdictResp.status, await verdictResp.text())
   }
 
-  verdict = valueGuardVerdict(verdict, extractedData.valor, boleto)
+  verdict = valueGuardVerdict(verdict, extractedData.valor, boleto, extractedData)
 
   await supabase.from('chat_messages').update({
     ai_analysis: {
@@ -865,7 +890,11 @@ function receiptNeedsHuman(verdict: string): boolean {
 // Sobrepõe vereditos do LLM que rebaixam por divergências inventadas (ex.: data de
 // vencimento alucinada). Só atua quando há boleto casado (beneficiário/cliente já
 // identificado pelo lookup). Assim comprovantes que batem não viram pendência falsa.
-function valueGuardVerdict(verdict: string, valorComprov: any, boleto: any): string {
+function valueGuardVerdict(verdict: string, valorComprov: any, boleto: any, extractedData?: any): string {
+  // Defesa em profundidade: nunca promover a 100% se o documento não for prova de
+  // pagamento (ex.: boleto). O gate acima já barra antes, mas isto protege caso o
+  // fluxo seja alterado/contornado por config futura.
+  if (extractedData && !isPaymentProof(extractedData)) return verdict
   if (!boleto || boleto.amount == null) return verdict
   const c = parseMoney(valorComprov)
   const b = Number(boleto.amount) || 0
@@ -949,9 +978,15 @@ async function analyzePdf(
     }
 
     // Não é comprovante — salvar e sair
-    if (extractedData.nao_comprovante) {
+    if (extractedData.nao_comprovante || !isPaymentProof(extractedData)) {
+      const isBoleto = !extractedData.nao_comprovante
       await supabase.from('chat_messages').update({
-        ai_analysis: { nao_comprovante: true, validated_at: new Date().toISOString() },
+        ai_analysis: {
+          ...extractedData,
+          nao_comprovante: true,
+          doc_kind:        isBoleto ? 'boleto' : 'outro',
+          validated_at:    new Date().toISOString(),
+        },
       }).eq('id', messageId)
       return
     }
@@ -1005,7 +1040,7 @@ async function analyzePdf(
       console.error('PDF analysis failed:', analysisResp.status, await analysisResp.text())
     }
 
-    verdict = valueGuardVerdict(verdict, extractedData.valor, boleto)
+    verdict = valueGuardVerdict(verdict, extractedData.valor, boleto, extractedData)
 
     // ── Salvar análise ────────────────────────────────────────────────────
     await supabase.from('chat_messages').update({
