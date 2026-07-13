@@ -319,11 +319,17 @@ export type SubagentTrigger = 'image' | 'document' | 'audio' | 'text'
 //   flow         = acionado por gatilho determinístico (roteador), ex.: Indique e Ganhe
 export type SubagentInvocation = 'auto_context' | 'on_media' | 'on_demand' | 'flow'
 
-// Gatilho de início de um subagente 'flow' (quando o roteador o aciona).
+// Gatilho de início de um subagente (quando o roteador o aciona).
+//   campaign_reply → fluxo iniciado por resposta de campanha (invocation='flow')
+//   button         → botão de template roteia DIRETO ao subagente on_demand
+//                    (ex.: "Agendar Pagamento." da régua → Agendador), sem
+//                    depender do LLM principal decidir delegar.
 export interface SubagentTriggerConfig {
-  kind:        'campaign_reply'
-  reply_flow?: string      // casa com chat_campaigns.reply_flow
-  buttons?:    string[]    // textos de botão que iniciam (substring, minúsculas)
+  kind:            'campaign_reply' | 'button'
+  reply_flow?:     string      // campaign_reply: casa com chat_campaigns.reply_flow
+  template_match?: string      // campaign_reply: substring do nome do template
+  buttons?:        string[]    // textos de botão que acionam (substring, minúsculas)
+  first_tool?:     string      // button: ferramenta OBRIGATÓRIA na 1ª rodada (ex.: calcular_datas_pagamento)
 }
 
 export interface Subagent {
