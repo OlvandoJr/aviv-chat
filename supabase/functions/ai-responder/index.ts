@@ -1300,7 +1300,9 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
     }
     const choice = (await resp.json()).choices?.[0]
 
-    if (choice?.finish_reason === 'tool_calls' && choice.message?.tool_calls?.length > 0) {
+    // Não confiar no finish_reason: com tool_choice FORÇADO (first_tool) a OpenAI
+    // retorna finish_reason='stop' mesmo havendo tool_calls — checar a presença.
+    if (choice?.message?.tool_calls?.length > 0) {
       messages.push(choice.message)
       for (const tc of choice.message.tool_calls) {
         const name = tc.function.name
