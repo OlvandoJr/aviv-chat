@@ -11,7 +11,7 @@
 // (distinguir recebimento total de adiantamento parcial) é OPCIONAL e só roda se
 // SIENGE_WEBHOOK_CONFIRM=true. Protegido por token (verify_jwt=false).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { mapCustomer, mapContrato, fetchSegundaVia, applyReceipt, propagateToEmitidos } from '../_shared/sienge.ts'
+import { mapCustomer, mapContrato, fetchSegundaVia, applyReceipt, propagateToEmitidos, cancelBills, isContratoCancelado } from '../_shared/sienge.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -73,8 +73,17 @@ async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: strin
     const id = Number(body?.salesContractId ?? body?.id)
     if (!id) return { event: ev || 'contract', matched: 0, note: 'sem id de contrato' }
     if (removed) {
+      // Distrato/remoção: cancela as cobranças do título ANTES de apagar o registro
+      // (depois de apagado perdemos o vínculo contrato → título).
+      const { data: old } = await supabase.from('sienge_contratos')
+        .select('receivable_bill_id').eq('contract_id', id).maybeSingle()
+      let extra = ''
+      if (old?.receivable_bill_id) {
+        const r = await cancelBills(supabase, [Number(old.receivable_bill_id)])
+        extra = ` — cobranças canceladas: ${r.parcelas} parcelas + ${r.emitidos} boletos`
+      }
       const { count } = await supabase.from('sienge_contratos').delete({ count: 'exact' }).eq('contract_id', id)
-      return { event: ev, matched: count || 0, note: 'contrato removido' }
+      return { event: ev, matched: count || 0, note: 'contrato removido' + extra }
     }
     let ct = body
     if (!Array.isArray(body?.salesContractCustomers)) {
@@ -82,8 +91,15 @@ async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: strin
       if (r.ok) ct = await r.json().then((j) => j?.results?.[0] ?? j)
     }
     ct.id = ct.id ?? id
-    const { error, count } = await supabase.from('sienge_contratos').upsert(mapContrato(ct), { onConflict: 'contract_id', count: 'exact' })
-    return { event: ev || 'sales_contract', matched: count || 0, note: error ? 'erro: ' + error.message : 'contrato upsert' }
+    const row = mapContrato(ct)
+    const { error, count } = await supabase.from('sienge_contratos').upsert(row, { onConflict: 'contract_id', count: 'exact' })
+    // DISTRATO via push: situação cancelada → cancela as cobranças do título na hora.
+    let extra = ''
+    if (isContratoCancelado(row.situation) && row.receivable_bill_id) {
+      const r = await cancelBills(supabase, [Number(row.receivable_bill_id)])
+      extra = ` — contrato CANCELADO: ${r.parcelas} parcelas + ${r.emitidos} boletos cancelados`
+    }
+    return { event: ev || 'sales_contract', matched: count || 0, note: (error ? 'erro: ' + error.message : 'contrato upsert') + extra }
   }
 
   // cliente

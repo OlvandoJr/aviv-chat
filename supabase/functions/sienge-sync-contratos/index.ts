@@ -1,15 +1,20 @@
 /**
- * sienge-sync-contratos — Edge Function (cron MENSAL, fallback)
+ * sienge-sync-contratos — Edge Function (cron DIÁRIO)
  *
  * Sincroniza os CONTRATOS DE VENDA do Sienge (GET /sales-contracts, paginado) para
  * public.sienge_contratos — traz empreendimento + unidade (quadra/lote) + vínculo
- * cliente/título. A atualização do dia a dia vem dos webhooks sales_contract_*;
- * este sync mensal é só reconciliação.
+ * cliente/título. Os webhooks sales_contract_* complementam em tempo real.
+ *
+ * DISTRATO: o Sienge NÃO envia webhook quando um contrato é distratado (caso
+ * Elielton, 07/2026 — a régua continuou cobrando). Por isso este sync roda
+ * DIARIAMENTE e, após gravar, PROPAGA: contratos com situação "Cancelado"
+ * têm as parcelas (sienge_boletos) e boletos (boletos_emitidos) do título
+ * cancelados — a régua para de cobrar em até 24h.
  *
  * Invocação: cron sem body. Manual: { dryRun?: boolean } → não grava, retorna amostra.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { SIENGE_BASE, siengeAuth, mapContrato } from '../_shared/sienge.ts'
+import { SIENGE_BASE, siengeAuth, mapContrato, cancelBills, isContratoCancelado } from '../_shared/sienge.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -59,8 +64,19 @@ Deno.serve(async (req) => {
       upserted += count ?? chunk.length
     }
 
+    // ── Propagar DISTRATO: contratos cancelados → cancelar cobranças do título ──
+    const canceladosBills = rows
+      .filter((r) => isContratoCancelado(r.situation))
+      .map((r) => Number(r.receivable_bill_id))
+      .filter((n) => n > 0)
+    const canceladas = await cancelBills(supabase, canceladosBills)
+
     const semCliente = rows.filter((r) => !r.client_id).length
-    const result = { ok: true, total_api: totalApi, upserted, sem_cliente: semCliente }
+    const result = {
+      ok: true, total_api: totalApi, upserted, sem_cliente: semCliente,
+      contratos_cancelados: canceladosBills.length,
+      cobrancas_canceladas: canceladas,
+    }
     console.log('sienge-sync-contratos:', JSON.stringify(result))
     return json(result)
   } catch (e) {
