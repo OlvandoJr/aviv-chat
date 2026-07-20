@@ -64,6 +64,43 @@ export async function propagateToEmitidos(admin: any, rows: any[], novoStatus: '
   }
 }
 
+// ── Cancelamento por DISTRATO/cancelamento de contrato ────────────────────────
+// Cancela TODAS as cobranças abertas dos títulos informados (parcelas em
+// sienge_boletos + boletos em boletos_emitidos) — a régua/views filtram
+// 'cancelado' e param de cobrar. Nunca toca em linhas pagas/já canceladas.
+// Usado pelo sync de contratos (diário) e pelo webhook sales_contract_*.
+// deno-lint-ignore no-explicit-any
+export async function cancelBills(admin: any, billIds: number[]): Promise<{ parcelas: number; emitidos: number }> {
+  const ids = [...new Set(billIds.map(Number).filter((n) => n > 0))]
+  const patch = { status: 'cancelado', updated_at: new Date().toISOString() }
+  let parcelas = 0, emitidos = 0
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100)
+    const { count: c1 } = await admin.from('sienge_boletos')
+      .update(patch, { count: 'exact' })
+      .in('receivable_bill_id', chunk)
+      .not('status', 'in', '("pago","cancelado")')
+    parcelas += c1 || 0
+    // boletos_emitidos: status pode ser NULL (= aberto) — NOT IN não pega NULL,
+    // então são duas passadas (lembrete: .or() não funciona em UPDATE).
+    const { count: c2 } = await admin.from('boletos_emitidos')
+      .update(patch, { count: 'exact' })
+      .in('receivable_bill_id', chunk)
+      .not('status', 'in', '("pago","cancelado")')
+    const { count: c2b } = await admin.from('boletos_emitidos')
+      .update(patch, { count: 'exact' })
+      .in('receivable_bill_id', chunk)
+      .is('status', null)
+    emitidos += (c2 || 0) + (c2b || 0)
+  }
+  return { parcelas, emitidos }
+}
+
+// Situação de contrato que significa distrato/cancelamento (Sienge: "Cancelado").
+export function isContratoCancelado(situation: unknown): boolean {
+  return /cancel|distrat/i.test(String(situation || ''))
+}
+
 // Fallback (consome cota): título não está na base → busca no Sienge, faz upsert em
 // sienge_boletos como pago e devolve {customer_id, due_date} p/ propagar aos emitidos.
 // deno-lint-ignore no-explicit-any
