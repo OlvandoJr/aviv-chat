@@ -34,6 +34,9 @@ export default function ConversationList() {
   const [receiptCount,  setReceiptCount]  = useState(0)
   const [internalCount, setInternalCount] = useState(0)
   const [search,        setSearch]        = useState('')
+  // Trecho da mensagem que casou com a busca (id da conversa → trecho), para o
+  // atendente entender POR QUE aquela conversa apareceu.
+  const [matches,       setMatches]       = useState<Record<string, string>>({})
   const [statuses,      setStatuses]      = useState<StatusFilter[]>(['open'])
   const [attendance,    setAttendance]    = useState<AttendanceFilter>('all')
   const [receiptOnly,   setReceiptOnly]   = useState(false)
@@ -56,28 +59,49 @@ export default function ConversationList() {
   const fetchConversations = useCallback(async () => {
     const activeStatuses = statuses.length ? statuses : ['open']
     const searching = search.trim()
-    // Ao buscar, o join do contato vira !inner — só assim o filtro por nome
-    // FILTRA as conversas. Com left join (padrão), o PostgREST apenas anula o
-    // contato ("Desconhecido") e mantém a linha, retornando tudo.
-    const contactEmbed = searching
-      ? 'contact:chat_contacts!inner(id, wa_id, name, profile_picture_url)'
-      : 'contact:chat_contacts(id, wa_id, name, profile_picture_url)'
+
+    // BUSCA: o nome do WhatsApp quase nunca é o nome do cadastro ("suflair" =
+    // ALESANDRO APARECIDO DE OLIVEIRA). A função search_conversations procura o
+    // termo no nome, no telefone E no CONTEÚDO das mensagens — o nome completo
+    // do cliente está no texto dos boletos que enviamos. Respeita a RLS.
+    let idsDaBusca: string[] | null = null
+    if (searching) {
+      const { data: hits } = await supabase.rpc('search_conversations', { _q: searching, _limit: 50 })
+      const rows = (hits as { conversation_id: string; match_snippet: string | null }[]) || []
+      idsDaBusca = rows.map((h) => h.conversation_id)
+      setMatches(Object.fromEntries(
+        rows.filter((h) => h.match_snippet).map((h) => [h.conversation_id, h.match_snippet as string]),
+      ))
+      if (idsDaBusca.length === 0) { setConversations([]); setLoading(false); return }
+    } else {
+      setMatches({})
+    }
+
     let query = supabase
       .from('chat_conversations')
-      .select(`*, ${contactEmbed}, assignee:chat_attendants(id, name, avatar_url)`)
-      .in('status', activeStatuses)
+      .select('*, contact:chat_contacts(id, wa_id, name, profile_picture_url), assignee:chat_attendants(id, name, avatar_url)')
       .order('last_message_at', { ascending: false })
       .limit(50)
 
-    if (attendance === 'bot') {
-      query = query.eq('handled_by', 'bot')
-    } else if (attendance === 'human') {
-      query = query.in('handled_by', ['human', 'pending_human'])
+    if (idsDaBusca) {
+      // Buscando: varre TODO o histórico (o caso de uso é justamente resgatar
+      // conversa antiga, que costuma estar resolvida/arquivada). Os filtros de
+      // status/atendimento valem para a navegação, não para a busca.
+      query = query.in('id', idsDaBusca)
+    } else {
+      query = query.in('status', activeStatuses)
     }
-    if (receiptOnly) query = query.eq('receipt_validation', true)
-    // Conversas internas (notificações a corretores) ficam ocultas por padrão.
-    query = internalOnly ? query.eq('is_internal', true) : query.eq('is_internal', false)
-    if (searching) query = query.ilike('contact.name', `%${searching}%`)
+
+    if (!idsDaBusca) {
+      if (attendance === 'bot') {
+        query = query.eq('handled_by', 'bot')
+      } else if (attendance === 'human') {
+        query = query.in('handled_by', ['human', 'pending_human'])
+      }
+      if (receiptOnly) query = query.eq('receipt_validation', true)
+      // Conversas internas (notificações a corretores) ficam ocultas por padrão.
+      query = internalOnly ? query.eq('is_internal', true) : query.eq('is_internal', false)
+    }
 
     const { data } = await query
     const list = (data as Conversation[]) || []
@@ -268,7 +292,8 @@ export default function ConversationList() {
           </div>
         ) : conversations.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-400">
-            {receiptOnly ? 'Nenhuma conversa aguardando validação de comprovante.'
+            {search.trim() ? `Nada encontrado para "${search.trim()}" — a busca cobre nome, telefone e o conteúdo das conversas.`
+              : receiptOnly ? 'Nenhuma conversa aguardando validação de comprovante.'
               : internalOnly ? 'Nenhuma conversa interna.'
               : 'Nenhuma conversa encontrada.'}
           </div>
@@ -277,6 +302,7 @@ export default function ConversationList() {
             <ConversationItem
               key={conv.id}
               conversation={conv}
+              matchSnippet={matches[conv.id]}
               active={conv.id === activeId}
               pending={isPending && conv.id === optimisticId}
               onClick={() => selectConversation(conv.id)}
@@ -348,16 +374,18 @@ function OptionRow({ label, checked, radio, onClick }: {
 
 function ConversationItem({
   conversation: conv,
+  matchSnippet,
   active,
   pending,
   onClick,
   onPrefetch,
 }: {
-  conversation: Conversation
-  active:       boolean
-  pending:      boolean
-  onClick:      () => void
-  onPrefetch:   () => void
+  conversation:  Conversation
+  matchSnippet?: string        // trecho da mensagem que casou com a busca
+  active:        boolean
+  pending:       boolean
+  onClick:       () => void
+  onPrefetch:    () => void
 }) {
   const contact     = conv.contact
   const name        = contact?.name || contact?.wa_id || 'Desconhecido'
@@ -408,9 +436,18 @@ function ConversationItem({
           </span>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <p className="text-xs text-gray-500 truncate">
-            {conv.last_message_preview || '—'}
-          </p>
+          {matchSnippet ? (
+            // Achado DENTRO da conversa: mostra o trecho, senão o atendente não
+            // entende por que essa conversa apareceu (o nome do WhatsApp é outro).
+            <p className="text-xs text-emerald-700 bg-emerald-50 rounded px-1 py-0.5 truncate" title={matchSnippet}>
+              <Search className="w-2.5 h-2.5 inline mr-1 -mt-0.5" />
+              {matchSnippet}
+            </p>
+          ) : (
+            <p className="text-xs text-gray-500 truncate">
+              {conv.last_message_preview || '—'}
+            </p>
+          )}
           {conv.unread_count > 0 && (
             <Badge className="text-[10px] px-1.5 py-0 h-4 shrink-0 bg-emerald-600">
               {conv.unread_count}
