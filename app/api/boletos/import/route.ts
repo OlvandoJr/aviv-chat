@@ -89,9 +89,29 @@ function parseBoletoText(text: string) {
   return { linhaDigitavel: ld, vencimento: venc, valor: val, nossoNumero: nn, beneficiario: benef }
 }
 
-// Normaliza nome p/ casar com o cadastro (sem acentos, caixa baixa, espaços únicos)
+// Normaliza nome p/ casar com o cadastro (sem acentos, caixa baixa, espaços únicos).
+// Ignora pontuação — o Sienge tem nomes como "FULANO DA SILVA." com ponto final.
 function normName(s: string): string {
-  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim()
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+// Lê uma tabela INTEIRA em páginas. O PostgREST devolve no máximo 1000 linhas por
+// requisição: sem isto o cadastro (>1000 clientes) vinha truncado e clientes que
+// EXISTEM eram reportados como "não encontrados" — e, sem ORDER BY, quais ficavam
+// de fora mudava a cada carga.
+async function fetchAllRows<T>(table: string, columns: string, orderBy: string): Promise<T[]> {
+  const PAGE = 1000
+  const out: T[] = []
+  for (let from = 0; from < 100_000; from += PAGE) {
+    const { data, error } = await admin
+      .from(table).select(columns).order(orderBy, { ascending: true }).range(from, from + PAGE - 1)
+    if (error) throw new Error(`falha ao ler ${table}: ${error.message}`)
+    const rows = (data || []) as T[]
+    out.push(...rows)
+    if (rows.length < PAGE) break
+  }
+  return out
 }
 
 interface Falha { arquivo: string; motivo: string }
@@ -218,8 +238,11 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
   // O título é vínculo direto e não depende do cadastro de clientes já ter
   // sincronizado (cliente novo cujo cadastro ainda não chegou). ─────────────────
   if (parsed.some((p) => isNaN(p.clientId))) {
-    // 1) por nome
-    const { data: clientes } = await admin.from('sienge_clientes').select('client_id, nome')
+    // 1) por nome — cadastro COMPLETO (paginado; o limite de 1000 do PostgREST
+    // truncava a lista e clientes existentes caíam em "não encontrado").
+    const clientes = await fetchAllRows<{ client_id: number; nome: string | null }>(
+      'sienge_clientes', 'client_id, nome', 'client_id',
+    )
     const byName = new Map<string, number[]>()
     for (const c of clientes || []) {
       const k = normName(c.nome || '')
@@ -238,13 +261,25 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
       parsed.filter((p) => isNaN(p.clientId)).map((p) => Number(p.lote)).filter((n) => n > 0),
     )]
     if (titulos.length) {
-      const { data: contratos } = await admin
-        .from('sienge_contratos').select('receivable_bill_id, client_id').in('receivable_bill_id', titulos)
       const byTitulo = new Map<number, Set<number>>()
-      for (const c of contratos || []) {
-        if (c.receivable_bill_id == null || c.client_id == null) continue
-        const set = byTitulo.get(c.receivable_bill_id) || new Set<number>()
-        set.add(c.client_id); byTitulo.set(c.receivable_bill_id, set)
+      const addTitulo = (rbid: unknown, cid: unknown) => {
+        const t = Number(rbid), c = Number(cid)
+        if (!t || !c) return
+        const set = byTitulo.get(t) || new Set<number>()
+        set.add(c); byTitulo.set(t, set)
+      }
+      // Em blocos pequenos de títulos: um título tem dezenas de parcelas e o
+      // PostgREST corta a resposta em 1000 linhas.
+      for (let i = 0; i < titulos.length; i += 10) {
+        const chunk = titulos.slice(i, i + 10)
+        const { data: contratos } = await admin
+          .from('sienge_contratos').select('receivable_bill_id, client_id').in('receivable_bill_id', chunk)
+        for (const c of contratos || []) addTitulo(c.receivable_bill_id, c.client_id)
+        // Fonte extra: as parcelas do Sienge também carregam o vínculo título →
+        // cliente e costumam chegar antes do contrato no sync.
+        const { data: parcelasSienge } = await admin
+          .from('sienge_boletos').select('receivable_bill_id, customer_id').in('receivable_bill_id', chunk)
+        for (const b of parcelasSienge || []) addTitulo(b.receivable_bill_id, b.customer_id)
       }
       for (const p of parsed) {
         if (!isNaN(p.clientId)) continue
@@ -259,8 +294,8 @@ async function processarZip(zipBuf: Buffer, caller: { id: string; role: string |
       falhas.push({
         arquivo: p.baseName,
         motivo: ambiguos.has(p.baseName)
-          ? `nome "${p.nome}" ambíguo no cadastro (${ambiguos.get(p.baseName)} clientes) e título ${p.lote} sem contrato`
-          : `cliente "${p.nome}" não encontrado por nome nem pelo título ${p.lote}`,
+          ? `nome "${p.nome}" ambíguo no cadastro (${ambiguos.get(p.baseName)} clientes) e título ${p.lote} sem vínculo — resolva o duplicado no Sienge`
+          : `cliente "${p.nome}" ainda não está no cadastro local (${clientes.length} clientes sincronizados) e o título ${p.lote} não tem vínculo — aguarde o sync do Sienge (diário) e reenvie`,
       })
     }
     for (let i = parsed.length - 1; i >= 0; i--) if (isNaN(parsed[i].clientId)) parsed.splice(i, 1)
