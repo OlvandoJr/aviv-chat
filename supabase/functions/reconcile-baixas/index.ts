@@ -13,7 +13,7 @@
  * Invocação: cron (sem body) ou manual { limit?, retryFailed? }.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { applyReceipt } from '../_shared/sienge.ts'
+import { applyReceipt, SiengeRateLimited } from '../_shared/sienge.ts'
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -23,6 +23,24 @@ const admin = createClient(
 const BATCH    = 40
 const DELAY_MS = 350   // throttle entre eventos (o fallback do Sienge consome cota)
 const SLEEP    = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// ORÇAMENTO DIÁRIO de chamadas ao Sienge feitas por esta reconciliação. O plano
+// Free dá 100 requisições REST por DIA no total — e a mesma cota é usada pela 2ª
+// via do boleto do cliente, pelo bot e pelos syncs. Reservamos uma fatia pequena
+// aqui; o resto do dia fica para o que o cliente vê.
+const BUDGET_DIA = Number(Deno.env.get('SIENGE_FALLBACK_BUDGET') || '20')
+
+// Quantas chamadas ao Sienge já gastamos HOJE. Conta só as notas com o marcador
+// "[api]" — os eventos resolvidos offline (filtro de relevância) não consomem cota
+// e não podem entrar nesta conta.
+async function gastoHoje(): Promise<number> {
+  const inicioDoDia = new Date(); inicioDoDia.setUTCHours(0, 0, 0, 0)
+  const { count } = await admin.from('sienge_webhook_events')
+    .select('id', { count: 'exact', head: true })
+    .gte('reconciled_at', inicioDoDia.toISOString())
+    .ilike('note', '%[api]%')
+  return count || 0
+}
 
 Deno.serve(async (req) => {
   try {
@@ -38,21 +56,45 @@ Deno.serve(async (req) => {
 
     const { data: events } = await q
 
-    let recuperados = 0, naoCasaram = 0
+    let recuperados = 0, naoCasaram = 0, ignorados = 0
+    let orcamentoRestante = Math.max(0, BUDGET_DIA - (await gastoHoje()))
+    let rateLimited = false
     const results: any[] = []
     for (const ev of events || []) {
       const billId = Number(ev.receivable_bill_id ?? (ev.payload as any)?.billId) || 0
       const instId = Number(ev.installment_id ?? (ev.payload as any)?.installmentId) || 0
       if (!billId || !instId) { await mark(ev.id, 0, 'sem billId/installmentId'); naoCasaram++; continue }
 
-      const res = await applyReceipt(admin, billId, instId)
+      // Sem orçamento: NÃO marca reconciled_at — o evento fica pendente e é
+      // retomado amanhã, em vez de ser perdido.
+      if (orcamentoRestante <= 0) { ignorados++; continue }
+
+      let res: { matched: number; note: string }
+      try {
+        res = await applyReceipt(admin, billId, instId)
+      } catch (e) {
+        if (e instanceof SiengeRateLimited) {
+          // Cota estourada: aborta o lote inteiro (insistir só queima o resto do
+          // dia para a 2ª via do cliente e para o bot).
+          rateLimited = true
+          console.warn('reconcile-baixas: 429 do Sienge — abortando o lote')
+          break
+        }
+        throw e
+      }
+      // Só desconta do orçamento quando realmente foi à API (o filtro de
+      // relevância resolve offline e não consome cota).
+      if (res.note.includes('[api]')) orcamentoRestante--
       await mark(ev.id, res.matched, res.note)
       if (res.matched > 0) recuperados++; else naoCasaram++
       results.push({ billId, instId, matched: res.matched, note: res.note })
       await SLEEP(DELAY_MS)
     }
 
-    return json({ ok: true, processados: (events || []).length, recuperados, naoCasaram, results })
+    return json({
+      ok: true, processados: (events || []).length, recuperados, naoCasaram,
+      adiadosPorOrcamento: ignorados, orcamentoRestante, rateLimited, results,
+    })
   } catch (e) {
     console.error('reconcile-baixas error:', e)
     return json({ error: String(e) }, 500)
