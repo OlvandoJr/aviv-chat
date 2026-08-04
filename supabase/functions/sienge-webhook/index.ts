@@ -11,7 +11,7 @@
 // (distinguir recebimento total de adiantamento parcial) é OPCIONAL e só roda se
 // SIENGE_WEBHOOK_CONFIRM=true. Protegido por token (verify_jwt=false).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { mapCustomer, mapContrato, fetchSegundaVia, applyReceipt, propagateToEmitidos, cancelBills, isContratoCancelado } from '../_shared/sienge.ts'
+import { mapCustomer, mapContrato, fetchSegundaVia, applyReceipt, propagateToEmitidos, cancelBills, isContratoCancelado, SiengeRateLimited } from '../_shared/sienge.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -326,9 +326,19 @@ Deno.serve(async (req) => {
 
       if (marcarPago) {
         // Casa a baixa: sienge_boletos → boletos_emitidos (chave Sienge, offline) → fallback API.
-        const res = await applyReceipt(supabase, billId, installmentId)
-        matched = res.matched
-        note = note ? `${note}; ${res.note}` : res.note
+        try {
+          const res = await applyReceipt(supabase, billId, installmentId)
+          matched = res.matched
+          note = note ? `${note}; ${res.note}` : res.note
+        } catch (e) {
+          // Cota do Sienge estourada: registra e segue (o evento fica pendente
+          // para o reconcile-baixas retomar quando a cota renovar). O webhook
+          // SEMPRE responde 200 — senão o Sienge reenvia e piora o consumo.
+          if (e instanceof SiengeRateLimited) {
+            matched = 0
+            note = note ? `${note}; cota Sienge esgotada — pendente p/ reconciliação` : 'cota Sienge esgotada — pendente p/ reconciliação'
+          } else throw e
+        }
       }
     } else if (isSituation) {
       const novo = classifySituation(body.situation)

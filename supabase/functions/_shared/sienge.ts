@@ -101,13 +101,22 @@ export function isContratoCancelado(situation: unknown): boolean {
   return /cancel|distrat/i.test(String(situation || ''))
 }
 
+// Cota da API do Sienge estourada (HTTP 429). O plano Free dá 100 requisições
+// REST por DIA — ao bater o teto, todo o resto do dia falha (2ª via do cliente,
+// bot, syncs). Sinalizamos para o chamador PARAR o lote em vez de insistir.
+export class SiengeRateLimited extends Error {
+  constructor() { super('Sienge HTTP 429 — cota diária esgotada') }
+}
+
 // Fallback (consome cota): título não está na base → busca no Sienge, faz upsert em
 // sienge_boletos como pago e devolve {customer_id, due_date} p/ propagar aos emitidos.
+// Lança SiengeRateLimited no 429 (o chamador aborta o lote).
 // deno-lint-ignore no-explicit-any
 export async function syncReceiptFromSienge(admin: any, billId: number, installmentId: number): Promise<any[] | null> {
   try {
     const auth = siengeAuth()
     const bResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}`, { headers: { Authorization: auth } })
+    if (bResp.status === 429) throw new SiengeRateLimited()
     if (!bResp.ok) return null
     const bill = await bResp.json()
     const b = bill?.results?.[0] || bill || {}
@@ -115,6 +124,7 @@ export async function syncReceiptFromSienge(admin: any, billId: number, installm
     if (!customerId) return null
 
     const iResp = await fetch(`${SIENGE_BASE}/accounts-receivable/receivable-bills/${billId}/installments`, { headers: { Authorization: auth } })
+    if (iResp.status === 429) throw new SiengeRateLimited()
     if (!iResp.ok) return null
     const inst = ((await iResp.json()).results || []).find((i: any) => Number(i.installmentId) === installmentId)
     if (!inst?.dueDate) return null
@@ -147,9 +157,38 @@ export async function syncReceiptFromSienge(admin: any, billId: number, installm
     }
     return data || []
   } catch (e) {
+    if (e instanceof SiengeRateLimited) throw e
     console.error('syncReceiptFromSienge error:', e)
     return null
   }
+}
+
+// Vale gastar cota do Sienge com esta baixa?
+//
+// O Sienge notifica a baixa de TODAS as parcelas da empresa; nós só cobramos o
+// subconjunto que tem boleto emitido (ZIP). Se a baixa não casou offline pela
+// chave (passos 1 e 2), ir à API só ajuda quando existe boleto emitido EM ABERTO
+// SEM a chave do Sienge — é para esse caso que o fallback existe: descobrir
+// (client_id, vencimento) e casar. Se todo boleto aberto já tem chave, o passo 2
+// já teria casado e a chamada é desperdício puro.
+//
+// Medido em 08/2026: 402 de 402 baixas que caíam no fallback não tinham boleto
+// emitido correspondente — ~550 requisições/dia num plano de 100/dia, que
+// derrubava 2ª via, bot e syncs pelo resto do dia.
+// deno-lint-ignore no-explicit-any
+export async function fallbackPodeAjudar(admin: any, billId: number): Promise<boolean> {
+  const ABERTO = '("pago","cancelado")'
+  // a) boleto do MESMO título com a chave incompleta (sabe o título, não a parcela)
+  const { count: parcial } = await admin.from('boletos_emitidos')
+    .select('id', { count: 'exact', head: true })
+    .eq('receivable_bill_id', billId).is('installment_id', null)
+    .not('status', 'in', ABERTO)
+  if ((parcial || 0) > 0) return true
+  // b) boletos órfãos (sem chave nenhuma) — só a API revela a qual título pertencem
+  const { count: semChave } = await admin.from('boletos_emitidos')
+    .select('id', { count: 'exact', head: true })
+    .is('receivable_bill_id', null).not('status', 'in', ABERTO)
+  return (semChave || 0) > 0
 }
 
 // Aplica a baixa de um título/parcela. Retorna quantos registros casaram + nota.
@@ -174,12 +213,18 @@ export async function applyReceipt(admin: any, billId: number, installmentId: nu
     .select('id')
   if (be?.length) { matched += be.length; notes.push('emitidos(chave)') }
 
-  // 3) nada casou offline → fallback Sienge (1x)
+  // 3) nada casou offline → fallback Sienge (1x), SÓ se o título for relevante
+  // para alguma cobrança nossa (senão é queima de cota sem efeito nenhum).
   if (matched === 0) {
+    if (!(await fallbackPodeAjudar(admin, billId))) {
+      return { matched: 0, note: 'ignorado: nenhuma cobrança nossa depende desta baixa (não consome cota)' }
+    }
+    // O sufixo [api] marca que esta reconciliação CONSUMIU cota — é o que o
+    // reconcile-baixas conta para respeitar o orçamento diário.
     const synced = await syncReceiptFromSienge(admin, billId, installmentId)
-    if (synced && synced.length) { matched = synced.length; notes.push('sincronizado do Sienge'); await propagateToEmitidos(admin, synced, 'pago') }
-    else if (synced === null) notes.push('não casou e fallback Sienge falhou')
-    else notes.push('não casou (título não encontrado no Sienge)')
+    if (synced && synced.length) { matched = synced.length; notes.push('sincronizado do Sienge [api]'); await propagateToEmitidos(admin, synced, 'pago') }
+    else if (synced === null) notes.push('não casou e fallback Sienge falhou [api]')
+    else notes.push('não casou (título não encontrado no Sienge) [api]')
   }
   return { matched, note: notes.join(' + ') }
 }
