@@ -122,8 +122,31 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
   if (af.source && af.source !== 'both') vq = vq.eq('source', af.source)
   if (af.empreendimento) vq = vq.ilike('empreendimento', `%${af.empreendimento}%`)
 
+  // ── Anti-duplicata 1: reposição de fim de semana não atropela o passo do dia ──
+  // Na segunda a régua repõe os alvos de sábado e domingo (backDays). Com isso
+  // dois passos vizinhos caem no MESMO boleto no mesmo dia — o cliente recebia
+  // duas cobranças seguidas, e a primeira era a ERRADA: em 27/07 (seg) o passo
+  // -5 mandava "vence em 5 dias" para um boleto que vencia em 3.
+  // Regra: quem chega por reposição (back > 0) cede a vez quando a régua tem o
+  // passo exato de hoje — que roda logo depois, na mesma execução. Sem passo
+  // exato, a reposição continua valendo (é o comportamento desejado no fds).
+  // Fica aqui (e não no laço de envio) para o preview bater com o disparo real.
+  const offsetsDaRegua: number[] = (regua.steps || [])
+    .filter((s: any) => !s.on_load).map((s: any) => Number(s.offset_days))
+  const ehReposicaoRedundante = (dueDate: string | null) => {
+    if (step.on_load || !dueDate) return false
+    const due = String(dueDate).slice(0, 10)
+    const diasAteVencer = Math.round(
+      (Date.parse(`${due}T00:00:00Z`) - Date.parse(`${runDate}T00:00:00Z`)) / 86_400_000,
+    )
+    const back = -diasAteVencer - (step.offset_days || 0)
+    return back > 0 && offsetsDaRegua.includes(-diasAteVencer)
+  }
+
   const { data: rows } = await vq
-  const audience = (rows || []).filter((r) => r.customer_phone && r.phone_norm)
+  const audience = (rows || [])
+    .filter((r) => r.customer_phone && r.phone_norm)
+    .filter((r) => !ehReposicaoRedundante(r.due_date))
 
   if (dryRun) {
     return {
@@ -156,6 +179,19 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
   let sent = 0, failed = 0, skipped = 0
   for (const r of audience) {
     const waId = String(r.customer_phone).replace(/\D/g, '')
+
+    // ── Anti-duplicata 2: um boleto recebe no máximo UMA mensagem por dia ──────
+    // Rede para as demais colisões (ex.: carga + passo de offset no mesmo dia).
+    // Sempre com phone_norm: boleto_ref NÃO é único por cliente (o ref
+    // n140000000000001231 aparece no log com dois telefones), e deduplicar só
+    // por ele deixaria um cliente legítimo sem receber — pior que a duplicata.
+    // 'failed' não conta: nada chegou ao cliente, outro passo pode tentar.
+    let jaq = admin.from('cobranca_regua_log').select('id')
+      .eq('regua_id', regua.id).eq('run_date', runDate).eq('phone_norm', r.phone_norm)
+      .neq('status', 'failed').limit(1)
+    jaq = r.boleto_ref ? jaq.eq('boleto_ref', r.boleto_ref) : jaq.eq('due_date', r.due_date)
+    const { data: jaHoje } = await jaq.maybeSingle()
+    if (jaHoje?.id) { skipped++; continue }
 
     // Claim atômico POR BOLETO via UNIQUE(regua_id, offset_days, phone_norm, due_date, boleto_ref)
     // — cliente com 2 boletos no mesmo vencimento recebe 2 mensagens (1 por boleto).
