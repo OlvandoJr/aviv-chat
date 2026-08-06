@@ -213,7 +213,27 @@ Deno.serve(async (req) => {
       : ''
 
     // Prompt final = prompt do agente + regras de escalação (UI) + contextos + proteção técnica fixa
+// Data e hora de AGORA em Brasília, com o período do dia já resolvido.
+//
+// Sem isto o modelo não faz ideia da hora e chuta a saudação — foi assim que
+// saiu "Boa tarde" às 08h41. O período vai mastigado (não só o relógio) porque
+// o modelo erra ao converter hora em saudação.
+function agoraBRT(): string {
+  const fmt = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit',
+    month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+  const hora = Number(new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false,
+  }).format(new Date()))
+  const periodo = hora < 12 ? 'manhã' : hora < 18 ? 'tarde' : 'noite'
+  const saudacao = hora < 12 ? 'Bom dia' : hora < 18 ? 'Boa tarde' : 'Boa noite'
+  return `Agora em Brasília: ${fmt.format(new Date())} (${periodo}).\n` +
+         `Se for saudar, a saudação correta AGORA é "${saudacao}" — nunca use outra.`
+}
+
     const systemPrompt = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT)
+      + '\n\n' + agoraBRT()
       + '\n\n' + escalationRules
       + contextRules
       + SYSTEM_TOKEN_PROTECTION
@@ -1260,9 +1280,8 @@ async function runSubagent(sub: any, ctx: any): Promise<string> {
   }
 
   // 2. Prompt + contexto + histórico recente
-  const today = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
   const sys = (sub.instructions || '')
-    + `\n\nHoje é ${today}.`
+    + `\n\n${agoraBRT()}`
     + (ctx.customerContext ? `\n\n--- DADOS DO CLIENTE ---\n${ctx.customerContext}` : '')
     + (ctx.pedido ? `\n\nO cliente está pedindo: ${ctx.pedido}` : '')
 
