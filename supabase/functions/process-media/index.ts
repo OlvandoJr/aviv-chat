@@ -911,6 +911,43 @@ function valueGuardVerdict(verdict: string, valorComprov: any, boleto: any, extr
 // ─────────────────────────────────────────────────────────────────────────────
 // PDF: Passo 1 (extração JSON via Files API) → boleto lookup → Passo 2 (veredicto)
 // ─────────────────────────────────────────────────────────────────────────────
+// PDF → OpenAI. Usa /v1/responses (input_file), NÃO /v1/chat/completions.
+//
+// Motivo: comprovante de banco quase sempre é PDF de IMAGEM (o da Caixa tem 5
+// imagens e 4 operadores de texto). Em /v1/chat/completions o PDF entra só pela
+// extração de TEXTO — que nesses arquivos volta vazia — e o modelo, sem ver a
+// página, INVENTA os campos: no caso da Geovana leu o CPF (136.180.139-57) como
+// valor "136.180,13", trocou a pagadora pela SPE e perdeu a data de efetivação,
+// fazendo a trava anti-boleto rejeitar um comprovante legítimo 3 vezes.
+// O /v1/responses renderiza as páginas para o modelo de visão: com o MESMO
+// prompt e o MESMO modelo, todos os campos saem corretos (valor 724,08,
+// pagamento 03/08/2026, pagadora GEOVANA DE MELLO DE FREITAS).
+async function askOpenAiPdf(model: string, prompt: string, fileId: string, maxTokens: number): Promise<string> {
+  const resp = await fetch('https://api.openai.com/v1/responses', {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      max_output_tokens: maxTokens,
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: prompt },
+          { type: 'input_file', file_id: fileId },
+        ],
+      }],
+    }),
+  })
+  if (!resp.ok) {
+    console.error('PDF (responses) falhou:', resp.status, await resp.text())
+    return ''
+  }
+  const j = await resp.json()
+  return j.output_text
+    ?? (j.output || []).flatMap((o: any) => o.content || []).map((c: any) => c.text).filter(Boolean).join('')
+    ?? ''
+}
+
 async function analyzePdf(
   messageId: string,
   convId:    string,
@@ -948,33 +985,15 @@ async function analyzePdf(
   try {
     // ── Passo 1: extrair campos estruturados (espelha image step 1) ────────
     console.log('PDF step 1: extracting structured fields')
-    const extractResp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method:  'POST',
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model:      sub.extraction_model || 'gpt-4o-mini',
-        max_tokens: 500,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: sub.extraction_prompt || '' },
-            { type: 'file', file: { file_id: fileId } },
-          ],
-        }],
-      }),
-    })
-
-    if (extractResp.ok) {
-      const raw = (await extractResp.json()).choices?.[0]?.message?.content || '{}'
-      console.log('PDF extraction raw:', raw)
+    const raw = await askOpenAiPdf(sub.extraction_model || 'gpt-4o-mini', sub.extraction_prompt || '', fileId, 600)
+    console.log('PDF extraction raw:', raw)
+    if (raw) {
       try {
         const match = raw.match(/\{[\s\S]*\}/)
         extractedData = match ? JSON.parse(match[0]) : { raw }
       } catch {
         extractedData = { raw }
       }
-    } else {
-      console.error('PDF extraction failed:', extractResp.status, await extractResp.text())
     }
 
     // Não é comprovante — salvar e sair
@@ -1017,28 +1036,8 @@ async function analyzePdf(
     }) + (sub.output_format ? `\n\nFORMATO DE SAÍDA:\n${sub.output_format}` : '')
 
     console.log('PDF step 2: analyzing with subagente model', sub.model)
-    const analysisResp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method:  'POST',
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        model:      sub.model || 'gpt-4o',
-        max_tokens: 400,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: analysisPrompt },
-            { type: 'file', file: { file_id: fileId } },
-          ],
-        }],
-      }),
-    })
-
-    if (analysisResp.ok) {
-      verdict = (await analysisResp.json()).choices?.[0]?.message?.content?.trim() || ''
-      console.log('PDF verdict:', verdict)
-    } else {
-      console.error('PDF analysis failed:', analysisResp.status, await analysisResp.text())
-    }
+    verdict = (await askOpenAiPdf(sub.model || 'gpt-4o', analysisPrompt, fileId, 500)).trim()
+    console.log('PDF verdict:', verdict)
 
     verdict = valueGuardVerdict(verdict, extractedData.valor, boleto, extractedData)
 
