@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { decode as decodeImg, Image as ImgS } from 'https://deno.land/x/imagescript@1.2.15/mod.ts'
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -743,16 +744,77 @@ async function updateBoletoDB(
 // ─────────────────────────────────────────────────────────────────────────────
 // IMAGEM: Passo 1 (extração JSON) + Passo 2 (validação com veredicto)
 // ─────────────────────────────────────────────────────────────────────────────
-async function analyzeImage(
-  messageId: string,
-  convId:    string,
-  waId:      string,
-  imageUrl:  string,
-  sub:       any,
-) {
-  // ── Passo 1: extrair campos brutos da imagem (prompt do subagente) ────────
-  console.log('Image step 1: extracting fields from', imageUrl)
-  const extractResp = await fetch('https://api.openai.com/v1/chat/completions', {
+// ── Foto rotacionada: leitura às cegas vira invenção ──────────────────────────
+// Caso Dirceu (05/08/2026): foto do comprovante DEITADA (90°). O modelo não
+// avisa que não lê — inventa: valor 598,26 (real 599,26), pagador "JOSÉ PAULO
+// FREITAS" (real DIRCEU FOGACA DA SILVA), CPF e data errados. Resultado:
+// divergência falsa de R$ 1,00 e validação manual desnecessária.
+// Estratégia: extrai na orientação original; se o resultado não tiver um SINAL
+// FORTE de leitura correta, gira 90/180/270 e fica com a melhor tentativa.
+// Sinal forte = dígito verificador do CPF/CNPJ confere — leitura alucinada
+// troca dígitos e quase nunca fecha o verificador.
+// (Perguntar ao modelo "qual orientação está certa?" NÃO funciona: acertou a
+// foto deitada e errou a que já estava em pé.)
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(bin)
+}
+
+function digitoOk(doc: string): boolean {
+  const n = (doc || '').replace(/\D/g, '')
+  if (n.length === 11) {
+    if (/^(\d)\1{10}$/.test(n)) return false
+    for (const [len, peso] of [[9, 10], [10, 11]] as const) {
+      let soma = 0
+      for (let i = 0; i < len; i++) soma += Number(n[i]) * (peso - i)
+      if ((soma * 10) % 11 % 10 !== Number(n[len])) return false
+    }
+    return true
+  }
+  if (n.length === 14) {
+    if (/^(\d)\1{13}$/.test(n)) return false
+    for (const len of [12, 13]) {
+      const pesos = len === 12 ? [5,4,3,2,9,8,7,6,5,4,3,2] : [6,5,4,3,2,9,8,7,6,5,4,3,2]
+      let soma = 0
+      for (let i = 0; i < len; i++) soma += Number(n[i]) * pesos[i]
+      const r = soma % 11
+      if ((r < 2 ? 0 : 11 - r) !== Number(n[len])) return false
+    }
+    return true
+  }
+  return false
+}
+
+// Comprovante mandado pelo chat é RECENTE — janela apertada de propósito: data
+// alucinada costuma cair anos atrás (2023 etc.) e não pode pontuar.
+function dataRecente(d: string): boolean {
+  const m = String(d || '').match(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})/)
+    || String(d || '').match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return false
+  const iso = m[1].length === 4 ? `${m[1]}-${m[2]}-${m[3]}` : `${m[3]}-${m[2]}-${m[1]}`
+  const t = Date.parse(iso + 'T00:00:00Z')
+  if (isNaN(t)) return false
+  return t > Date.now() - 90 * 864e5 && t < Date.now() + 7 * 864e5
+}
+
+function notaExtracao(d: any): number {
+  if (!d || d.ilegivel) return -1
+  let nota = 0
+  if (digitoOk(d.cpf_cnpj || '')) nota += 3
+  if (dataRecente(d.data_pagamento || '')) nota += 3
+  if (/\d/.test(String(d.valor ?? ''))) nota += 1
+  for (const k of ['pagador', 'beneficiario', 'valor', 'data_pagamento', 'cpf_cnpj']) {
+    if (d[k] != null && String(d[k]).trim() !== '') nota += 0.2
+  }
+  return nota
+}
+
+async function extractFromImageUrl(sub: any, url: string): Promise<any> {
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method:  'POST',
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -762,24 +824,66 @@ async function analyzeImage(
         role: 'user',
         content: [
           { type: 'text', text: sub.extraction_prompt || '' },
-          { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+          { type: 'image_url', image_url: { url, detail: 'high' } },
         ],
       }],
     }),
   })
+  if (!resp.ok) {
+    console.error('Image extraction failed:', resp.status, await resp.text())
+    return null
+  }
+  const raw = (await resp.json()).choices?.[0]?.message?.content || '{}'
+  console.log('Image extraction raw:', raw)
+  try {
+    const match = raw.match(/\{[\s\S]*\}/)
+    return match ? JSON.parse(match[0]) : { raw }
+  } catch {
+    return { raw }
+  }
+}
 
+async function analyzeImage(
+  messageId: string,
+  convId:    string,
+  waId:      string,
+  imageUrl:  string,
+  sub:       any,
+) {
+  // ── Passo 1: extrair campos brutos, girando a foto se preciso ─────────────
+  // Orientação original primeiro (a maioria está em pé → 1 chamada, custo de
+  // sempre). Sem sinal forte (dígito do CPF), tenta 90/180/270 e fica com a
+  // melhor. Ver comentário em digitoOk/notaExtracao.
+  console.log('Image step 1: extracting fields from', imageUrl)
   let extractedData: any = {}
-  if (extractResp.ok) {
-    const raw = (await extractResp.json()).choices?.[0]?.message?.content || '{}'
-    console.log('Image extraction raw:', raw)
-    try {
-      const match = raw.match(/\{[\s\S]*\}/)
-      extractedData = match ? JSON.parse(match[0]) : { raw }
-    } catch {
-      extractedData = { raw }
+  {
+    const tentativas: { ang: number; forte: boolean; nota: number; dados: any }[] = []
+    let bytes: Uint8Array | null = null
+    for (const ang of [0, 90, 180, 270]) {
+      let url = imageUrl
+      if (ang !== 0) {
+        try {
+          if (!bytes) bytes = new Uint8Array(await (await fetch(imageUrl)).arrayBuffer())
+          const im = await decodeImg(bytes) as ImgS
+          im.rotate(ang)
+          url = `data:image/jpeg;base64,${toBase64(new Uint8Array(await im.encodeJPEG(85)))}`
+        } catch (rotErr) {
+          console.error(`Image rotate ${ang} falhou (seguindo sem):`, rotErr)
+          break
+        }
+      }
+      const dados = await extractFromImageUrl(sub, url)
+      const forte = digitoOk(dados?.cpf_cnpj || '')
+      tentativas.push({ ang, forte, nota: notaExtracao(dados), dados })
+      if (forte) break                                     // dígito confere: leitura boa
     }
-  } else {
-    console.error('Image extraction failed:', extractResp.status, await extractResp.text())
+    const melhor = tentativas.find((t) => t.forte)
+      ?? [...tentativas].sort((a, b) => (b.nota - a.nota) || (a.ang - b.ang))[0]
+    extractedData = melhor?.dados || {}
+    if (melhor && melhor.ang !== 0) {
+      extractedData.foto_rotacionada = melhor.ang          // fica no ai_analysis p/ diagnóstico
+      console.log(`Image step 1: foto estava rotacionada ${melhor.ang}° — usada a versão girada`)
+    }
   }
 
   // Não é comprovante (ou é um BOLETO/cobrança, não prova de pagamento) — salvar e
