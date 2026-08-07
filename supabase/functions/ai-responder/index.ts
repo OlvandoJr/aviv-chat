@@ -64,6 +64,42 @@ function normalizePhone(raw: string): string {
   return d.slice(-10)
 }
 
+// ── Despedida/agradecimento: não responder ────────────────────────────────────
+// "🙏", "Obrigada", "valeu!" encerram a conversa — responder reengaja à toa (e
+// foi assim que o bot repetiu a mesma frase duas vezes no caso Dirceu, 05/08, e
+// emendou "Por nada… estou à disposição" na Geovana). Regra do produto:
+// quando for despedida, não precisa fazer mais nada.
+//
+// Determinístico e conservador:
+//   • só type='text' (mídia nunca é despedida);
+//   • emoji/gesto puro (🙏 👍 ❤️) conta, mas "?" nunca;
+//   • texto precisa de um núcleo de agradecimento/despedida e TODAS as palavras
+//     têm de ser núcleo ou enfeite — "obrigado, mas tenho uma dúvida" responde;
+//   • se a ÚLTIMA mensagem do bot termina em "?", não é despedida: o cliente
+//     pode estar respondendo à pergunta (ex.: "👍" como sim).
+const DESPEDIDA_NUCLEO = /(obrigad|brigad|\bobg\b|valeu|\bvlw\b|agradec|tchau|\bxau\b|\bate\s+(mais|logo|amanha|breve)\b|\bde\s+nada\b|disponha|\bamem\b|deus\s+(abencoe|lhe\s+pague))/
+const DESPEDIDA_PALAVRA = /^(obrigad\w*|brigad\w*|obg|valeu|vlw|agradec\w*|agradecid\w*|tchau|xau|ate|mais|logo|amanha|breve|nada|disponha|amem)$/
+const DESPEDIDA_ENFEITE = new Set([
+  'ok','ta','certo','bom','boa','bem','muito','tudo','deus','senhor','te','lhe','pague',
+  'abencoe','uma','vez','entao','dia','tarde','noite','e','a','o','de','por','viu',
+  'amigo','amiga','querido','querida','vivi','gente','voces','vcs','pela','pelo',
+  'atencao','ajuda','atendimento','mesmo','agora','sim',
+])
+function ehDespedida(m: { type: string; content: string | null }): boolean {
+  if (m.type !== 'text') return false
+  const raw = (m.content || '').trim()
+  if (!raw || raw.length > 80 || raw.includes('?')) return false
+  // emoji/gesto puro: tirando emoji, não sobra letra nem dígito
+  const semEmoji = raw
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Component}\u200d\ufe0f]/gu, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+  if (semEmoji === '') return true
+  const norm = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!DESPEDIDA_NUCLEO.test(norm)) return false
+  return norm.split(' ').every((w) => DESPEDIDA_PALAVRA.test(w) || DESPEDIDA_ENFEITE.has(w))
+}
+
 // ── Handler principal ──────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
@@ -150,6 +186,28 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ ok: true, routed: 'subagent_flow' }), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       })
+    }
+
+    // ── 1d. Despedida não precisa de resposta ─────────────────────────────────
+    // Tudo que o cliente mandou desde a última fala do bot precisa ser
+    // despedida/agradecimento — "Esse é o comprovante" + "🙏" responde normal.
+    {
+      const { data: ultimas } = await supabase
+        .from('chat_messages')
+        .select('direction, type, content')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: false })
+        .limit(10)
+      const msgs = ultimas || []
+      const idxOut = msgs.findIndex((m) => m.direction === 'out')
+      const doCliente = idxOut > 0 ? msgs.slice(0, idxOut) : []
+      const botPerguntou = idxOut >= 0 && String(msgs[idxOut]?.content || '').trim().endsWith('?')
+      if (doCliente.length > 0 && !botPerguntou && doCliente.every((m) => ehDespedida(m))) {
+        console.log('ai-responder: despedida — sem resposta')
+        return new Response(JSON.stringify({ skipped: true, reason: 'farewell' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
     }
 
     // ── 2. Buscar agente (regra da janela de 24h do template) ─────────────────
