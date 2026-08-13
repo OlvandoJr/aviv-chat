@@ -67,7 +67,16 @@ async function handleCadastro(body: any, hookEvent = ''): Promise<{ event: strin
   const isContract = /sales[_-]?contract|contrato/.test(ev) || body?.salesContractId != null || Array.isArray(body?.salesContractUnits)
   if (!isCustomer && !isContract) return null
 
-  const removed = /remov|delet|cancel/.test(ev)
+  // CANCELADO ≠ REMOVIDO. No Sienge o distrato é o contrato entrar em
+  // situation='Cancelado' (com cancellationDate e cancellationReason) — o
+  // registro CONTINUA existindo. Só SALES_CONTRACT_REMOVED apaga de fato.
+  //
+  // Enquanto 'cancel' caía aqui, o distrato apagaria a linha do contrato — e a
+  // rede de segurança da migration 068 (bloqueia quem TEM contrato e NENHUM
+  // ativo) deixaria de enxergar o cliente: sem contrato nenhum, um boleto novo
+  // dele voltaria a ser cobrável. Cancelado segue para o caminho de upsert, que
+  // grava situation='Cancelado' e chama cancelBills.
+  const removed = /remov|delet/.test(ev)
 
   if (isContract) {
     const id = Number(body?.salesContractId ?? body?.id)
