@@ -184,16 +184,32 @@ export async function fallbackPodeAjudar(admin: any, billId: number): Promise<bo
     .eq('receivable_bill_id', billId).is('installment_id', null)
     .not('status', 'in', ABERTO)
   if ((parcial || 0) > 0) return true
-  // b) boletos órfãos (sem chave nenhuma) — só a API revela a qual título pertencem
-  const { count: semChave } = await admin.from('boletos_emitidos')
+  // b) o CLIENTE deste título tem algum boleto aberto conosco? O título → cliente
+  // sai de sienge_contratos (offline). Antes o critério era "existe QUALQUER
+  // boleto órfão na base" — 4 órfãos permanentes tornavam TODO evento 'relevante'
+  // e 1000+ baixas de parcelas que nunca emitimos (entrada, parcelas antigas)
+  // entraram na fila da API, queimando 20 chamadas/dia de cota a troco de nada.
+  const { data: contratos } = await admin.from('sienge_contratos')
+    .select('client_id').eq('receivable_bill_id', billId).not('client_id', 'is', null).limit(5)
+  const clientIds = [...new Set((contratos || []).map((c: any) => c.client_id))]
+  if (!clientIds.length) return false          // título não é de contrato nosso
+  const { count: abertosDoCliente } = await admin.from('boletos_emitidos')
     .select('id', { count: 'exact', head: true })
-    .is('receivable_bill_id', null).not('status', 'in', ABERTO)
-  return (semChave || 0) > 0
+    .in('client_id', clientIds).not('status', 'in', ABERTO)
+  return (abertosDoCliente || 0) > 0
 }
 
 // Aplica a baixa de um título/parcela. Retorna quantos registros casaram + nota.
 // deno-lint-ignore no-explicit-any
-export async function applyReceipt(admin: any, billId: number, installmentId: number): Promise<{ matched: number; note: string }> {
+// `transient: true` = falha que pode se resolver sozinha (API fora do ar, cota
+// 429) — o reconcile deve TENTAR DE NOVO amanhã, não marcar o evento como morto.
+// Foi a falta dessa distinção que matou as baixas da janela 01–06/08: erro
+// transitório virava reconciled_at definitivo e o cliente pago seguia cobrado.
+// opts.allowApi=false → roda SÓ as pernas offline (grátis); se precisar da API,
+// devolve deferred:true SEM contar tentativa — o chamador re-tenta quando houver
+// orçamento. Sem isso, o dia de orçamento zerado adiava até o que era offline.
+export async function applyReceipt(admin: any, billId: number, installmentId: number, opts: { allowApi?: boolean } = {}): Promise<{ matched: number; note: string; transient?: boolean; deferred?: boolean }> {
+  const allowApi = opts.allowApi !== false
   const now = new Date().toISOString()
   let matched = 0
   const notes: string[] = []
@@ -219,11 +235,14 @@ export async function applyReceipt(admin: any, billId: number, installmentId: nu
     if (!(await fallbackPodeAjudar(admin, billId))) {
       return { matched: 0, note: 'ignorado: nenhuma cobrança nossa depende desta baixa (não consome cota)' }
     }
+    if (!allowApi) {
+      return { matched: 0, note: 'aguardando orçamento de API', deferred: true }
+    }
     // O sufixo [api] marca que esta reconciliação CONSUMIU cota — é o que o
     // reconcile-baixas conta para respeitar o orçamento diário.
     const synced = await syncReceiptFromSienge(admin, billId, installmentId)
     if (synced && synced.length) { matched = synced.length; notes.push('sincronizado do Sienge [api]'); await propagateToEmitidos(admin, synced, 'pago') }
-    else if (synced === null) notes.push('não casou e fallback Sienge falhou [api]')
+    else if (synced === null) return { matched: 0, note: 'não casou e fallback Sienge falhou [api]', transient: true }
     else notes.push('não casou (título não encontrado no Sienge) [api]')
   }
   return { matched, note: notes.join(' + ') }
