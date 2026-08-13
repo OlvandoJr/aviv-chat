@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { CheckCircle, ArchiveIcon, RotateCcw, UserCheck, ChevronDown, Bot, UserRound } from 'lucide-react'
+import { CheckCircle, ArchiveIcon, RotateCcw, UserCheck, ChevronDown, Bot, UserRound, Ban } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Conversation, Attendant, HandledBy } from '@/lib/types'
 
@@ -101,7 +101,35 @@ export default function ConversationActions({ conversation, attendants, onUpdate
     router.refresh()
   }
 
+  // ── Lista negra do bot (migration 074) ──────────────────────────────────────
+  // Bloqueia o CONTATO, não a conversa: vale para qualquer conversa daquele
+  // número e sobrevive a Resolver/Arquivar (que forçam handled_by='bot').
+  // Só a IA cala — cobrança, lembretes e campanhas seguem enviando.
+  // Os campos _em/_por são preenchidos por trigger; aqui vai só o boolean.
+  async function toggleBloqueio() {
+    const bloqueado = !!conversation.contact?.bot_bloqueado
+    if (!bloqueado && !window.confirm(
+      `Bloquear ${conversation.contact?.name || conversation.contact?.wa_id}?\n\n` +
+      `O Agente IA deixa de responder para este contato em QUALQUER conversa.\n\n` +
+      `Cobrança, lembretes e campanhas continuam sendo enviados normalmente. ` +
+      `As mensagens dele seguem chegando aqui para atendimento humano.`
+    )) return
+
+    setLoading(true)
+    const { data } = await supabase
+      .from('chat_contacts')
+      .update({ bot_bloqueado: !bloqueado })
+      .eq('id', conversation.contact_id)
+      .select('*')
+      .single()
+
+    if (data) onUpdate({ ...conversation, contact: data as any })
+    setLoading(false)
+    router.refresh()
+  }
+
   const { status, handled_by } = conversation
+  const contatoBloqueado = !!conversation.contact?.bot_bloqueado
 
   return (
     <div className="flex items-center gap-1.5 relative">
@@ -132,6 +160,29 @@ export default function ConversationActions({ conversation, attendants, onUpdate
           <span className="hidden sm:inline">
             {handled_by === 'pending_human' ? 'Assumir (urgente)' : 'Assumir'}
           </span>
+        </button>
+      )}
+
+      {/* Bloquear contato para a IA */}
+      {contatoBloqueado ? (
+        <button
+          onClick={toggleBloqueio}
+          disabled={loading}
+          className="flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg bg-red-50 text-red-700 hover:bg-red-100 transition-colors border border-red-200"
+          title="Contato bloqueado para a IA — clique para desbloquear"
+        >
+          <Ban className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Desbloquear</span>
+        </button>
+      ) : (
+        <button
+          onClick={toggleBloqueio}
+          disabled={loading}
+          className="flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg text-gray-500 border border-gray-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors"
+          title="Bloquear contato para a IA (cobrança e campanhas continuam)"
+        >
+          <Ban className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Bloquear</span>
         </button>
       )}
 

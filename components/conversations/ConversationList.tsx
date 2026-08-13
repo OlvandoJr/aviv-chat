@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useTransition, useRef } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Search, Bell, Loader2, ChevronDown, FileCheck2, Check, Lock } from 'lucide-react'
+import { Search, Bell, Loader2, ChevronDown, FileCheck2, Check, Lock, Ban } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -79,7 +79,7 @@ export default function ConversationList() {
 
     let query = supabase
       .from('chat_conversations')
-      .select('*, contact:chat_contacts(id, wa_id, name, profile_picture_url), assignee:chat_attendants(id, name, avatar_url)')
+      .select('*, contact:chat_contacts(id, wa_id, name, profile_picture_url, bot_bloqueado), assignee:chat_attendants(id, name, avatar_url)')
       .order('last_message_at', { ascending: false })
       .limit(50)
 
@@ -455,6 +455,17 @@ function ConversationItem({
           )}
         </div>
         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+          {/* Lista negra do bot (migration 074) — estado permanente, não urgência:
+              de propósito NÃO entra no score de ordenação nem muda o fundo da linha. */}
+          {conv.contact?.bot_bloqueado && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200 shrink-0"
+              title="Contato bloqueado para o Agente IA — cobrança e campanhas continuam"
+            >
+              <Ban className="w-2.5 h-2.5" />
+              Bot bloqueado
+            </span>
+          )}
           {conv.assignee && (
             <p className="text-[10px] text-gray-400 truncate">
               → {conv.assignee.name}
