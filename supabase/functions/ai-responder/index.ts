@@ -100,6 +100,54 @@ function ehDespedida(m: { type: string; content: string | null }): boolean {
   return norm.split(' ').every((w) => DESPEDIDA_PALAVRA.test(w) || DESPEDIDA_ENFEITE.has(w))
 }
 
+// ── Trava anti-"já foi pago" ─────────────────────────────────────────────────
+// O bot NÃO pode afirmar pagamento/baixa. Caso Ryan (07/08/2026, 19h13): o
+// cliente perguntou se o boleto de 28/07 estava pago; o contexto entregue ao
+// modelo dizia "🔵 Em aberto"; ele respondeu "Sim, já foi pago e a baixa foi
+// confirmada". A baixa do Sienge só chegou em 13/08 — seis dias depois. O modelo
+// contradisse o dado explícito que recebeu, e sobre dinheiro.
+//
+// Regra do produto (mesma de [[regua-confia-baixa-sienge]]): baixa é fato de
+// sistema, não de conversa. Instrução em prompt não basta — é determinístico.
+//
+// Só casa AFIRMAÇÃO de pagamento consumado. Frases condicionais/futuras
+// ("assim que for pago", "após o pagamento", "para pagar") não disparam.
+const AFIRMA_PAGAMENTO = new RegExp(
+  '(' +
+  'j[áa]\\s+(foi|est[áa]|consta)\\s+(pag|quitad)' + '|' +
+  'consta\\s+como\\s+pag'                          + '|' +
+  '(foi|est[áa])\\s+quitad'                          + '|' +
+  'baixa\\s+(j[áa]\\s+)?(foi\\s+)?confirmad'      + '|' +
+  'pagamento\\s+(foi\\s+)?(confirmad|identificad|localizad)' + '|' +
+  'recebemos\\s+o\\s+(seu\\s+)?pagamento'         + '|' +
+  'sim,?\\s+(o\\s+)?boleto.{0,40}pag'               +
+  ')', 'i',
+)
+
+const PAGO_OK = ['pago', 'baixado', 'comprovante_confirmado']
+const ehPago  = (b: any) => PAGO_OK.includes(String(b?.status || '').toLowerCase())
+
+function afirmaPagamentoSemProva(msg: string, boletos: any[]): boolean {
+  const texto = msg || ''
+  if (!AFIRMA_PAGAMENTO.test(texto)) return false
+
+  // A prova tem de ser do boleto CERTO. Se a resposta cita um vencimento
+  // ("o boleto de 28/07"), é AQUELE que precisa constar pago — senão bastaria o
+  // cliente ter uma parcela antiga quitada para o bot poder mentir sobre a atual,
+  // que é exatamente a forma do caso Ryan.
+  const datas = [...texto.matchAll(/(\d{2})\/(\d{2})(?:\/(\d{2,4}))?/g)]
+  if (datas.length > 0) {
+    return !datas.some(([, dd, mm]) =>
+      (boletos || []).some((b) => {
+        const iso = String(b?.due_date || '').slice(0, 10)   // AAAA-MM-DD
+        return iso.slice(8, 10) === dd && iso.slice(5, 7) === mm && ehPago(b)
+      }))
+  }
+
+  // Sem data citada: exige ao menos um boleto pago no contexto.
+  return !(boletos || []).some(ehPago)
+}
+
 // ── Handler principal ──────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
@@ -500,8 +548,32 @@ function agoraBRT(): string {
         .eq('phone_norm', normalizePhone(contactWaId))
         .order('due_date', { ascending: true })
         .limit(10)
+      // A vw_boleto_chat esconde pagos/cancelados (ela existe para OFERECER 2ª
+      // via). Resultado: perguntado "já foi pago?", o bot ficava cego e chutava —
+      // foi assim que respondeu "sim, já foi pago" para um boleto em aberto
+      // (Ryan, 07/08). Trazemos os pagos recentes só como INFORMAÇÃO de consulta.
+      const { data: pagos } = await supabase
+        .from('boletos_emitidos')
+        .select('id, client_id, customer_name, vencimento, valor, status, paid_at, receivable_bill_id, installment_id')
+        .eq('phone_norm', normalizePhone(contactWaId))
+        .in('status', ['pago', 'baixado'])
+        .gte('vencimento', new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10))
+        .order('vencimento', { ascending: false })
+        .limit(3)
+      const pagosCtx = (pagos || []).map((b: any) => ({
+        emitido_id: b.id, client_id: b.client_id, customer_name: b.customer_name,
+        parcela_descricao: `Parcela venc. ${String(b.vencimento).slice(0, 10).split('-').reverse().join('/')}`,
+        due_date: b.vencimento, amount: b.valor,
+        status: 'pago', receivable_bill_id: b.receivable_bill_id,
+        installment_id: b.installment_id, source: 'emitido', _somenteConsulta: true,
+      }))
+
       if (emit && emit.length > 0) {
-        boletos = emit.map((b: any) => ({ ...b, customer_id: b.client_id, source: 'emitido' }))
+        boletos = [...emit.map((b: any) => ({ ...b, customer_id: b.client_id, source: 'emitido' })), ...pagosCtx]
+        boletoSource = 'emitido'
+      } else if (pagosCtx.length > 0) {
+        // Nada em aberto, mas há pago recente: o bot precisa poder dizer isso.
+        boletos = pagosCtx
         boletoSource = 'emitido'
       } else {
         // Sem boleto emitido → tenta SGL (boleto com LINK real) ANTES das parcelas
@@ -667,13 +739,23 @@ function agoraBRT(): string {
           : (b.receivable_bill_id && b.installment_id)
             ? ` [IDs: receivable_bill_id=${b.receivable_bill_id}, installment_id=${b.installment_id}]`
             : ''
-        customerContext += `- ${b.parcela_descricao || 'Parcela'}: ${amount} | Vencimento: ${dueDate} | ${statusLabel}${ids}\n`
+        const soConsulta = (b as any)._somenteConsulta ? ' (somente consulta — NÃO ofereça 2ª via deste)' : ''
+        customerContext += `- ${b.parcela_descricao || 'Parcela'}: ${amount} | Vencimento: ${dueDate} | ${statusLabel}${ids}${soConsulta}\n`
 
         // Incluir link do boleto no contexto (SGL sempre tem link)
         if (b.link_boleto) {
           customerContext += `  Link para pagamento: ${b.link_boleto}\n`
         }
       }
+
+      // Regra de ouro sobre pagamento — vale para QUALQUER agente, porque vive no
+      // contexto e não no prompt de um agente específico.
+      customerContext += '\nSOBRE PAGAMENTO: responda EXCLUSIVAMENTE pelo status acima. '
+        + 'Só afirme que um boleto foi pago se ele estiver marcado "✅ Pago" nesta lista. '
+        + 'Se estiver "🔵 Em aberto", ele NÃO foi pago — diga isso. '
+        + 'Se o cliente perguntar por um boleto que não está na lista, NÃO adivinhe: '
+        + 'diga que vai confirmar com um atendente e use ESCALAR_HUMANO. '
+        + 'Nunca invente baixa: a baixa vem do Sienge, não da conversa.\n'
 
       // Instrução de uso conforme a origem do boleto
       if (boletoSource === 'emitido') {
@@ -1025,7 +1107,7 @@ function agoraBRT(): string {
       'atendente irá te ajudar',
     ]
     const allEscalationPhrases = [...DEFAULT_ESCALATION_PHRASES, ...agentBotPhrases]
-    const shouldEscalate = allEscalationPhrases.some(p =>
+    let shouldEscalate = allEscalationPhrases.some(p =>
       botReply.toLowerCase().includes(p.toLowerCase())
     )
 
@@ -1078,6 +1160,22 @@ function agoraBRT(): string {
       console.warn('ai-responder: resposta vazia após remover tokens internos — nada enviado', { conversationId })
       return new Response(JSON.stringify({ ok: true, skipped: 'resposta vazia após sanitização', escalated: shouldEscalate }),
         { headers: { 'Content-Type': 'application/json' } })
+    }
+
+    // ── 9b. TRAVA: o bot não afirma pagamento sem prova ───────────────────────
+    // Se a resposta afirma que está pago/baixado e NENHUM boleto do contexto
+    // consta pago, a resposta não sai como está: vira encaminhamento para um
+    // humano. Errar para "vou verificar" é barato; errar para "já foi pago" fez
+    // um cliente ir embora achando que estava quitado.
+    let travouPagamento = false
+    if (afirmaPagamentoSemProva(messageToSend, boletos)) {
+      console.warn('ai-responder: TRAVA — resposta afirmava pagamento sem prova', {
+        conversationId, resposta: messageToSend.slice(0, 200),
+      })
+      messageToSend = 'Deixa eu confirmar isso direitinho para você: vou verificar a situação '
+        + 'desse boleto com um atendente e já te retorno. Um momento, por favor. 🙏'
+      travouPagamento = true
+      shouldEscalate  = true
     }
 
     if (shouldEscalate) {
