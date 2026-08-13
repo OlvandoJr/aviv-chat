@@ -106,6 +106,49 @@ Deno.serve(async (req) => {
       for (const d of done || []) suppressed.add(`${d.phone_norm}||${d.contasreceberparcela}`)
     }
 
+    // ── Supressão: cliente DISTRATADO não recebe cobrança do SGL ──────────────
+    // O SGL não tem API — mas não precisamos dela: quem sabe do distrato é o
+    // Sienge, e a ponte entre os dois é o TELEFONE (mesmo phone_norm nas duas
+    // bases). Mesmo critério das views de cobrança (migrations 068/069): bloqueia
+    // só quem TEM contrato(s) e NENHUM ativo. Sem vínculo com o Sienge (cliente
+    // SGL puro, ~14% dos telefones) NÃO bloqueia — na dúvida, cobra, porque
+    // barrar às cegas seria pior do que cobrar um distratado.
+    const distratados = new Set<string>()
+    if (phones.length) {
+      // telefone → client_id(s). Um telefone pode apontar para MAIS DE UM cliente
+      // (casal, cadastro duplicado): 43 casos hoje, 12 deles com alguém ativo.
+      // Guardamos a lista inteira — colapsar em um só bloquearia por engano quem
+      // tem contrato vigente, parando cobrança legítima em silêncio.
+      const foneClientes = new Map<string, Set<number>>()
+      const [{ data: clis }, { data: emitidos }] = await Promise.all([
+        admin.from('sienge_clientes').select('client_id, phone_norm').in('phone_norm', phones),
+        admin.from('boletos_emitidos').select('client_id, phone_norm').in('phone_norm', phones).not('client_id', 'is', null),
+      ])
+      for (const c of [...(clis || []), ...(emitidos || [])]) {
+        if (!c.phone_norm || c.client_id == null) continue
+        if (!foneClientes.has(c.phone_norm)) foneClientes.set(c.phone_norm, new Set())
+        foneClientes.get(c.phone_norm)!.add(Number(c.client_id))
+      }
+      const clientIds = [...new Set([...foneClientes.values()].flatMap((s) => [...s]))]
+      if (clientIds.length) {
+        const { data: contratos } = await admin.from('sienge_contratos')
+          .select('client_id, situation').in('client_id', clientIds)
+        const temContrato = new Set<number>()
+        const temAtivo    = new Set<number>()
+        for (const ct of contratos || []) {
+          const cid = Number(ct.client_id)
+          temContrato.add(cid)
+          if (!/cancel|distrat/i.test(String(ct.situation || ''))) temAtivo.add(cid)
+        }
+        // Bloqueia só quando NENHUM cliente do telefone tem contrato ativo.
+        for (const [fone, cids] of foneClientes) {
+          const algumContrato = [...cids].some((c) => temContrato.has(c))
+          const algumAtivo    = [...cids].some((c) => temAtivo.has(c))
+          if (algumContrato && !algumAtivo) distratados.add(fone)
+        }
+      }
+    }
+
     const inboxCache: Record<string, any> = {}
     const tplCache: Record<string, TemplateRow | null> = {}
     const result = { processed: 0, sent: 0, skipped: 0, failed: 0, retry: 0, gaveup: 0, byClass: {} as Record<string, number>, samples: [] as any[] }
@@ -121,7 +164,17 @@ Deno.serve(async (req) => {
       const suprimida = suppressed.has(`${r.phone_norm}||${r.contasreceberparcela}`)
 
       if (dryRun) {
-        if (result.samples.length < 25) result.samples.push({ phone: waId, nome: r.pessoanomecompleto, venc: r.contasrecebervencimento, classificacao, template: suprimida ? 'SUPRIMIDO (comprovante)' : (m ? 'sim' : 'NÃO ENVIA') })
+        if (result.samples.length < 25) result.samples.push({ phone: waId, nome: r.pessoanomecompleto, venc: r.contasrecebervencimento, classificacao, template: distratados.has(r.phone_norm) ? 'BLOQUEADO (distrato)' : suprimida ? 'SUPRIMIDO (comprovante)' : (m ? 'sim' : 'NÃO ENVIA') })
+        continue
+      }
+
+      // Distrato: registra o motivo (auditoria) e não cobra.
+      if (distratados.has(r.phone_norm)) {
+        await admin.from('mensagens_cobranca').update({
+          app_dispatched_at:  new Date().toISOString(),
+          app_dispatch_error: 'não enviado: cliente sem contrato ativo no Sienge (distrato)',
+        }).eq('id', r.id)
+        result.skipped++
         continue
       }
 
