@@ -27,6 +27,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
 
     const patch: Record<string, any> = { updated_at: new Date().toISOString() }
     if (b.name !== undefined) patch.name = b.name
+    if (b.incluirDistratados !== undefined) patch.incluir_distratados = !!b.incluirDistratados
 
     const mudaConfig = b.inboxId !== undefined || b.templateId !== undefined
       || b.variableMapping !== undefined || b.scheduledAt !== undefined || b.ownerId !== undefined

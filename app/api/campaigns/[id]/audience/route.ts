@@ -27,7 +27,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
     const { data: camp } = await admin
       .from('chat_campaigns')
-      .select('id, status, variable_mapping, deleted_at')
+      .select('id, status, variable_mapping, deleted_at, incluir_distratados')
       .eq('id', id)
       .single()
     if (!camp || camp.deleted_at) return NextResponse.json({ error: 'Campanha não encontrada' }, { status: 404 })
@@ -90,6 +90,23 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       }
     }
 
+    // ── DISTRATO: quem não tem nenhum contrato ativo sai da audiência ─────────
+    // Último caminho de envio a ganhar a proteção (régua Sienge, 2ª via do bot e
+    // régua SGL já bloqueiam). Vale para os TRÊS modos — inclusive planilha, que
+    // é justamente por onde um distratado entraria sem ninguém perceber.
+    // Não é cego: `incluir_distratados` permite campanha de reconquista/pesquisa,
+    // mas o padrão é o lado seguro.
+    let removidosDistrato = 0
+    if (!camp.incluir_distratados) {
+      const fonesAud = [...new Set(sourceRows.map(r => normFone(r.phone_norm || r.wa_id)).filter(Boolean))]
+      const distratados = await buscarDistratados(fonesAud)
+      if (distratados.size) {
+        const antes = sourceRows.length
+        sourceRows = sourceRows.filter(r => !distratados.has(normFone(r.phone_norm || r.wa_id)))
+        removidosDistrato = antes - sourceRows.length
+      }
+    }
+
     // Filtrar sem telefone e deduplicar por wa_id
     const seen = new Set<string>()
     const recipients = sourceRows
@@ -124,9 +141,64 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       updated_at: new Date().toISOString(),
     }).eq('id', id)
 
-    return NextResponse.json({ ok: true, total: recipients.length })
+    return NextResponse.json({ ok: true, total: recipients.length, removidosDistrato })
   } catch (err) {
     console.error('[campaigns audience]', err)
     return NextResponse.json({ error: 'Erro interno' }, { status: 500 })
   }
+}
+
+// ── Distrato: telefone → clientes → nenhum contrato ativo ────────────────────
+// Mesmo critério das views de cobrança (migrations 068/069) e da régua do SGL.
+// Um telefone pode apontar para MAIS DE UM cliente (casal, cadastro duplicado):
+// só bloqueia quando NENHUM deles tem contrato ativo — colapsar em um cliente só
+// bloquearia por engano quem tem contrato vigente.
+function normFone(v: unknown): string {
+  let d = String(v ?? '').replace(/\D/g, '')
+  if (!d) return ''
+  if (d.startsWith('55') && d.length >= 12) d = d.slice(2)
+  if (d.startsWith('0')) d = d.slice(1)
+  if (d.length >= 11 && d[2] === '9') d = d.slice(0, 2) + d.slice(3)
+  return d.slice(-10)
+}
+
+async function buscarDistratados(fones: string[]): Promise<Set<string>> {
+  const bloqueados = new Set<string>()
+  if (!fones.length) return bloqueados
+  const foneClientes = new Map<string, Set<number>>()
+
+  for (let i = 0; i < fones.length; i += 200) {
+    const chunk = fones.slice(i, i + 200)
+    const [{ data: clis }, { data: emitidos }] = await Promise.all([
+      admin.from('sienge_clientes').select('client_id, phone_norm').in('phone_norm', chunk),
+      admin.from('boletos_emitidos').select('client_id, phone_norm').in('phone_norm', chunk).not('client_id', 'is', null),
+    ])
+    for (const c of [...(clis || []), ...(emitidos || [])]) {
+      if (!c.phone_norm || c.client_id == null) continue
+      if (!foneClientes.has(c.phone_norm)) foneClientes.set(c.phone_norm, new Set())
+      foneClientes.get(c.phone_norm)!.add(Number(c.client_id))
+    }
+  }
+
+  const clientIds = [...new Set([...foneClientes.values()].flatMap(s => [...s]))]
+  if (!clientIds.length) return bloqueados
+
+  const temContrato = new Set<number>()
+  const temAtivo    = new Set<number>()
+  for (let i = 0; i < clientIds.length; i += 200) {
+    const { data: contratos } = await admin.from('sienge_contratos')
+      .select('client_id, situation').in('client_id', clientIds.slice(i, i + 200))
+    for (const ct of contratos || []) {
+      const cid = Number(ct.client_id)
+      temContrato.add(cid)
+      if (!/cancel|distrat/i.test(String(ct.situation || ''))) temAtivo.add(cid)
+    }
+  }
+
+  for (const [fone, cids] of foneClientes) {
+    const algumContrato = [...cids].some(c => temContrato.has(c))
+    const algumAtivo    = [...cids].some(c => temAtivo.has(c))
+    if (algumContrato && !algumAtivo) bloqueados.add(fone)
+  }
+  return bloqueados
 }

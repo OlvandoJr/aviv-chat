@@ -15,7 +15,8 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
     const { name, inboxId, templateId, ownerId, variableMapping = {}, scheduledAt = null,
-            headerMediaPath = null, headerMediaFilename = null, headerMediaMode = 'upload' } = await req.json()
+            headerMediaPath = null, headerMediaFilename = null, headerMediaMode = 'upload',
+            incluirDistratados = false } = await req.json()
     if (!name || !inboxId || !templateId) {
       return NextResponse.json({ error: 'name, inboxId e templateId são obrigatórios' }, { status: 400 })
     }
@@ -36,6 +37,8 @@ export async function POST(req: NextRequest) {
       header_media_filename: headerMediaMode === 'boleto' ? null : headerMediaFilename,
       created_by:       user.id,
       status:           'draft',
+      // Distratado fora da audiência por padrão — mesma regra das réguas.
+      incluir_distratados: !!incluirDistratados,
     }).select('id').single()
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
