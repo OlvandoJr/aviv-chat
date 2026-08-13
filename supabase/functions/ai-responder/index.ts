@@ -206,38 +206,61 @@ Deno.serve(async (req) => {
       })
     }
 
-    // ── 1a. DEBOUNCE ("espera, junta e responde") ─────────────────────────────
-    // Cada mensagem do cliente aciona o ai-responder. Esperamos DEBOUNCE_MS e, se
-    // tiver chegado mensagem NOVA do cliente nesse intervalo, abortamos — a invocação
-    // da mensagem mais recente é que responde, lendo todo o histórico de uma vez.
-    // (last-writer-wins; usa CONTAGEM de mensagens 'in' pra ser imune à precisão do timestamp.)
+    // ── 1b. DEBOUNCE ("espera, junta e responde") ─────────────────────────────
+    // Cada mensagem do cliente aciona o ai-responder; a invocação da ÚLTIMA é que
+    // responde, lendo o histórico inteiro (last-writer-wins, por CONTAGEM de
+    // mensagens 'in' — imune à precisão do timestamp).
+    //
+    // JANELA ROLANTE (não uma espera fixa). A espera fixa de 8s falhava com quem
+    // digita no ritmo normal: caso Sandy (13/08) — mensagens às 14:59:12, :25 e
+    // :37 (intervalos de 13s e 12s). Cada execução acordava ANTES da próxima
+    // mensagem chegar, via que nada mudou e respondia: três respostas idênticas.
+    // A janela era menor que o ritmo de digitação de uma pessoa.
+    //
+    // Agora esperamos o cliente FICAR QUIETO: enquanto chegam mensagens novas,
+    // seguimos esperando; só respondemos após QUIET_MS de silêncio, com teto de
+    // MAX_WAIT_MS para nunca segurar a resposta indefinidamente.
     {
-      const DEBOUNCE_MS = 8000
+      const QUIET_MS    = 15_000   // silêncio necessário desde a última mensagem
+      const MAX_WAIT_MS = 45_000   // teto absoluto da espera
+      const PASSO_MS    = 3_000    // granularidade da verificação
+
       const inCount = async () => {
         const { count } = await supabase
           .from('chat_messages').select('id', { count: 'exact', head: true })
           .eq('conversation_id', conversationId).eq('direction', 'in')
         return count || 0
       }
-      const before = await inCount()
-      await new Promise((r) => setTimeout(r, DEBOUNCE_MS))
-      const after = await inCount()
-      if (after > before) {
-        return new Response(JSON.stringify({ skipped: true, reason: 'debounced (newer message arrived)' }), {
-          status: 200, headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      // Humano pode ter assumido durante a espera → não responder por cima dele.
-      const { data: fresh } = await supabase
-        .from('chat_conversations').select('handled_by').eq('id', conversationId).single()
-      if (fresh && (fresh.handled_by === 'human' || fresh.handled_by === 'pending_human')) {
-        return new Response(JSON.stringify({ skipped: true, reason: 'human took over during debounce' }), {
-          status: 200, headers: { 'Content-Type': 'application/json' },
-        })
+
+      const inicio = Date.now()
+      let visto    = await inCount()
+      let quietoDesde = Date.now()
+
+      while (Date.now() - quietoDesde < QUIET_MS && Date.now() - inicio < MAX_WAIT_MS) {
+        await new Promise((r) => setTimeout(r, PASSO_MS))
+
+        const agora = await inCount()
+        if (agora > visto) {
+          // Chegou mensagem nova: a invocação DELA é que vai responder, lendo o
+          // histórico completo. Esta sai (last-writer-wins) — sem isto, as duas
+          // esperariam em paralelo e as duas responderiam.
+          return new Response(JSON.stringify({ skipped: true, reason: 'debounced (newer message arrived)' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        // Humano assumiu durante a espera → não responder por cima dele.
+        const { data: fresh } = await supabase
+          .from('chat_conversations').select('handled_by').eq('id', conversationId).single()
+        if (fresh && (fresh.handled_by === 'human' || fresh.handled_by === 'pending_human')) {
+          return new Response(JSON.stringify({ skipped: true, reason: 'human took over during debounce' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })
+        }
       }
     }
 
-    // ── 1b. Credenciais da inbox ──────────────────────────────────────────────
+    // ── 1c. Credenciais da inbox ──────────────────────────────────────────────
     let phoneNumberId = WA_PHONE_NUMBER_ID
     let accessToken   = WA_ACCESS_TOKEN
 
@@ -1176,6 +1199,43 @@ function agoraBRT(): string {
         + 'desse boleto com um atendente e já te retorno. Um momento, por favor. 🙏'
       travouPagamento = true
       shouldEscalate  = true
+    }
+
+    // ── 9c. ÚLTIMA CHECAGEM ANTES DE ENVIAR ───────────────────────────────────
+    // O debounce protege a ESPERA, mas a chamada do modelo leva ~30-40s depois
+    // dela — e nesse intervalo o mundo muda. No caso Sandy (13/08) a primeira
+    // resposta escalou a conversa às 14:59:57; a 2ª e a 3ª já tinham passado
+    // pelas checagens (14:59:33 e :45), estavam dentro do modelo, e enviaram às
+    // 15:00:04 e 15:00:27 sem olhar de novo. Custa uma query e não adia nada.
+    {
+      const { data: agora } = await supabase
+        .from('chat_conversations').select('handled_by').eq('id', conversationId).single()
+      if (agora && (agora.handled_by === 'human' || agora.handled_by === 'pending_human')) {
+        console.log('ai-responder: estado mudou durante a geração — não envia', { conversationId })
+        return new Response(JSON.stringify({ skipped: true, reason: 'estado mudou durante a geração' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      // Outra execução já respondeu depois da última mensagem do cliente?
+      // (pega a corrida mesmo quando a resposta NÃO escala — aí handled_by não muda.)
+      const { data: ultimaIn } = await supabase
+        .from('chat_messages').select('created_at')
+        .eq('conversation_id', conversationId).eq('direction', 'in')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle()
+      if (ultimaIn?.created_at) {
+        const { count: jaRespondeu } = await supabase
+          .from('chat_messages').select('id', { count: 'exact', head: true })
+          .eq('conversation_id', conversationId).eq('direction', 'out')
+          .is('attendant_id', null)
+          .gt('created_at', ultimaIn.created_at)
+        if ((jaRespondeu || 0) > 0) {
+          console.log('ai-responder: outra execução já respondeu — não duplica', { conversationId })
+          return new Response(JSON.stringify({ skipped: true, reason: 'outra execução já respondeu' }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          })
+        }
+      }
     }
 
     if (shouldEscalate) {
