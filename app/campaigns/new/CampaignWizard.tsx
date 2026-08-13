@@ -90,6 +90,10 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   const [error, setError] = useState<string | null>(null)
   const [draftId, setDraftId] = useState<string | null>(campaign?.id || null)
   const [audienceTotal, setAudienceTotal] = useState<number | null>(null)
+  // Distratado não recebe campanha por padrão (mesma regra das réguas). O toggle
+  // existe para reconquista/pesquisa com ex-cliente — escolha explícita.
+  const [incluirDistratados, setIncluirDistratados] = useState<boolean>(!!campaign?.incluir_distratados)
+  const [removidosDistrato, setRemovidosDistrato]   = useState<number>(0)
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
   const tpl = templates.find(t => t.id === templateId) || null
@@ -223,7 +227,8 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
       const payload = { name, inboxId, templateId, ownerId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null,
         headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
         headerMediaPath: usaUpload ? headerMediaPath : null,
-        headerMediaFilename: usaUpload ? headerMediaFilename : null }
+        headerMediaFilename: usaUpload ? headerMediaFilename : null,
+        incluirDistratados }
       if (!id) {
         const r = await fetch('/api/campaigns', { method: 'POST', headers, body: JSON.stringify(payload) })
         const j = await r.json()
@@ -247,6 +252,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
       const ja = await ra.json()
       if (!ra.ok) throw new Error(ja.error || 'Falha ao calcular audiência')
       setAudienceTotal(ja.total)
+      setRemovidosDistrato(Number(ja.removidosDistrato) || 0)
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -553,9 +559,25 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
               className="text-sm font-medium px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-50">
               {busy ? 'Salvando…' : isEdit ? 'Salvar e calcular audiência' : 'Calcular audiência'}
             </button>
+            <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={incluirDistratados}
+                onChange={e => { setIncluirDistratados(e.target.checked); setAudienceTotal(null) }} />
+              <span>
+                Incluir clientes distratados
+                <span className="block text-xs text-gray-500">
+                  Por padrão, quem não tem contrato ativo fica de fora — o mesmo critério das
+                  réguas de cobrança. Marque apenas para reconquista ou pesquisa com ex-cliente.
+                </span>
+              </span>
+            </label>
             {audienceTotal !== null && (
               <p className="text-sm text-gray-700">
                 <strong>{audienceTotal}</strong> destinatário(s) na audiência.
+                {removidosDistrato > 0 && (
+                  <span className="block text-xs text-amber-700 mt-0.5">
+                    {removidosDistrato} distratado(s) removido(s) da lista.
+                  </span>
+                )}
               </p>
             )}
           </section>
