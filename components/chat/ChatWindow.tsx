@@ -6,7 +6,7 @@ import {
   Check, CheckCheck, Mic, FileText, Image as ImageIcon,
   ChevronDown, Bell, UserCheck, UserRound,
   Play, Pause, Download, MapPin, Video as VideoIcon,
-  AlertTriangle, LayoutTemplate, Lock,
+  AlertTriangle, LayoutTemplate, Lock, Ban,
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -195,6 +195,19 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
             </button>
           </div>
         </div>
+
+        {/* Alerta: contato bloqueado para a IA (migration 074) */}
+        {conv.contact?.bot_bloqueado && (
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-red-50 border-b border-red-200">
+            <Ban className="w-4 h-4 text-red-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-red-800">Contato bloqueado para o Agente IA</p>
+              <p className="text-[11px] text-red-600 truncate">
+                O bot não responde a este contato. Cobrança, lembretes e campanhas continuam — responda manualmente.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Alerta: aguardando atendente humano */}
         {conv.handled_by === 'pending_human' && (

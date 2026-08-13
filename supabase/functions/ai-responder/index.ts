@@ -119,13 +119,37 @@ Deno.serve(async (req) => {
     // ── 1. Buscar conversa ────────────────────────────────────────────────────
     const { data: conv, error: convErr } = await supabase
       .from('chat_conversations')
-      .select('id, handled_by, contact_id, agent_id, inbox_id')
+      .select('id, handled_by, contact_id, agent_id, inbox_id, bloqueio:chat_contacts(bot_bloqueado)')
       .eq('id', conversationId)
       .single()
 
     if (convErr || !conv) {
       console.error('conv query error:', convErr)
       return new Response('Conversation not found', { status: 404 })
+    }
+
+    // ── 1a. LISTA NEGRA DO BOT ────────────────────────────────────────────────
+    // Contato bloqueado: a IA não fala com ele em momento nenhum. A mensagem já
+    // foi salva pelo webhook e aparece na lista para atendimento humano — só a
+    // resposta automática morre aqui.
+    //
+    // A POSIÇÃO importa. Este portão vem:
+    //   • antes do DEBOUNCE (8s de wall-clock + 2 counts por mensagem) — senão
+    //     um bloqueado que manda 5 mensagens custa 40s de função à toa;
+    //   • antes do routeSubagentFlow, que é um caminho de ENVIO PARALELO (manda
+    //     por sendPlainText e retorna, sem passar pelo envio principal) — portão
+    //     depois dele vazaria mensagem dos fluxos de subagente;
+    //   • antes do handled_by, para o log dizer o motivo real.
+    // Assim um único portão cobre também os envios internos posteriores
+    // (resposta de texto e enviarBoletoPDF).
+    //
+    // NÃO afeta régua de cobrança, lembretes nem campanhas: elas não passam por
+    // aqui. Ver migration 074.
+    if ((conv as any).bloqueio?.bot_bloqueado) {
+      console.log('ai-responder: contato bloqueado — sem resposta', { conversationId })
+      return new Response(JSON.stringify({ skipped: true, reason: 'contato bloqueado' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     if (conv.handled_by === 'human' || conv.handled_by === 'pending_human') {

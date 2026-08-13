@@ -53,6 +53,11 @@ export interface Contact {
   profile_picture_url: string | null
   created_at:          string
   updated_at:          string
+  // Lista negra do bot (migration 074): a IA nunca responde a este contato.
+  // Não afeta régua de cobrança, lembretes nem campanhas.
+  bot_bloqueado:       boolean
+  bot_bloqueado_em:    string | null
+  bot_bloqueado_por:   string | null
 }
 
 export type AttendantRole   = 'admin' | 'manager' | 'agent'
