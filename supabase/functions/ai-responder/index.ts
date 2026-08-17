@@ -936,7 +936,12 @@ function agoraBRT(): string {
       } else if ((msg.type === 'image' || msg.type === 'document') && (msg.ai_analysis as any)) {
         const analysis = msg.ai_analysis as any
         if (analysis.nao_comprovante) {
-          content = analysis.doc_kind === 'boleto'
+          const dataAg = analysis.data_pagamento || analysis.data_agendamento || analysis.vencimento || ''
+          content = analysis.doc_kind === 'agendamento'
+            // Agendamento: o cliente FEZ algo (agendou), mas o dinheiro ainda não saiu.
+            // Não é boleto (não diga que é) e não é prova (não confirme baixa).
+            ? `[Cliente enviou um comprovante de AGENDAMENTO de pagamento${dataAg ? ` para ${dataAg}` : ''} — o pagamento ainda NÃO foi efetivado. NÃO confirme baixa. NÃO diga que "isso é o boleto". Reconheça o agendamento com gentileza, explique que a baixa só acontece quando o banco efetivar o débito na data agendada, e peça que ele envie o comprovante DEFINITIVO depois dessa data (o próprio banco disponibiliza no dia do débito).]`
+            : analysis.doc_kind === 'boleto'
             ? `[Cliente enviou um BOLETO/cobrança, NÃO um comprovante de pagamento. NÃO confirme pagamento nem baixa. Explique gentilmente que isso é o boleto (a cobrança) e peça que ele envie o COMPROVANTE do pagamento efetivado (PIX/transferência/pagamento realizado).]`
             : `[Cliente enviou ${msg.type === 'image' ? 'uma imagem' : 'um documento'} — não identificado como comprovante de pagamento]`
         } else if (analysis.verdict) {

@@ -238,7 +238,21 @@ function normVenc(s: unknown): string {
 // (tipo_documento / pagamento_efetuado) e só cai na data de pagamento como fallback
 // (boleto tem apenas vencimento). Baixo falso-positivo: PIX/TED/pagamento de boleto
 // sempre trazem data/autenticação. Ver plano "Bloquear boleto como comprovante".
+// AGENDAMENTO não é prova de pagamento. Caso Andréia (17/08): "Pagamento
+// agendado — boleto de cobrança" do Bradesco, com o rodapé "Agendamentos podem
+// ser alterados ou cancelados. O comprovante da transação vai estar disponível
+// no dia do débito." O dinheiro ainda NÃO saiu — dar baixa nisso é dar baixa em
+// promessa. Mas também não é boleto: dizer "isso é o boleto" ofende quem acabou
+// de agendar. É uma terceira categoria, com resposta própria.
+export function isAgendamento(d: any): boolean {
+  const tipo = String(d?.tipo_documento || '').toLowerCase()
+  if (tipo.startsWith('agend')) return true
+  const raw = JSON.stringify(d || {}).toLowerCase()
+  return /pagamento agendado|agendamento (de )?pagamento|agendado para|debito programado|d[ée]bito agendado/.test(raw)
+}
+
 function isPaymentProof(d: any): boolean {
+  if (isAgendamento(d)) return false
   const tipo = String(d?.tipo_documento || '').toLowerCase()
   if (tipo.startsWith('boleto') || tipo.startsWith('cobran')) return false
   if (d?.pagamento_efetuado === false) return false
@@ -890,12 +904,13 @@ async function analyzeImage(
   // sair ANTES de qualquer baixa. Bloqueia o caso do cliente mandar o boleto e o bot
   // dar baixa indevida. O bot pede o comprovante (doc_kind='boleto' → hint no ai-responder).
   if (extractedData.nao_comprovante || !isPaymentProof(extractedData)) {
-    const isBoleto = !extractedData.nao_comprovante
+    const docKind = isAgendamento(extractedData) ? 'agendamento'
+                  : !extractedData.nao_comprovante ? 'boleto' : 'outro'
     await supabase.from('chat_messages').update({
       ai_analysis: {
         ...extractedData,
         nao_comprovante: true,
-        doc_kind:        isBoleto ? 'boleto' : 'outro',
+        doc_kind:        docKind,
         validated_at:    new Date().toISOString(),
       },
     }).eq('id', messageId)
@@ -1102,12 +1117,13 @@ async function analyzePdf(
 
     // Não é comprovante — salvar e sair
     if (extractedData.nao_comprovante || !isPaymentProof(extractedData)) {
-      const isBoleto = !extractedData.nao_comprovante
+      const docKind = isAgendamento(extractedData) ? 'agendamento'
+                    : !extractedData.nao_comprovante ? 'boleto' : 'outro'
       await supabase.from('chat_messages').update({
         ai_analysis: {
           ...extractedData,
           nao_comprovante: true,
-          doc_kind:        isBoleto ? 'boleto' : 'outro',
+          doc_kind:        docKind,
           validated_at:    new Date().toISOString(),
         },
       }).eq('id', messageId)
