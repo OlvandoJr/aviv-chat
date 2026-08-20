@@ -773,12 +773,22 @@ function agoraBRT(): string {
 
       // Regra de ouro sobre pagamento — vale para QUALQUER agente, porque vive no
       // contexto e não no prompt de um agente específico.
+      // Caso Vivi Leal (18/08): perguntada "quantas parcelas eu paguei?", a IA
+      // CONTOU a partir desta lista e disse "2" — mas a lista de pagos é parcial
+      // de propósito (120 dias, máx 3; existiam 7 pagas). A regra de ouro serve
+      // para UM boleto específico; agregado de histórico é pergunta de sistema.
       customerContext += '\nSOBRE PAGAMENTO: responda EXCLUSIVAMENTE pelo status acima. '
         + 'Só afirme que um boleto foi pago se ele estiver marcado "✅ Pago" nesta lista. '
         + 'Se estiver "🔵 Em aberto", ele NÃO foi pago — diga isso. '
         + 'Se o cliente perguntar por um boleto que não está na lista, NÃO adivinhe: '
         + 'diga que vai confirmar com um atendente e use ESCALAR_HUMANO. '
         + 'Nunca invente baixa: a baixa vem do Sienge, não da conversa.\n'
+        + 'ATENÇÃO — ESTA LISTA É PARCIAL: boletos pagos aparecem aqui só os recentes '
+        + '(últimos 120 dias, no máximo 3). O histórico completo do contrato NÃO está '
+        + 'disponível nesta conversa. Se o cliente perguntar QUANTAS parcelas pagou, '
+        + 'quantas faltam, o total já pago ou qualquer soma/contagem do contrato, NUNCA '
+        + 'conte a partir desta lista — responda que vai pedir a um atendente o extrato '
+        + 'exato e use `ESCALAR_HUMANO: histórico de parcelas do contrato`.\n'
 
       // Instrução de uso conforme a origem do boleto
       if (boletoSource === 'emitido') {
