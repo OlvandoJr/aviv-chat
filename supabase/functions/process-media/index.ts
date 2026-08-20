@@ -214,6 +214,15 @@ function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
 }
 
 // Converte texto monetário ("R$ 1.234,56" / "1234.56") em número
+// O prompt de extração usa o placeholder __HOJE__ para o modelo poder julgar
+// "data já ocorrida" (extrato com débito lançado ≠ agendamento futuro). Caso
+// Boner (20/08): sem a data, o modelo não sabia que 18/08 era passado e chamou
+// o extrato de "agendamento". A data é de Brasília, como o resto do projeto.
+function comHoje(prompt: string): string {
+  const hoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
+  return String(prompt || '').replace(/__HOJE__/g, hoje)
+}
+
 function parseMoney(s: any): number {
   if (s == null) return 0
   const c = String(s).replace(/[^\d.,-]/g, '')
@@ -837,7 +846,7 @@ async function extractFromImageUrl(sub: any, url: string): Promise<any> {
       messages: [{
         role: 'user',
         content: [
-          { type: 'text', text: sub.extraction_prompt || '' },
+          { type: 'text', text: comHoje(sub.extraction_prompt) },
           { type: 'image_url', image_url: { url, detail: 'high' } },
         ],
       }],
@@ -1104,7 +1113,7 @@ async function analyzePdf(
   try {
     // ── Passo 1: extrair campos estruturados (espelha image step 1) ────────
     console.log('PDF step 1: extracting structured fields')
-    const raw = await askOpenAiPdf(sub.extraction_model || 'gpt-4o-mini', sub.extraction_prompt || '', fileId, 600)
+    const raw = await askOpenAiPdf(sub.extraction_model || 'gpt-4o-mini', comHoje(sub.extraction_prompt), fileId, 600)
     console.log('PDF extraction raw:', raw)
     if (raw) {
       try {
