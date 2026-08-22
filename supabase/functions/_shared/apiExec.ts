@@ -26,16 +26,34 @@ export interface ApiExecResult {
   error?:       string
 }
 
+// {{env.X}} só resolve secrets das integrações. Sem isso, quem controla a URL/headers
+// consegue exfiltrar QUALQUER variável do ambiente (SERVICE_ROLE_KEY, OPENAI_API_KEY...)
+// mandando-a para um servidor próprio. Ao adicionar uma integração nova, inclua o prefixo aqui.
+const ENV_PERMITIDAS = /^(SIENGE_|CV_)/
+
+// A function roda com egress livre: sem isso, a URL pode apontar para a rede interna
+// ou para o endpoint de metadata da cloud.
+const HOSTS_BLOQUEADOS = [
+  /^localhost$/i, /^127\./, /^0\./, /^10\./, /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./, /^169\.254\./, /^\[?::1\]?$/,
+  /\.internal$/i, /\.local$/i,
+]
+
 export async function executeApiConfig(cfg: ApiConfigRow, ctx: ApiExecContext = {}): Promise<ApiExecResult> {
   const vars    = ctx.variables || {}
   const contact = ctx.contact   || {}
+  const envBloqueadas: string[] = []
 
   const resolve = (text: string): string => {
     if (!text) return ''
     return String(text)
       .replace(/\{\{\s*variables\.([^}]+)\s*\}\}/g, (_, k) => String(vars[k.trim()] ?? ''))
       .replace(/\{\{\s*contact\.([^}]+)\s*\}\}/g,   (_, k) => String(contact[k.trim()] ?? ''))
-      .replace(/\{\{\s*env\.([^}]+)\s*\}\}/g,       (_, k) => Deno.env.get(k.trim()) ?? '')
+      .replace(/\{\{\s*env\.([^}]+)\s*\}\}/g,       (_, k) => {
+        const nome = k.trim()
+        if (!ENV_PERMITIDAS.test(nome)) { envBloqueadas.push(nome); return '' }
+        return Deno.env.get(nome) ?? ''
+      })
   }
 
   // ── Auth → headers/query extras ──────────────────────────────────────────────
@@ -89,6 +107,20 @@ export async function executeApiConfig(cfg: ApiConfigRow, ctx: ApiExecContext = 
       if (k.trim()) params.set(k.trim(), rest.join('=').trim())
     }
     fetchBody = params.toString()
+  }
+
+  // ── Guardas (avaliadas depois de todo o resolve, antes de qualquer egress) ────
+  if (envBloqueadas.length) {
+    return {
+      ok: false, status: 0, body: null, resolved_url: urlObj.toString(),
+      error: `Variável de ambiente não liberada para integrações: ${[...new Set(envBloqueadas)].join(', ')}`,
+    }
+  }
+  if (!/^https?:$/.test(urlObj.protocol) || HOSTS_BLOQUEADOS.some((re) => re.test(urlObj.hostname))) {
+    return {
+      ok: false, status: 0, body: null, resolved_url: urlObj.toString(),
+      error: `Destino não permitido: ${urlObj.protocol}//${urlObj.hostname}`,
+    }
   }
 
   // ── Fetch ────────────────────────────────────────────────────────────────────

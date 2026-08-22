@@ -11,8 +11,41 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+/**
+ * Esta função executa uma requisição HTTP arbitrária resolvendo {{env.*}} — ou seja,
+ * com as credenciais do Sienge/CV CRM em mãos. `verify_jwt` sozinho NÃO protege: a
+ * anon key é um JWT válido e é pública (vai no bundle do frontend). Sem a checagem
+ * abaixo, qualquer um poderia usá-la como proxy autenticado.
+ *
+ * Só passam usuários logados (role=authenticated) e chamadas internas (service_role).
+ */
+const ROLES_PERMITIDAS = new Set(['authenticated', 'service_role'])
+
+function roleDoChamador(req: Request): string | null {
+  const m = (req.headers.get('Authorization') || '').match(/^Bearer\s+(.+)$/i)
+  if (!m) return null
+  const partes = m[1].split('.')
+  if (partes.length !== 3) return null
+  try {
+    const b64 = partes[1].replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)))
+    return typeof payload?.role === 'string' ? payload.role : null
+  } catch {
+    return null
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
+
+  const role = roleDoChamador(req)
+  if (!role || !ROLES_PERMITIDAS.has(role)) {
+    console.warn('test-api-call: chamada recusada, role =', role)
+    return new Response(
+      JSON.stringify({ ok: false, error: 'Não autorizado: requer sessão de usuário logado.' }),
+      { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } },
+    )
+  }
 
   try {
     const body = await req.json()
