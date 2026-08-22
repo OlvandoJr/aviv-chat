@@ -9,7 +9,7 @@ import { casarBoleto, decidir, type Extracao, type BoletoCandidato } from './com
 const ex = (o: Partial<Extracao>): Extracao => ({
   tipo: 'comprovante', valor: null, vencimento: null, data_pagamento: null,
   pagador: null, pagador_doc: null, beneficiario: null, beneficiario_doc: null,
-  autenticacao: null, confianca: 'alta', ...o,
+  autenticacao: null, linha_digitavel: null, confianca: 'alta', ...o,
 })
 const bol = (o: Partial<BoletoCandidato> & Pick<BoletoCandidato, 'vencimento' | 'valor'>): BoletoCandidato => ({
   fonte: 'emitido', id: `${o.vencimento}|${o.valor}`, status: 'aberto',
@@ -138,4 +138,112 @@ Deno.test('baixa SÓ na regra 1', () => {
     if (d.baixa) regrasComBaixa.add(d.regra)
   }
   assertEquals([...regrasComBaixa], [1])
+})
+
+// ── LINHA DIGITÁVEL (âncora determinística) ──────────────────────────────────
+import { decodificarLinha, normalizarLinha, repararLinha } from './comprovante.ts'
+
+// Linhas REAIS dos documentos de agosto (conferidas nos PDFs originais).
+const LINHA_JOSE    = '10491.25733 95000.100040 00000.018051 1 15470000062820'  // 628,20 · 23/08/2026
+const LINHA_ANDREIA = '10491 24918 94000.100043 00000.001305 7 15440000060349'  // 603,49 · 20/08/2026
+
+Deno.test('linha REAL decodifica valor e vencimento exatos (José Vitor)', () => {
+  const d = decodificarLinha(LINHA_JOSE)
+  assert(d.valida); assertEquals(d.valor, 628.2); assertEquals(d.vencimento, '2026-08-23')
+})
+
+Deno.test('linha REAL decodifica (Andréia agosto)', () => {
+  const d = decodificarLinha(LINHA_ANDREIA)
+  assert(d.valida); assertEquals(d.valor, 603.49); assertEquals(d.vencimento, '2026-08-20')
+})
+
+Deno.test('UM dígito trocado → DV reprova (nunca erra em silêncio)', () => {
+  const corrompida = LINHA_JOSE.replace('25733', '25738')
+  assertEquals(decodificarLinha(corrompida).valida, false)
+})
+
+Deno.test('prefixo da base ("104-0 " + linha) normaliza para os 47 do sufixo', () => {
+  const comPrefixo = '104-0 ' + LINHA_JOSE
+  assertEquals(normalizarLinha(comPrefixo).length, 47)
+  assert(decodificarLinha(comPrefixo).valida)
+})
+
+Deno.test('CASO JOSÉ VITOR completo: modelo leu 528,20/23-09, linha corrige e casa exato', () => {
+  // a extração ERRADA que aconteceu em produção — mas com a linha copiada certa
+  const e = ex({ valor: 528.20, vencimento: '2026-09-23', linha_digitavel: LINHA_JOSE })
+  const boletos = [
+    bol({ vencimento: '2026-08-23', valor: 628.20, linha_digitavel: '104-0 ' + LINHA_JOSE }),
+    bol({ vencimento: '2026-07-23', valor: 624.33, status: 'pago' }),
+  ]
+  const c = casarBoleto(e, boletos)
+  assertEquals(c.tipo, 'aberto')
+  if (c.tipo === 'aberto') {
+    assertEquals(c.score, 10)                       // casamento pela linha, não por adivinhação
+    assertEquals(c.boleto.vencimento, '2026-08-23')
+  }
+  // e a decisão: o valor DECODIFICADO (628,20) é o que vale → regra 1, baixa
+  const d = decidir({ ...e, valor: decodificarLinha(LINHA_JOSE).valor! }, c, boletos)
+  assertEquals(d.regra, 1)
+})
+
+Deno.test('linha válida sem boleto correspondente: valor/venc decodificados substituem os lidos', () => {
+  // modelo leu valor errado; linha não bate com nenhum boleto nosso (legado),
+  // mas o vencimento decodificado casa por data com o boleto aberto
+  const e = ex({ valor: 528.20, vencimento: '2026-09-23', linha_digitavel: LINHA_ANDREIA })
+  const boletos = [bol({ vencimento: '2026-08-20', valor: 603.49 })]
+  const c = casarBoleto(e, boletos)
+  assertEquals(c.tipo, 'aberto')   // venc decodificado 20/08 (4) + valor decodificado exato (3) = 7
+})
+
+Deno.test('linha corrompida é ignorada: cai no casamento tradicional', () => {
+  const e = ex({ valor: 603.49, vencimento: '2026-08-20', linha_digitavel: LINHA_JOSE.replace('25733','25738') })
+  const boletos = [bol({ vencimento: '2026-08-20', valor: 603.49 })]
+  const c = casarBoleto(e, boletos)
+  assertEquals(c.tipo, 'aberto')   // pelos campos, como antes
+})
+
+Deno.test('código de barras 44 díg. (comprovante internet banking) valida e converte para a linha de 47', () => {
+  // derivado da linha REAL do José Vitor: linha47 → barra44 → decodifica igual
+  const linha = decodificarLinha(LINHA_JOSE)
+  assert(linha.valida && linha.linha)
+  // reconstrói a barra a partir da linha (transformação inversa da FEBRABAN)
+  const l = linha.linha!
+  const barra = l.slice(0, 4) + l.slice(32, 33) + l.slice(33, 47) + l.slice(4, 9) + l.slice(10, 20) + l.slice(21, 31)
+  const d = decodificarLinha(barra)
+  assert(d.valida, 'barra 44 deve validar no mod11')
+  assertEquals(d.valor, 628.2)
+  assertEquals(d.vencimento, '2026-08-23')
+  assertEquals(d.linha, linha.linha)   // normaliza para a MESMA linha de 47 → casa com a base
+})
+
+Deno.test('barra 44 com um dígito trocado reprova no mod11', () => {
+  const l = decodificarLinha(LINHA_JOSE).linha!
+  const barra = l.slice(0, 4) + l.slice(32, 33) + l.slice(33, 47) + l.slice(4, 9) + l.slice(10, 20) + l.slice(21, 31)
+  const ruim = barra.slice(0, 10) + (barra[10] === '9' ? '0' : '9') + barra.slice(11)
+  assertEquals(decodificarLinha(ruim).valida, false)
+})
+
+Deno.test('reparo é SEGURO: para qualquer dígito derrubado, ou recupera a linha CERTA ou rejeita', () => {
+  // Os DVs foram feitos para DETECTAR erro, não para corrigir apagamento — o
+  // reparo é oportunista: em muitas posições sobra ambiguidade e ele rejeita
+  // (fallback pelos campos lidos segue valendo). O que NUNCA pode acontecer é
+  // devolver linha errada. Propriedade varrida nas 47 posições.
+  const l = decodificarLinha(LINHA_JOSE).linha!
+  let recuperadas = 0
+  for (let pos = 0; pos < 47; pos++) {
+    const capenga = l.slice(0, pos) + l.slice(pos + 1)
+    const r = repararLinha(capenga, 628.20)
+    if (r.valida) {
+      assertEquals(r.linha, l, `pos ${pos}: reparo devolveu linha ERRADA`)
+      recuperadas++
+    }
+  }
+  assert(recuperadas >= 1, 'o reparo deve recuperar ao menos algum caso')
+})
+
+Deno.test('reparo NÃO adivinha: sem confirmação de valor, descarta', () => {
+  const l = decodificarLinha(LINHA_JOSE).linha!
+  const capenga = l.slice(0, 17) + l.slice(18)
+  assertEquals(repararLinha(capenga, null).valida, false)          // sem valor lido
+  assertEquals(repararLinha(capenga, 999.99).valida, false)        // valor não bate
 })

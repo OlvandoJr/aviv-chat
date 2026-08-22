@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { decodificarLinha, repararLinha } from '../_shared/comprovante.ts'
 import { decode as decodeImg, Image as ImgS } from 'https://deno.land/x/imagescript@1.2.15/mod.ts'
 
 const supabase = createClient(
@@ -475,6 +476,49 @@ async function interpretAudio(messageId: string, sub: any) {
 // ─────────────────────────────────────────────────────────────────────────────
 const BOLETO_SELECT =
   'id, receivable_bill_id, installment_id, customer_name, customer_cpf, due_date, amount, parcela_descricao'
+
+// ── ÂNCORA: linha digitável/código de barras do comprovante ──────────────────
+// A linha é autovalidável (DVs módulo 10 + DV geral módulo 11) e CODIFICA o
+// valor e o vencimento. O modelo erra dígito de VALOR com confiança (leu 528,20
+// num comprovante de 628,20 — caso José Vitor), mas linha com dígito errado
+// REPROVA no DV em vez de sair errada em silêncio. Quando a linha valida:
+//   1. valor/vencimento decodificados SUBSTITUEM os lidos pelo modelo;
+//   2. o boleto é casado por IGUALDADE de linha (a base guarda a linha com
+//      prefixo "104-0 " — casamos pelo sufixo de 47).
+// Ver _shared/comprovante.ts e docs/PLANO-validacao-comprovantes.md.
+function aplicarAncoraLinha(extractedData: any): { linha: string; valor: number; venc?: string } | null {
+  let dec = decodificarLinha(extractedData?.linha_digitavel)
+  if (!dec.valida) dec = repararLinha(extractedData?.linha_digitavel, parseMoney(extractedData?.valor))
+  if (!dec.valida || !dec.linha || dec.valor == null) return null
+  extractedData.linha_digitavel = dec.linha
+  extractedData.linha_valida    = true
+  extractedData.valor           = dec.valor.toFixed(2).replace('.', ',')
+  if (dec.vencimento) extractedData.vencimento = dec.vencimento
+  return { linha: dec.linha, valor: dec.valor, venc: dec.vencimento }
+}
+
+// Boleto pela LINHA — casamento exato, inclui PAGOS (para detectar "comprovante
+// de parcela já paga" em vez de casar com o boleto errado).
+async function getBoletoPorLinha(linha: string): Promise<any | null> {
+  // linha_norm (migration 076): coluna gerada com os 47 dígitos sem formatação
+  // — a linha_digitavel crua guarda o formato impresso ("104-0 10491.25733 …")
+  // e um ilike de dígitos puros nunca casaria com ela.
+  const { data } = await supabase
+    .from('boletos_emitidos')
+    .select('id, client_id, customer_name, vencimento, valor, status, receivable_bill_id, installment_id')
+    .eq('linha_norm', linha)
+    .limit(2)
+  if (!data || data.length !== 1) return null      // 0 ou 2+ → não adivinha
+  const b = data[0]
+  return {
+    id: null, emitido_id: b.id, client_id: b.client_id,
+    receivable_bill_id: b.receivable_bill_id, installment_id: b.installment_id,
+    customer_name: b.customer_name, customer_cpf: null,
+    parcela_descricao: `Boleto venc. ${String(b.vencimento).slice(0, 10).split('-').reverse().join('/')}`,
+    amount: Number(b.valor), due_date: b.vencimento,
+    _source: 'emitido', _status_atual: String(b.status || 'aberto').toLowerCase(),
+  }
+}
 
 // ── Boleto EMITIDO (banco) — fonte PRIMÁRIA de validação ──────────────────────
 // Usa o valor REAL do boleto (com juros/multa), não o valor da parcela do Sienge.
@@ -963,7 +1007,26 @@ async function analyzeImage(
   // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ───────
   // Fonte PRIMÁRIA: boleto EMITIDO (valor real → sem divergência). Não consulta o
   // Sienge (preserva cota): o "pago" vem do webhook. Sienge/SGL só como fallback.
-  let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
+  // ÂNCORA primeiro: linha digitável válida corrige valor/venc e casa exato.
+  const ancora = aplicarAncoraLinha(extractedData)
+  let boleto: any = ancora ? await getBoletoPorLinha(ancora.linha) : null
+  if (boleto && ['pago', 'baixado', 'comprovante_confirmado'].includes(boleto._status_atual)) {
+    // Comprovante de parcela JÁ PAGA (caso Andréia): informar, sem re-baixar e
+    // sem mandar para validação humana — não é pendência, é esclarecimento.
+    const vencBR = String(boleto.due_date).slice(0, 10).split('-').reverse().join('/')
+    await supabase.from('chat_messages').update({
+      ai_analysis: {
+        ...extractedData,
+        verdict: `Comprovante da parcela de ${vencBR}, que JÁ CONSTA PAGA no sistema. ` +
+                 'Se houver cobrança em aberto, refere-se a OUTRA parcela.',
+        sienge_boleto: { id: null, parcela: boleto.parcela_descricao, valor: boleto.amount, vencimento: boleto.due_date },
+        parcela_ja_paga: true,
+        validated_at: new Date().toISOString(),
+      },
+    }).eq('id', messageId)
+    return
+  }
+  if (!boleto) boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
   let siengeStatus: 'pago' | 'pendente' | null = null
   if (!boleto) {
     boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
@@ -1175,7 +1238,26 @@ async function analyzePdf(
 
     // ── Buscar boleto: Sienge (com check de pagamento) → unificado (SGL) ──
     // Fonte PRIMÁRIA: boleto EMITIDO (valor real → sem divergência). Sienge/SGL só fallback.
-    let boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
+    // ÂNCORA primeiro: linha digitável válida corrige valor/venc e casa exato.
+  const ancora = aplicarAncoraLinha(extractedData)
+  let boleto: any = ancora ? await getBoletoPorLinha(ancora.linha) : null
+  if (boleto && ['pago', 'baixado', 'comprovante_confirmado'].includes(boleto._status_atual)) {
+    // Comprovante de parcela JÁ PAGA (caso Andréia): informar, sem re-baixar e
+    // sem mandar para validação humana — não é pendência, é esclarecimento.
+    const vencBR = String(boleto.due_date).slice(0, 10).split('-').reverse().join('/')
+    await supabase.from('chat_messages').update({
+      ai_analysis: {
+        ...extractedData,
+        verdict: `Comprovante da parcela de ${vencBR}, que JÁ CONSTA PAGA no sistema. ` +
+                 'Se houver cobrança em aberto, refere-se a OUTRA parcela.',
+        sienge_boleto: { id: null, parcela: boleto.parcela_descricao, valor: boleto.amount, vencimento: boleto.due_date },
+        parcela_ja_paga: true,
+        validated_at: new Date().toISOString(),
+      },
+    }).eq('id', messageId)
+    return
+  }
+  if (!boleto) boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
     let siengeStatus: 'pago' | 'pendente' | null = null
     if (!boleto) {
       boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
