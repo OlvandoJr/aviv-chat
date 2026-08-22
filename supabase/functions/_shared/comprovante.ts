@@ -28,6 +28,7 @@ export interface Extracao {
   beneficiario:     string | null
   beneficiario_doc: string | null    // CNPJ do beneficiário, só dígitos
   autenticacao:     string | null    // protocolo / autenticação / E2E
+  linha_digitavel:  string | null    // dígitos da linha digitável/código de barras impressos
   confianca:        'alta' | 'media' | 'baixa'
   bruto?:           Record<string, unknown>
 }
@@ -41,6 +42,7 @@ export interface BoletoCandidato {
   status:           string           // 'aberto' | 'pago' | 'comprovante_recebido' | ...
   beneficiario_doc: string | null    // CNPJ do empreendimento, só dígitos (se soubermos)
   descricao:        string | null
+  linha_digitavel?: string | null
   receivable_bill_id?: number | null
   installment_id?:     number | null
 }
@@ -51,6 +53,121 @@ export type Casamento =
   | { tipo: 'ja_pago'; boleto: BoletoCandidato; score: number }
   | { tipo: 'ambiguo'; candidatos: BoletoCandidato[]; score: number }
   | { tipo: 'nenhum' }
+
+// ── LINHA DIGITÁVEL: a âncora determinística ─────────────────────────────────
+// Todo boleto e todo comprovante de boleto imprimem a linha digitável (47
+// dígitos). Ela é AUTOVALIDÁVEL (DV módulo 10 por campo) e CODIFICA o valor
+// (últimos 10 dígitos, em centavos) e o vencimento (fator FEBRABAN). Provado
+// nos casos reais: José Vitor → 628,20/23-08 exatos; Andréia → 603,49/20-08;
+// uma linha com UM dígito errado REPROVA no DV em vez de sair errada em
+// silêncio — exatamente o oposto do LLM, que erra dígito com confiança.
+export interface LinhaDecodificada {
+  valida: boolean
+  linha?: string          // os 47 dígitos normalizados
+  banco?: string
+  valor?: number
+  vencimento?: string     // AAAA-MM-DD (null se fator ausente)
+}
+
+// Dois formatos impressos nos documentos:
+//   • LINHA DIGITÁVEL (47 díg.) — boletos e lotérica; DV módulo 10 por campo.
+//   • CÓDIGO DE BARRAS (44 díg.) — "Representação numérica do código de barras"
+//     dos comprovantes de internet banking (Caixa/Bradesco); DV geral módulo 11.
+// A base guarda a linha com prefixo ("104-0 " + linha) — o sufixo de 47 é a
+// linha; os DVs garantem que só o recorte certo valida.
+export function normalizarLinha(s: unknown): string {
+  const d = String(s ?? '').replace(/\D/g, '')
+  if (d.length === 44 || d.length === 47) return d
+  return d.length > 47 ? d.slice(-47) : d
+}
+
+function mod10(s: string): number {
+  let soma = 0, peso = 2
+  for (let i = s.length - 1; i >= 0; i--) {
+    let p = Number(s[i]) * peso
+    if (p > 9) p = Math.floor(p / 10) + (p % 10)
+    soma += p
+    peso = peso === 2 ? 1 : 2
+  }
+  return (10 - (soma % 10)) % 10
+}
+
+function mod11Barra(d43: string): number {
+  let soma = 0, peso = 2
+  for (let i = d43.length - 1; i >= 0; i--) {
+    soma += Number(d43[i]) * peso
+    peso = peso === 9 ? 2 : peso + 1
+  }
+  const dv = 11 - (soma % 11)
+  return (dv === 0 || dv === 10 || dv === 11) ? 1 : dv
+}
+
+const fatorParaVenc = (fator: number): string | undefined =>
+  fator >= 1000
+    ? new Date(Date.UTC(2025, 1, 22) + (fator - 1000) * 864e5).toISOString().slice(0, 10)
+    : undefined   // base nova FEBRABAN: 22/02/2025 = 1000 (reset oficial)
+
+// Código de barras 44 → linha digitável 47 (rearranjo FEBRABAN + DVs mod10).
+// Normalizamos tudo para a LINHA porque é o formato guardado na base.
+function barra44ParaLinha47(b: string): string {
+  const c1 = b.slice(0, 4) + b.slice(19, 24)
+  const c2 = b.slice(24, 34)
+  const c3 = b.slice(34, 44)
+  return c1 + mod10(c1) + c2 + mod10(c2) + c3 + mod10(c3) + b[4] + b.slice(5, 19)
+}
+
+// O modelo derruba UM dígito ao copiar 47 dígitos sem separadores (observado
+// nos PDFs Caixa: devolve 46). Reparo determinístico: testa todas as inserções
+// possíveis (47 posições × 10 dígitos) e aceita SOMENTE se exatamente UMA
+// candidata valida nos DVs E o valor decodificado bate com o valor lido pelo
+// modelo (checagem cruzada independente — o valor vem de outro campo do
+// documento). Ambíguo ou sem confirmação de valor → descarta, sem adivinhar.
+export function repararLinha(s: unknown, valorLido: number | null | undefined): LinhaDecodificada {
+  const d = String(s ?? '').replace(/\D/g, '')
+  if (d.length !== 46 && d.length !== 43) return { valida: false }
+  if (valorLido == null) return { valida: false }   // sem valor independente não há checagem cruzada
+  // O filtro de VALOR entra antes da unicidade: o módulo 10 sozinho deixa
+  // passar ~1 candidata espúria a cada duas tentativas, mas a espúria quase
+  // sempre altera o campo de valor — e valor errado é eliminado aqui.
+  const unicas = new Set<string>()
+  for (let pos = 0; pos <= d.length; pos++) {
+    for (let dig = 0; dig <= 9; dig++) {
+      const cand = d.slice(0, pos) + String(dig) + d.slice(pos)
+      const dec = decodificarLinha(cand)
+      if (dec.valida && dec.linha && dec.valor != null && Math.abs(dec.valor - valorLido) < 0.001) {
+        unicas.add(dec.linha)
+      }
+    }
+  }
+  if (unicas.size !== 1) return { valida: false }   // ambíguo → não adivinha
+  return decodificarLinha([...unicas][0])
+}
+
+export function decodificarLinha(s: unknown): LinhaDecodificada {
+  const d = normalizarLinha(s)
+
+  if (d.length === 44) {
+    if (mod11Barra(d.slice(0, 4) + d.slice(5)) !== Number(d[4])) return { valida: false }
+    return {
+      valida: true, linha: barra44ParaLinha47(d), banco: d.slice(0, 3),
+      valor: Number(d.slice(9, 19)) / 100, vencimento: fatorParaVenc(Number(d.slice(5, 9))),
+    }
+  }
+
+  if (d.length !== 47) return { valida: false }
+  for (const campo of [d.slice(0, 10), d.slice(10, 21), d.slice(21, 32)]) {
+    if (mod10(campo.slice(0, -1)) !== Number(campo.slice(-1))) return { valida: false }
+  }
+  // DV GERAL (módulo 11, posição 32): os DVs de campo protegem só as posições
+  // 0-31 — sem esta checagem, o rabo (fator+valor) fica desprotegido e o
+  // reparo de dígito acha dezenas de candidatas "válidas" ali.
+  const barra = d.slice(0, 4) + d[32] + d.slice(33, 47) + d.slice(4, 9) + d.slice(10, 20) + d.slice(21, 31)
+  if (mod11Barra(barra.slice(0, 4) + barra.slice(5)) !== Number(barra[4])) return { valida: false }
+  return {
+    valida: true, linha: d, banco: d.slice(0, 3),
+    valor: Number(d.slice(37)) / 100, vencimento: fatorParaVenc(Number(d.slice(33, 37))),
+  }
+}
 
 const PAGO = new Set(['pago', 'baixado', 'comprovante_confirmado'])
 export const ehPago = (b: BoletoCandidato) => PAGO.has(String(b.status || '').toLowerCase())
@@ -68,6 +185,24 @@ const soDigitos = (v: unknown) => String(v ?? '').replace(/\D/g, '')
  */
 export function casarBoleto(ex: Extracao, candidatos: BoletoCandidato[]): Casamento {
   if (!candidatos.length) return { tipo: 'nenhum' }
+
+  // ── Âncora: linha digitável VÁLIDA ───────────────────────────────────────
+  // 1. Se a linha do comprovante casa exatamente com a de um boleto nosso, é
+  //    AQUELE boleto — fim (score 10, acima de qualquer combinação).
+  // 2. Mesmo sem casar a linha (boleto de fora/legado), o valor e o vencimento
+  //    DECODIFICADOS substituem os lidos pelo modelo — o DV garante que estão
+  //    certos, e mata a classe "leu 528 em vez de 628".
+  let dec = decodificarLinha(ex.linha_digitavel)
+  if (!dec.valida) dec = repararLinha(ex.linha_digitavel, ex.valor)
+  if (dec.valida) {
+    const alvo = candidatos.find((b) => normalizarLinha(b.linha_digitavel) === dec.linha)
+    if (alvo) {
+      return ehPago(alvo)
+        ? { tipo: 'ja_pago', boleto: alvo, score: 10 }
+        : { tipo: 'aberto',  boleto: alvo, score: 10 }
+    }
+    ex = { ...ex, valor: dec.valor ?? ex.valor, vencimento: dec.vencimento ?? ex.vencimento }
+  }
 
   const pontuar = (b: BoletoCandidato): number => {
     let s = 0
