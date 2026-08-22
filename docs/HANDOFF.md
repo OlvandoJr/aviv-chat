@@ -79,7 +79,12 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
   | SALES_CONTRACT_{CANCELED,CREATED,UPDATED,ISSUED,REMOVED} | CUSTOMER_*. CV CRM: **nenhum webhook nosso**
   (removidos); terceiros lá: Rauzee ×16 (duplicados, projeto externo), Simulador ×3, n8n ×2 — não tocar.
 - Crons: regua hourly 0*, sgl+campaign 5min, reconcile 20,50*, reminders 5*, auto-return 15*,
-  sync-contratos 6:30+11:30 UTC, sync-clientes mensal, **sentinela 10:00 UTC**.
+  sync-contratos 6:30+11:30 UTC, sync-clientes **diário 6:00 UTC** (mig 078, ~7 req/dia — era mensal;
+  o CUSTOMER_CREATED chega antes de o cadastro existir no GET /customers/{id}), **sentinela 10:00 UTC**.
+- **PR #139 (22/08, veio de outra sessão)**: `test-api-call` endurecido — portão de role
+  (authenticated/service_role; anon → 403), `{{env.X}}` só resolve `SIENGE_*`/`CV_*`, guarda SSRF.
+  Deployado e verificado. O `_shared/apiExec.ts` é compartilhado com o `ai-responder` (compatível;
+  pega a allowlist no próximo deploy dele).
 
 ---
 
@@ -98,6 +103,14 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
 5. **Caso Mayke** (5544999388590, título 217): disse que pagou 10/08; Sienge sem baixa — financeiro conferir.
 6. Fila do reconcile: ~217 eventos antigos drenando a 20 req/dia (normal; sentinela vigia).
 7. SGL: 77 telefones sem vínculo Sienge ficam fora da trava de distrato (limitação aceita e documentada).
+8. **Pós-endurecimento do `test-api-call` (PR #139)**: com o dashboard logado, clicar "Testar" uma vez
+   numa API cadastrada — tem de funcionar (chamadores mandam JWT de sessão; anon pura agora leva 403).
+9. **`ai-responder` é chamável com a anon key** (`verify_jwt` não segura — a anon key é um JWT válido
+   e pública). Não vaza credencial nem aceita URL arbitrária, mas permite acionar o bot de fora com um
+   `conversationId` válido. Avaliar portão de role igual ao do test-api-call (cuidado: crons e invocações
+   internas usam service_role/edge_cron_key — mapear antes).
+10. Registro órfão `client_id=999999` em `sienge_clientes` (não existe na API; sobra de teste antigo) —
+   limpar se o usuário quiser.
 
 ---
 
