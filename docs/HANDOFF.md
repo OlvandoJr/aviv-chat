@@ -1,174 +1,135 @@
 # HANDOFF — continuação do projeto aviv-chat
 
-> Para a PRÓXIMA sessão. Leia **este arquivo** + **`docs/ARQUITETURA.md`** (visão completa + changelog
-> datado) antes de mexer em qualquer coisa. Tudo abaixo está **no ar** salvo onde indicado.
-> Última atualização: **2026-06-11**.
+> Para a PRÓXIMA sessão. Leia **este arquivo** + **`docs/ARQUITETURA.md`** antes de mexer.
+> Tudo abaixo está **no ar** salvo onde indicado. Última atualização: **2026-08-22**
+> (fim da temporada de agosto: PRs #115–#137, migrations 067–077).
+> Memória persistente do Claude: índice em `~/.claude/projects/-Users-macbookair-SIENGE/memory/MEMORY.md`
+> — os arquivos de memória têm o "porquê" de cada decisão; este handoff tem o "o quê/onde".
 
 ---
 
 ## 0. COMO OPERAR (crítico — uma sessão nova não sabe disso)
 
 - **Working dir:** `/Users/macbookair/aviv-chat`. Repo: `github.com/OlvandoJr/aviv-chat`.
-- **Supabase project ref:** `jpxlczmbxfcnujemlxzq` (use nos MCP tools e no CLI).
-- **Deploy do app (Next):** automático no **merge para `main`** (Vercel). Páginas + `app/api/*`.
+- **Supabase project ref:** `jpxlczmbxfcnujemlxzq` (MCP tools e CLI).
+- **Deploy do app (Next):** automático no **merge para `main`** (Vercel).
 - **Edge Functions e migrations NÃO sobem no merge** — são manuais:
-  - Edge: `npx --no-install supabase functions deploy <nome> --project-ref jpxlczmbxfcnujemlxzq`
-    (+ `--no-verify-jwt` para as protegidas por token: `sienge-webhook`).
-  - Migrations: MCP `apply_migration` / `execute_sql` (project_id acima). Sempre criar o arquivo
-    em `supabase/migrations/NNN_*.sql` também (numeração sequencial; última é **044**).
-- **PR + merge SOZINHO (gh NÃO está instalado):** reutilizar o token do Keychain:
-  ```bash
-  TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill 2>/dev/null | sed -n 's/^password=//p')
-  REPO="OlvandoJr/aviv-chat"
-  # cria branch de origin/main, commita, push -u; depois:
-  api(){ curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
-  NUM=$(api -X POST "https://api.github.com/repos/$REPO/pulls" -d "$(jq -n '{title:"...",head:"<branch>",base:"main",body:"..."}')" | grep -m1 '"number":' | grep -o '[0-9]\+')
-  api -X PUT "https://api.github.com/repos/$REPO/pulls/$NUM/merge" -d '{"merge_method":"squash"}'
-  ```
-  Padrão: branch novo de `origin/main` por feature → commit (Co-Authored-By: Claude Opus 4.8) →
-  push → PR → **squash-merge** → `git checkout main && git pull`.
-- **tsc:** `npx tsc --noEmit` (lado Next). Deno é validado pelo próprio deploy.
-- **Credenciais Sienge** (`SIENGE_USER`/`SIENGE_PASSWORD`) são **secrets do edge**, NÃO estão no
-  `.env.local`. Para chamar a API Sienge a partir daqui, use uma edge function com `dryRun` (padrão
-  usado em `sienge-sync-clientes`/`sienge-sync-contratos`).
-- `.env.local` tem `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` + `SUPABASE_SERVICE_ROLE_KEY` (uso em scripts/curl).
-- **Memória do projeto:** há um ponteiro em `MEMORY.md` apontando para este handoff.
+  - Edge: `export SUPABASE_ACCESS_TOKEN=$(grep '^SUPABASE_ACCESS_TOKEN=' .env.local | cut -d= -f2)`
+    e `npx supabase functions deploy <nome> --project-ref jpxlczmbxfcnujemlxzq`
+    (+ `--no-verify-jwt` para `sienge-webhook`). NUNCA reconstruir função inline via MCP — o CLI lê do disco.
+  - Migrations: MCP `apply_migration` **e** criar o arquivo em `supabase/migrations/NNN_*.sql`.
+    **Última é 077.** (065/066 nunca existiram no repo — `can_view_conversation` e colunas `access_*`
+    vivem só em produção; drift conhecido.)
+- **PR + merge sozinho** (gh não instalado): token via
+  `git credential fill` (protocol=https/host=github.com → password=). Padrão: branch de `origin/main`
+  → commit (`Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`) → push → PR via API → squash-merge
+  → apagar branch → `git checkout main && git pull`.
+- **tsc:** `npx tsc --noEmit` (lado Next). **Deno para testes**: instalar no scratchpad
+  (`curl -fsSL https://deno.land/install.sh | sh`) e rodar
+  `deno test --allow-net supabase/functions/_shared/comprovante.test.ts` (24 testes).
+  `deno check` do process-media acusa **2 erros de tipo pré-existentes** (typing supabase-js:
+  TS2589 em runWriteOps, `.catch` ~L606) — não são regressão.
+- **Chamadas autenticadas a APIs externas sem expor credencial:** edge `test-api-call` executa uma
+  config inline e resolve `{{env.X}}`. CV CRM: `CV_BASE_URL`(=https://aviv.cvcrm.com.br)/`CV_EMAIL`/`CV_TOKEN`
+  (headers email/token). Sienge: `SIENGE_USER`/`SIENGE_PASSWORD` (basic), base
+  `https://api.sienge.com.br/avivconstrutora/public/api/v1`. **Cota Sienge Free: 100 req/DIA no total.**
+- **Testar comprovante/bot SEM falar com cliente:** nunca reprocessar mensagem original (dispara
+  `ai-responder` → WhatsApp real). Subir edge function isolada, testar, apagar
+  (`yes | npx supabase functions delete <nome> ...`). Cliente de TESTE: Paulo Henrique Sanches,
+  `client_id=1` (distratado; conversa `55b7d984-39db-46ae-a8fa-989392e5d1cc`, contato `04a0cf8a-…`).
+- `.env.local`: `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`.
 
 ---
 
-## 1. ARQUITETURA EM 1 PARÁGRAFO
-Atendimento + cobrança WhatsApp da Aviv Construtora. Next 16 (App Router) + Supabase (DB/Auth/Storage/
-Realtime) + Edge Functions (Deno) + OpenAI + Meta WhatsApp Cloud API + ERP **Sienge** (plano **Free** =
-cota baixa) + legado **SGL**. Dois bots no mesmo número: **Vivi** (`ead82b93-84c8-49bf-98bb-53d395b49ba7`,
-default, cobrança/comprovante/2ª via) e **Contato Inteligente** (`1f054c3f-97f0-4cee-9a1a-ceede21e9943`,
-jornada). Detalhes completos em `docs/ARQUITETURA.md`.
+## 1. O QUE FOI FEITO NA TEMPORADA DE AGOSTO (PRs #115–#137)
 
-## 2. PIPELINE DE BOLETOS / SIENGE (estado atual — TUDO no ar)
-**Fonte de verdade do boleto = `boletos_emitidos`** (valor real c/ juros + linha digitável + PDF).
-- **Boleto entra por:** upload de ZIP em `/boletos` → `app/api/boletos/import/route.ts` (Node;
-  `jszip` + `pdf-parse@1.1.1` — MESMA lib/regex do n8n). Aceita **2 formatos de nome**:
-  `"{clientId} - {nome} - {lote}.pdf"` e `"{nome}_{titulo}_{parcela}_{ddmmaaaa}.pdf"` (resolve cliente
-  por NOME no `sienge_clientes`). Sobe PDF no bucket **privado `boletos`**; upsert idempotente
-  `(client_id,vencimento)`. Lotes registrados em `boleto_lotes` (`upload_id` em cada boleto).
-- **Baixa (pago) = webhook Sienge** `RECEIPT_PROCESSED` → `sienge-webhook` marca `sienge_boletos`
-  **e** `boletos_emitidos` (propaga por client_id+vencimento) + **fallback** que busca o título 1x se
-  não casar. `UPDATE_RECEIVABLE_BILL_SITUATION` também tratado.
-- **Cadastro in-house (substitui o n8n "Sienge A"):**
-  - `sienge-sync-clientes` (GET /customers, paginado) → `sienge_clientes` (telefone/CPF/nome; ~1.226).
-  - `sienge-sync-contratos` (GET /sales-contracts) → `sienge_contratos` (empreendimento/unidade/título;
-    133) + view `vw_cliente_contrato` (1/cliente).
-  - **Atualização = PUSH por webhook** (`sienge-webhook` roteia `customer_*` e `sales_contract_*`);
-    sync completo é só **MENSAL** (crons, migration 041). **Evento vem no HEADER `x-sienge-event`;
-    o body traz só `{customerId:N}`/`{salesContractId:N}` (id).** Validado: CUSTOMER_UPDATED atualizou
-    o cliente 1 (Paulo H. Sanches).
-- **Views (qual usa o quê):** `vw_boleto_chat` (bot), `vw_cobranca_boletos` (régua), `vw_clientes_boletos`
-  (campanhas), `vw_boletos_central` (Central), `vw_comprovantes`, `vw_cliente_contrato`. **Empreendimento/
-  quadra/lote agora vêm do CONTRATO** (fallback `sienge_boletos`) — migration 040, parseia "Quadra X / Lote Y".
-- **Ordem de busca de boleto no `ai-responder`: emitido → SGL → Sienge** (SGL tem link real; Sienge são
-  só parcelas, 2ª via via API é fallback raro).
+Cada item tem PR com o caso real no corpo. Ordem cronológica:
 
-## 3. OUTROS PONTOS NO AR (recentes)
-- **Campanhas: editar + excluir + histórico por cliente.** Editar reusa o `CampaignWizard`
-  (`/campaigns/[id]/edit`, `PATCH /api/campaigns/[id]`; config só em draft/scheduled/paused). Excluir =
-  **soft-delete** (`chat_campaigns.deleted_at`, migration 044) p/ não perder o nome no histórico;
-  `dispatch-campaign` ignora excluídas. Histórico na Central (seção "Campanhas recebidas") vem da view
-  `vw_campanhas_cliente` (chat_messages com `metadata.campaign_id` → contato pela conversa; o `wa_id` de
-  recipients NÃO casa por normalização). Campanhas é admin/manager (layout).
-- **Excluir lote de boletos** (`/boletos`, só admin/manager): lixeira na linha do lote →
-  `DELETE /api/boletos/lotes/[id]` (role validado no servidor; 403 p/ agent). Apaga PDFs do bucket +
-  boletos do lote + registro do lote. Re-upload recria (upsert idempotente).
-- **REGRA LEGAL (dias úteis):** nenhuma cobrança automática sai em sáb/dom. `cobranca-regua` pula o
-  run no fim de semana (`force=true` é o override) e na SEGUNDA os passos de offset cobrem também os
-  alvos de sáb/dom (`.in('due_date', targetDues)`; log deduplica). `sgl-dispatch` segura a fila no
-  fim de semana e **classifica pela data de ENTRADA do registro** (`created_at` BRT) — senão o envio
-  postergado mudaria de classificação e cairia fora do `sgl_regua_map` (descartado).
-- **Régua: disparo "no dia do carregamento"** (flag na régua → Disparo 1 sem campo de dias; cobra no
-  dia em que o boleto ENTRA — ZIP ou sienge-webhook). `cobranca_regua_step.on_load` +
-  `vw_cobranca_boletos.load_dispatch_date` (migrations 042/043): carregado até 18h → mesmo dia;
-  após 18h → dia seguinte; sáb/dom → segunda. Horário é "a partir de" (cron horário, dedup
-  pelo log com sentinela `offset_days=999`).
-- **Bucket `chat-media` PRIVADO** + proxy autenticado `/api/media` (signed URL). Meta/OpenAI recebem
-  signed URLs direto. `mediaSrc()` em `lib/utils.ts`.
-- **Debounce do bot (8s)** no `ai-responder` (espera, junta e responde; conta msgs `in`).
-- **`auto-return-bot`** (cron horário): conversa com humano que deixou cliente esperando **4–22h** volta
-  ao bot.
-- **Comprovante SGL** marca a parcela em `mensagens_cobranca` (casa por vencimento→valor) e o
-  `sgl-dispatch` suprime cobrança de parcela com comprovante.
-- **Usuários** (`/settings/attendants`): excluir (soft-delete + revoga login + transfere/arquiva
-  conversas abertas), resetar senha, troca obrigatória no 1º acesso (middleware).
-- **Conversas:** filtros em dropdown (Status multi) + tag/filtro **"Validação de comprovante"**
-  (`chat_conversations.receipt_validation`).
-- **Central de Clientes** (`/clients/[phone]`): Boletos (Abrir PDF + Encaminhar c/ checagem janela 24h),
-  Resumo de parcelas, Histórico de cobrança, Comprovantes.
+| PR | O quê | Onde |
+|---|---|---|
+| #115 | Busca dentro das conversas (nome/telefone/conteúdo, RPC `search_conversations`, pg_trgm) | mig 067, ConversationList |
+| #116 | **Distrato — rede de segurança**: cliente com contrato(s) e NENHUM ativo sai de `vw_cobranca_boletos` e `vw_boleto_chat`; backfill `receivable_bill_id` | migs 068/069 |
+| #117 | Régua: reposição de fim de semana cede a vez ao passo exato do dia + 1 msg/boleto/dia | cobranca-regua |
+| #118 | **PDF de imagem**: `analyzePdf` via `/v1/responses` `input_file` (chat/completions não renderiza → modelo inventava) | process-media |
+| #119 | Saudação pelo horário: `agoraBRT()` injeta data/hora/saudação nos 2 prompts | ai-responder |
+| #120 | Rotação de foto no `analyzeImage` (dígito verificador como sinal forte) | process-media |
+| #121 | Despedida ("🙏","obrigada") não gera resposta — portão 1d determinístico | ai-responder |
+| #122 | **Baixas**: retry de falha transitória (attempts≤5), relevância = título→cliente→tem boleto aberto; resgate de 61 eventos | mig 071, reconcile, _shared/sienge |
+| #123 | 2º sync de contratos 08:30 BRT (pré-régua) | mig 072, cron |
+| #124→#125 | CV CRM webhook distrato criado e **removido**: a raiz era grafia — Sienge emite `SALES_CONTRACT_CANCELED` (**um L**) e não valida nome no POST /hooks; assinatura corrigida; **cancelado ≠ removido** no handler (cancelado NÃO apaga a linha) | sienge-webhook, hooks Sienge |
+| #126 | Régua SGL não cobra distratado (ponte = telefone; telefone pode ter VÁRIOS clientes — bloquear só se NENHUM ativo) | sgl-dispatch |
+| #127 | Campanhas: distratado fora da audiência (filtro na rota que materializa; `incluir_distratados` como escape) | mig 073, audience/route |
+| #128 | **Bloquear contato** (lista negra SÓ da IA): `chat_contacts.bot_bloqueado/_em/_por` + trigger autoria; portão ANTES do debounce e do routeSubagentFlow; auto-return-bot pula | mig 074, UI |
+| #129 | **Bot não afirma pagamento sem prova**: trava `AFIRMA_PAGAMENTO` por VENCIMENTO CITADO antes do envio; pagos recentes (120d, máx 3) no contexto | ai-responder, mig 075 (regra em TODOS os agentes) |
+| #130 | Debounce **janela rolante** (15s silêncio, teto 45s) + última checagem antes de enviar (estado mudou? outra execução respondeu?) | ai-responder |
+| #131 | **Agendamento** = 3ª categoria de documento (nem boleto, nem comprovante; sem baixa) | process-media, ai-responder, prompts |
+| #132 | **Plano 3 etapas — passo 1**: `_shared/comprovante.ts` (LER→CASAR→DECIDIR; 9 regras, baixa SÓ na 1; regra 3 = "parcela já paga") | + comprovante.test.ts |
+| #133 | Histórico agregado ("quantas parcelas paguei") → atendente; lista parcial se declara parcial | ai-responder |
+| #134 | Prompt de classificação **v3** (prioridades + lista negativa + `__HOJE__` runtime) + `extraction_model` **gpt-4o** | prompts em chat_subagents, process-media |
+| #135 | Rotação não gira imagem legível em pé (CPF mascarado nunca fecha o "sinal forte"; alucinação vence por completude) | process-media |
+| #136 | **Âncora linha digitável**: DVs mod10+mod11, decodifica valor/venc, casa por `linha_norm` (coluna gerada) incl. PAGOS; `repararLinha` (1 dígito, só com unicidade+valor) | mig 076, comprovante.ts, process-media |
+| #137 | **Sentinela diária** 07:00 BRT: 8 invariantes → `sentinela_log` (registro passivo, sem mensagem) | mig 077, edge sentinela |
+
+**Estado vivo fora do código (importante!):**
+- Prompts de extração em `chat_subagents` (imagem `fd4101fe-490f-4a2a-8e9f-bdccba8502d4`,
+  PDF `22e4dc8a-422d-4d0a-a334-d2c4a95753e4`), `extraction_model='gpt-4o'`, contêm `__HOJE__` e o campo
+  `linha_digitavel`. **REGRA: qualquer edição nos prompts roda a bateria dos 8 documentos reais** (§3).
+- Regras anti-invenção nos prompts dos agentes `Vivi` (mig 070) e `Contato Inteligente` (mig 075).
+- Hooks no Sienge (GET /hooks): nossos = PAYMENT_SLIP_REGISTERED | RECEIPT_PROCESSED+UPDATE_RECEIVABLE_BILL_SITUATION
+  | SALES_CONTRACT_{CANCELED,CREATED,UPDATED,ISSUED,REMOVED} | CUSTOMER_*. CV CRM: **nenhum webhook nosso**
+  (removidos); terceiros lá: Rauzee ×16 (duplicados, projeto externo), Simulador ×3, n8n ×2 — não tocar.
+- Crons: regua hourly 0*, sgl+campaign 5min, reconcile 20,50*, reminders 5*, auto-return 15*,
+  sync-contratos 6:30+11:30 UTC, sync-clientes mensal, **sentinela 10:00 UTC**.
 
 ---
 
-## 4. ✅ FEITO — captura automática do boleto Sienge (`PAYMENT_SLIP_REGISTERED`)
-**Boleto Sienge entra sozinho via webhook, MANTENDO o upload manual do ZIP — os dois convivem.**
+## 2. PENDÊNCIAS (em ordem)
 
-- **Código (no ar, 2026-06-11):** `handlePaymentSlip` no `sienge-webhook` (gated ESTRITAMENTE pelo
-  header `x-sienge-event`; não colide com `RECEIPT_PROCESSED`). Fluxo: resolve `client_id`+`vencimento`
-  +`valor` por `sienge_boletos` (rbid+inst) → fallback Sienge 1x (`resolveTitulo`) → 2ª via
-  `fetchSegundaVia` (`_shared/sienge.ts`, `payment-slip-notification` → `urlReport`+`digitableNumber`)
-  → baixa PDF → bucket `boletos` (`{client_id}/{venc}.pdf`) → **upsert idempotente** `boletos_emitidos`
-  `(client_id,vencimento)` com `lote='sienge-webhook'`, **preservando status** `pago/cancelado`.
-  Audita payload+headers completos em `sienge_webhook_events`.
-- **Hook REGISTRADO (id `560c92b8-12d5-414e-9ae7-cc99d674b9ba`)** apontando p/ a nossa `sienge-webhook`
-  (mesma URL/token dos outros 3). Registrado via edge function one-off (`sienge-register-hook`, já
-  apagada) porque as credenciais Sienge são secrets do edge — padrão p/ futuras chamadas admin à API.
-- **VALIDADO end-to-end (simulação com título real):** evento simulado p/ bill 141/inst 1 (cliente
-  13019) → `matched:1`, boleto re-capturado com PDF (97KB) + linha digitável + valor idêntico ao ZIP,
-  `lote='sienge-webhook'`. Título SEM cobrança registrada (ex.: 127/2, cliente 13009) → Sienge devolve
-  **422 "cobrança não existente"** e a note registra "2ª via sem urlReport" (esperado: no fluxo real o
-  evento só dispara quando o slip EXISTE).
-- **Conferir no 1º evento REAL** (shape do payload é defensivo: `billReceivableId`/`receivableBillId`/
-  `billId` + `installmentId`/`installment`): se a note disser "sem billReceivableId/installmentId",
-  ver o `payload` na auditoria e ajustar a extração.
-  ```sql
-  select event, payload, matched, note, created_at
-  from sienge_webhook_events where event ilike '%slip%' order by created_at desc limit 3;
-  ```
+1. **Passos 3-4 do plano de comprovantes** (`docs/PLANO-validacao-comprovantes.md`, aprovado):
+   ligar CASAR+DECIDIR no process-media (aposentar a cascata legada + `valueGuardVerdict` +
+   `receiptNeedsHuman`) e `ai-responder` entregar `decisao.mensagem`. A âncora (#136) já convive
+   cirurgicamente com o legado. **Combinado: deixar assentar uns dias com a sentinela antes.**
+2. **Número da parcela — BLOQUEADO NO USUÁRIO**: perguntar ao financeiro como o Sienge numera
+   (atendente disse "004/005"; espelho diz que a parcela de agosto da Andréia é a 5ª mensal do título 341).
+   Sem isso, passo 2 (bot não inventa parcela) e 5 (trazer nº real) saem errados.
+3. **Observar o 1º comprovante real pós-âncora**: `select ... from chat_messages where ai_analysis->>'linha_valida'='true'`
+   (0 até 22/08). A sentinela pega quebras.
+4. Conferir visualmente o **checkbox de campanhas** (tela exige login — nunca foi visto renderizado).
+5. **Caso Mayke** (5544999388590, título 217): disse que pagou 10/08; Sienge sem baixa — financeiro conferir.
+6. Fila do reconcile: ~217 eventos antigos drenando a 20 req/dia (normal; sentinela vigia).
+7. SGL: 77 telefones sem vínculo Sienge ficam fora da trava de distrato (limitação aceita e documentada).
 
 ---
 
-## 5. AÇÕES PENDENTES DO USUÁRIO (painel — não consigo fazer)
-- ~~Registrar `PAYMENT_SLIP_REGISTERED`~~ **FEITO via API (hook `560c92b8`)** — ver §4. Só falta
-  observar o 1º evento REAL p/ confirmar o shape do payload.
-- **Deletar o hook duplicado de baixa do n8n** (`48b9cf19` → `sienge-boleto-pago`) quando aposentar o n8n.
-- **Aposentar o n8n "Sienge A" (parcelas)** quando confortável (já fora do caminho crítico).
-- **Testar `SALES_CONTRACT_UPDATED`** (alterar um contrato no Sienge) — mecanismo idêntico ao de cliente.
-- **Segurança (backlog da auditoria sênior):** rotacionar senha Sienge (vazou no histórico git), ligar
-  MFA nos logins, leaked-password protection, upgrade do Postgres, confirmar PITR/backup. Ver `docs/SEGURANCA.md`.
-- **Domínio Vercel:** trocar o link de preview por um fixo (`avivchat-aviv.vercel.app` ou domínio próprio).
+## 3. BATERIA DE DOCUMENTOS REAIS (regressão de prompts/extração)
 
-## 6. GOTCHAS / APRENDIZADOS (não repetir erros)
-- **Webhook Sienge:** evento no **header `x-sienge-event`**; body só com o id. Token aceito tanto em
-  `?token=` quanto no body. Vários hooks na **mesma URL coexistem** (chave = id do hook).
-- **Hooks ativos hoje (4 nossos):** `69881d0c` (baixa: RECEIPT_PROCESSED + UPDATE_RECEIVABLE_BILL_SITUATION),
-  `ffe111bb` (CUSTOMER_*), `6235832a` (SALES_CONTRACT_*), `560c92b8` (PAYMENT_SLIP_REGISTERED).
-  Há vários hooks do CVCRM (`aviv.cvcrm.com.br`) — **não mexer**.
-- **PAYMENT_SLIP_REGISTERED** é gated SÓ pelo header (`payment_slip/boleto registrado`) — nunca pela forma
-  do payload, p/ não colidir com `RECEIPT_PROCESSED` (que tem o mesmo `{billId, installmentId}`).
-- **Hooks Sienge dá pra gerenciar via API** (`GET/POST /hooks`) — credenciais são secrets do edge, então
-  o caminho é uma edge function one-off (deploy → chama com anon key → delete). Foi assim que o
-  `560c92b8` foi registrado.
-- **`payment-slip-notification` devolve 422** ("cobrança não existente / nosso número zerado / saldo
-  zerado") quando o título ainda não tem boleto registrado no banco — não é erro do nosso lado.
-- **pdf-parse fixado em 1.1.1** (paridade n8n; v2 quebra o subpath). Import via `pdf-parse/lib/pdf-parse.js`.
-- **Cota Sienge Free é baixa** — nunca varrer boleto a boleto na API; preferir push/ZIP.
-- **`unaccent` não existe** no DB (usar `lower()` + normalização no código).
-- Telefone Sienge vem como `"(043)996731869"` → normalizar (remove 0 de tronco, prefixa 55) →
-  `5543996731869` (helper `bestPhone` em `_shared/sienge.ts`).
-- Edge function de cron chama com a **anon key** (vault `edge_cron_key`); service role fica dentro da função.
-- Ao mexer numa VIEW consumida por outras, conferir dependências; usar `security_invoker=true`.
-- `mensagens_cobranca` é log de eventos (1 linha por cobrança), não registro de parcela.
+Storage `chat-media` (salvo indicação), todos com caso real por trás. Esperado entre parênteses:
 
-## 7. MIGRATIONS (últimas) e EDGE FUNCTIONS
-- Migrations até **042** (029 bucket boletos, 030 vw_boleto_chat, 031 receipt_validation, 032
-  vw_clientes_boletos valor, 033 central, 034 chat-media privado, 035 cron auto-return, 036 attendant
-  soft-delete, 037 boleto_lotes, 038→041 sync clientes/contratos + crons mensais + views contrato,
-  042 régua on_load + loaded_date, 043 dias úteis + load_dispatch_date, 044 campanha soft-delete + vw_campanhas_cliente).
-- Edge functions: ai-responder, process-media, whatsapp-webhook, send-message, dispatch-campaign,
-  cobranca-regua, sgl-dispatch, import-boletos (legado), sienge-webhook, sienge-sync-clientes,
-  sienge-sync-contratos, auto-return-bot, test-api-call, analyze-comprovante, send-reminders, list-models.
-  `_shared/`: whatsapp.ts, apiExec.ts, sienge.ts (agora exporta `fetchSegundaVia` — 2ª via reusável).
+| Doc | Path |
+|---|---|
+| Boner PDF (comprovante Caixa IB) | `chat/902ad1a9-95f2-49cd-9942-831732c7c557/28ec521a-3753-476e-8a27-42b53ddd4a40.pdf` |
+| Geovana PDF (comprovante Caixa) | `chat/5f84949c-ba93-4f3c-8eea-cb55ac69fba2/f0c2ba64-dafd-4a45-9c35-3eb583784a9e.pdf` |
+| Andréia PDF (comprovante Bradesco) | `chat/ac0f428c-411d-478a-8d05-e390ca433b4d/308c8c22-d72f-4c2d-b0f7-2f68fa404845.pdf` |
+| Andréia IMG (**agendamento** Bradesco) | `chat/ac0f428c-411d-478a-8d05-e390ca433b4d/cb8197ae-97b2-4bc5-9d24-9ee8b6c40851.jpg` |
+| Dirceu IMG (comprovante lotérica, foto deitada) | `chat/24b09a44-7405-4eed-80d2-8a98d58cf928/4c8379e5-5ffd-4aba-a074-4c99dfeafa2b.jpg` |
+| Boner IMG (extrato com débito) | `chat/902ad1a9-95f2-49cd-9942-831732c7c557/0e37fd04-1c0d-491f-9e6b-d6e53275a19b.jpg` |
+| José Vitor IMG (screenshot comprovante) | `chat/8b51cdda-4c65-4ae8-b2e4-76ee94c91df6/d1e0a680-747e-4888-b708-132ed34718bc.jpg` |
+| **Boleto real** (anti-boleto → 'boleto') | bucket `boletos`: `93/2026-08-20-t341p5.pdf` |
+
+Harness: edge temporária que baixa do storage e chama a extração com o prompt do banco
+(pdf via `/v1/responses` `input_file`; imagem via chat/completions `detail:high`) — criar, rodar, **apagar**.
+Linhas digitáveis reais p/ testes de decode: José Vitor `10491.25733 95000.100040 00000.018051 1 15470000062820`
+(628,20 · 23/08/2026), Andréia `10491 24918 94000.100043 00000.001305 7 15440000060349` (603,49 · 20/08/2026).
+
+---
+
+## 4. INVARIANTES / ONDE OLHAR PRIMEIRO
+
+- **Sentinela**: `select invariante, ok, valor, limite, detalhe from sentinela_log where run_date = current_date order by ok;`
+  — SEMPRE olhar antes de investigar suspeita de quebra.
+- "Cliente diz que pagou": conferir evento `RECEIPT_PROCESSED` do título/parcela; individual quase nunca
+  é bug; em massa, comparar chegada de eventos × baixas aplicadas por dia.
+- "Bot respondeu N vezes": intervalo entre mensagens × janela (15s) + corrida na geração.
+- "Bot não respondeu": pode ser `reason: 'farewell'` (despedida) ou contato bloqueado — não é bug.
+- "Bot disse X errado": se `type='template'`, o texto não veio do modelo (template da Meta — usuário edita/sincroniza).
+- Régua/2ª via/SGL/campanhas: todas as 4 vias têm trava de distrato; caminho NOVO de envio precisa herdar.
