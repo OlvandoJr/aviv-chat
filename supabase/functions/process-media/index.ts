@@ -824,6 +824,23 @@ function dataRecente(d: string): boolean {
   return t > Date.now() - 90 * 864e5 && t < Date.now() + 7 * 864e5
 }
 
+// A leitura em 0° é boa o bastante para NEM tentar rotação?
+// Caso José Vitor (21/08): captura de tela EM PÉ foi girada 180° e a leitura
+// invertida (R$ 528,20/23-09, alucinada porém "completa") venceu no placar a
+// leitura correta — o bônus de completude premia alucinação. E o CPF nos
+// comprovantes costuma vir MASCARADO (***.635.719-**), então o "sinal forte"
+// (dígito verificador) nunca fecha e a roleta rodava SEMPRE.
+// Critério: tipo reconhecido + valor numérico + alguma data plausível
+// (pagamento OU vencimento na janela). A foto deitada do Dirceu reprova aqui
+// (data 2023, vencimento nulo) e segue para a rotação, como antes.
+function leituraBoa(d: any): boolean {
+  if (!d || d.ilegivel) return false
+  const tipo = String(d.tipo_documento || '').toLowerCase()
+  if (!['comprovante', 'agendamento', 'boleto'].includes(tipo)) return false
+  if (!/\d/.test(String(d.valor ?? ''))) return false
+  return dataRecente(d.data_pagamento || '') || dataRecente(d.vencimento || '')
+}
+
 function notaExtracao(d: any): number {
   if (!d || d.ilegivel) return -1
   let nota = 0
@@ -899,9 +916,26 @@ async function analyzeImage(
       const forte = digitoOk(dados?.cpf_cnpj || '')
       tentativas.push({ ang, forte, nota: notaExtracao(dados), dados })
       if (forte) break                                     // dígito confere: leitura boa
+      // 0° legível E sem assinatura de alucinação → não gira.
+      // CPF/CNPJ COMPLETO porém inválido é assinatura de leitura errada (o
+      // mascarado ***.635.719-** tem menos dígitos e não conta): nesse caso
+      // vale tentar a rotação — foi o que recuperou os campos do Dirceu.
+      const doc0 = String(dados?.cpf_cnpj || '').replace(/\D/g, '')
+      const cpfSuspeito = (doc0.length === 11 || doc0.length === 14) && !forte
+      if (ang === 0 && leituraBoa(dados) && !cpfSuspeito) break
     }
-    const melhor = tentativas.find((t) => t.forte)
-      ?? [...tentativas].sort((a, b) => (b.nota - a.nota) || (a.ang - b.ang))[0]
+    // Sem sinal forte: 0° é o padrão; um ângulo girado só vence se tiver
+    // dígito válido OU nota maior COM FOLGA (>= +2) — empate técnico entre
+    // "leitura em pé" e "leitura de cabeça para baixo" fica com a em pé.
+    const melhor = (() => {
+      const f = tentativas.find((t) => t.forte)
+      if (f) return f
+      const t0 = tentativas.find((t) => t.ang === 0)
+      const desafiante = [...tentativas.filter((t) => t.ang !== 0)].sort((a, b) => b.nota - a.nota)[0]
+      if (!t0) return desafiante
+      if (desafiante && desafiante.nota >= t0.nota + 2) return desafiante
+      return t0
+    })()
     extractedData = melhor?.dados || {}
     if (melhor && melhor.ang !== 0) {
       extractedData.foto_rotacionada = melhor.ang          // fica no ai_analysis p/ diagnóstico
