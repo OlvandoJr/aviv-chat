@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
       .is('deleted_at', null)
       .lte('scheduled_at', new Date().toISOString())
 
-    const CAMP_COLS = 'id, inbox_id, template_id, status, owner_id, header_media_path, header_media_filename'
+    const CAMP_COLS = 'id, inbox_id, template_id, status, owner_id, header_media_mode, header_media_path, header_media_filename, agent_id, bot_ativo'
     let q = admin.from('chat_campaigns')
       .select(CAMP_COLS)
       .eq('status', 'running')
@@ -144,7 +144,8 @@ async function processCampaign(camp: any) {
     if (!claim) continue   // já reservado por outra execução — não reenvia
 
     // Conversa nasce com o PROPRIETÁRIO da campanha (assignee) — só ele + admin/gerente a veem.
-    const conv = await ensureConversation(admin, camp.inbox_id, r.wa_id, r.name || undefined, COBRANCA_AGENT_ID, camp.owner_id || null)
+    // Agente: o especialista da campanha, se houver; senão o de cobrança (default histórico).
+    const conv = await ensureConversation(admin, camp.inbox_id, r.wa_id, r.name || undefined, camp.agent_id || COBRANCA_AGENT_ID, camp.owner_id || null)
     if (!conv) {
       await markRecipient(r.id, 'failed', null, 'falha ao criar conversa')
       failed++
@@ -180,11 +181,15 @@ async function processCampaign(camp: any) {
     })
     if (res.ok) {
       await markRecipient(r.id, 'sent', res.waMessageId, null)
-      // Ao receber uma campanha, a conversa volta para o bot de IA — assim ele
-      // trata as respostas (ex.: fluxo Indique e Ganhe), mesmo que estivesse em
-      // atendimento humano.
-      await admin.from('chat_conversations')
-        .update({ handled_by: 'bot' }).eq('id', conv.conversationId)
+      // Com a IA ligada, a conversa volta para o bot — assim ele trata as respostas
+      // (ex.: fluxo Indique e Ganhe), mesmo que estivesse em atendimento humano.
+      // Com bot_ativo=false, não mexe: quem responde é humano (o ai-responder marca
+      // handled_by='human' na 1ª resposta do lead e sai calado).
+      if (camp.bot_ativo !== false) {
+        await admin.from('chat_conversations')
+          .update({ handled_by: 'bot', ...(camp.agent_id ? { agent_id: camp.agent_id } : {}) })
+          .eq('id', conv.conversationId)
+      }
       sent++
     } else {
       await markRecipient(r.id, 'failed', null, JSON.stringify(res.error).slice(0, 500))
