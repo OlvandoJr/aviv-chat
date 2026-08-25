@@ -19,6 +19,7 @@ interface Props {
   campaign?: any
   attendants?: { id: string; name: string; role: string }[]
   memberships?: { attendant_id: string; inbox_id: string }[]
+  agents?: { id: string; name: string; avatar_emoji: string | null; is_default: boolean }[]
 }
 
 // ── Planilha (CSV/colar): parser com detecção de separador (; , tab) e aspas ──
@@ -66,7 +67,7 @@ function defaultFormat(col: string): 'currency' | 'date' | undefined {
   return undefined
 }
 
-export default function CampaignWizard({ inboxes, templates, campaign, attendants = [], memberships = [] }: Props) {
+export default function CampaignWizard({ inboxes, templates, campaign, attendants = [], memberships = [], agents = [] }: Props) {
   const router = useRouter()
   const supabase = createClient()
   const isEdit = !!campaign
@@ -94,6 +95,9 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   // existe para reconquista/pesquisa com ex-cliente — escolha explícita.
   const [incluirDistratados, setIncluirDistratados] = useState<boolean>(!!campaign?.incluir_distratados)
   const [removidosDistrato, setRemovidosDistrato]   = useState<number>(0)
+  // IA da campanha: liga/desliga (nasce ligada) + agente especialista opcional.
+  const [botAtivo, setBotAtivo] = useState<boolean>(campaign ? campaign.bot_ativo !== false : true)
+  const [agentId, setAgentId]   = useState<string>(campaign?.agent_id || '')
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
   const tpl = templates.find(t => t.id === templateId) || null
@@ -228,7 +232,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
         headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
         headerMediaPath: usaUpload ? headerMediaPath : null,
         headerMediaFilename: usaUpload ? headerMediaFilename : null,
-        incluirDistratados }
+        incluirDistratados, botAtivo, agentId: botAtivo ? (agentId || null) : null }
       if (!id) {
         const r = await fetch('/api/campaigns', { method: 'POST', headers, body: JSON.stringify(payload) })
         const j = await r.json()
@@ -327,6 +331,34 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
             <p className="text-[11px] text-gray-400 mt-1">
               As conversas disparadas ficam atribuídas a este usuário — apenas ele (e administradores/gerentes) as verá.
             </p>
+          </div>
+
+          {/* Atendimento por IA — interruptor (nasce ligado) + agente especialista opcional.
+              Desligado: o bot fica mudo e as respostas dos leads caem na fila humana. */}
+          <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/60 space-y-2">
+            <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={botAtivo}
+                onChange={e => setBotAtivo(e.target.checked)} />
+              <span className="font-medium">IA responde esta campanha</span>
+            </label>
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              Ligado: o agente de IA responde automaticamente às respostas dos leads desta campanha
+              por até 7 dias (o especialista abaixo ou, sem seleção, o agente padrão) e assume a
+              conversa mesmo que estivesse em atendimento humano. Desligado: o bot fica mudo e as
+              respostas caem na fila de atendimento humano.
+            </p>
+            <div className={botAtivo ? '' : 'opacity-40 pointer-events-none'}>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Agente especialista (opcional)</label>
+              <select value={agentId} onChange={e => setAgentId(e.target.value)} disabled={!botAtivo}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+                <option value="">— Agente padrão —</option>
+                {agents.map(a => (
+                  <option key={a.id} value={a.id}>
+                    {a.avatar_emoji ? `${a.avatar_emoji} ` : ''}{a.name}{a.is_default ? ' (padrão)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* Mídia do template (header DOCUMENT/IMAGE/VIDEO): mesmo arquivo p/ todos OU boleto de cada cliente */}

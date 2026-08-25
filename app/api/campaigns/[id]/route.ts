@@ -28,6 +28,10 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const patch: Record<string, any> = { updated_at: new Date().toISOString() }
     if (b.name !== undefined) patch.name = b.name
     if (b.incluirDistratados !== undefined) patch.incluir_distratados = !!b.incluirDistratados
+    // IA da campanha: editável em qualquer status — o ai-responder lê ao vivo, então
+    // desligar o bot (ou trocar o especialista) vale já para a próxima resposta de lead.
+    if (b.botAtivo !== undefined) patch.bot_ativo = b.botAtivo !== false
+    if (b.agentId !== undefined)  patch.agent_id = b.agentId || null
 
     const mudaConfig = b.inboxId !== undefined || b.templateId !== undefined
       || b.variableMapping !== undefined || b.scheduledAt !== undefined || b.ownerId !== undefined

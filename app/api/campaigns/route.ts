@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
 
     const { name, inboxId, templateId, ownerId, variableMapping = {}, scheduledAt = null,
             headerMediaPath = null, headerMediaFilename = null, headerMediaMode = 'upload',
-            incluirDistratados = false } = await req.json()
+            incluirDistratados = false, botAtivo = true, agentId = null } = await req.json()
     if (!name || !inboxId || !templateId) {
       return NextResponse.json({ error: 'name, inboxId e templateId são obrigatórios' }, { status: 400 })
     }
@@ -39,6 +39,9 @@ export async function POST(req: NextRequest) {
       status:           'draft',
       // Distratado fora da audiência por padrão — mesma regra das réguas.
       incluir_distratados: !!incluirDistratados,
+      // IA da campanha: interruptor + agente especialista (migration 079).
+      bot_ativo: botAtivo !== false,
+      agent_id:  agentId || null,
     }).select('id').single()
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })

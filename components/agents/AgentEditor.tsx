@@ -26,6 +26,7 @@ interface Props {
   apiConnections:  ApiConnection[]
   updateDefs:      ConversationUpdateDef[]
   subagents:       Subagent[]
+  campaigns?:      { id: string; name: string; status: string; agent_id: string | null }[]
 }
 
 interface DatasourceDraft {
@@ -87,7 +88,7 @@ interface UpdateDefDraft {
 }
 
 
-export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections, updateDefs: initialUpdateDefs, subagents: initialSubagents }: Props) {
+export default function AgentEditor({ agent, rules: initialRules, inboxes, availableModels, attrDefs: initialAttrDefs, tools: initialTools, apiConnections, updateDefs: initialUpdateDefs, subagents: initialSubagents, campaigns = [] }: Props) {
   const router  = useRouter()
   const supabase = createClient()
   const isNew   = !agent
@@ -123,6 +124,12 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   // Regras de inbox separadas (checkboxes) das regras genéricas (tag/keyword)
   const [selectedInboxIds,    setSelectedInboxIds]   = useState<string[]>(
     initialRules.filter(r => r.rule_type === 'inbox').map(r => r.rule_value)
+  )
+
+  // Campanhas deste agente (vínculo bidirecional: mesma coluna chat_campaigns.agent_id
+  // que o wizard de campanha edita; campanha tem UM agente — marcar reatribui)
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState<string[]>(
+    campaigns.filter(c => agent && c.agent_id === agent.id).map(c => c.id)
   )
   const [rules,               setRules]              = useState<Omit<AgentRule, 'id' | 'created_at'>[]>(
     initialRules
@@ -320,6 +327,21 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
     const allRules = [...inboxRules, ...otherRules]
     if (allRules.length > 0) {
       await supabase.from('chat_agent_rules').insert(allRules)
+    }
+
+    // Campanhas do agente: marcadas ganham este agente (e religam a IA — é a intenção
+    // do gesto); desmarcadas que eram deste agente voltam ao padrão (bot_ativo intacto).
+    const eramMinhas = campaigns.filter(c => c.agent_id === agentId).map(c => c.id)
+    const desmarcadas = eramMinhas.filter(id => !selectedCampaignIds.includes(id))
+    if (selectedCampaignIds.length > 0) {
+      await supabase.from('chat_campaigns')
+        .update({ agent_id: agentId, bot_ativo: true })
+        .in('id', selectedCampaignIds)
+    }
+    if (desmarcadas.length > 0) {
+      await supabase.from('chat_campaigns')
+        .update({ agent_id: null })
+        .in('id', desmarcadas).eq('agent_id', agentId!)
     }
 
     // Salvar campos a capturar (apagar e reinserir)
@@ -994,6 +1016,63 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
                 })}
               </div>
             )}
+          </div>
+
+          {/* Campanhas deste agente — vínculo bidirecional com o wizard de campanha
+              (chat_campaigns.agent_id). O agente responde aos leads das campanhas
+              marcadas por até 7 dias após o último disparo. */}
+          <div className="mt-5 pt-4 border-t border-gray-100">
+            <label className="text-xs text-gray-500 mb-2 block font-medium">
+              Campanhas respondidas por este agente
+            </label>
+            {campaigns.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">Nenhuma campanha recente para vincular.</p>
+            ) : (
+              <div className="space-y-2">
+                {campaigns.map((c) => {
+                  const checked = selectedCampaignIds.includes(c.id)
+                  const deOutro = !checked && c.agent_id && (!agent || c.agent_id !== agent.id)
+                  return (
+                    <label
+                      key={c.id}
+                      className={cn(
+                        'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                        checked
+                          ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-gray-200 hover:border-gray-300 bg-white'
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedCampaignIds([...selectedCampaignIds, c.id])
+                          } else {
+                            setSelectedCampaignIds(selectedCampaignIds.filter(id => id !== c.id))
+                          }
+                        }}
+                        className="accent-emerald-600 w-4 h-4 shrink-0"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-800 truncate">{c.name}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded-full shrink-0">{c.status}</span>
+                        </div>
+                        {deOutro && (
+                          <p className="text-[11px] text-amber-600">Atualmente de outro agente — marcar reatribui para este.</p>
+                        )}
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+            <p className="text-[11px] text-gray-400 mt-2">
+              O agente responde às respostas dos leads da campanha por até 7 dias após o último
+              disparo. Marcar uma campanha também liga a IA nela; o mesmo vínculo pode ser
+              editado no cadastro da campanha.
+            </p>
           </div>
 
           {/* Regras adicionais (tag / keyword) */}

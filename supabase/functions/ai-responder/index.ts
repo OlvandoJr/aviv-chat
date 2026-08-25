@@ -305,21 +305,52 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── 2. Buscar agente (regra da janela de 24h do template) ─────────────────
-    // Se houve um TEMPLATE de cobrança (out) nas últimas 24h, a conversa está na
-    // "janela de campanha" → agente de cobrança (default/Vivi). Caso contrário, é
-    // uma mensagem avulsa do cliente → agente da regra de inbox (Contato Inteligente).
+    // ── 2. Buscar agente ──────────────────────────────────────────────────────
+    // Precedência: (a) o ÚLTIMO template out até 7 dias veio de uma CAMPANHA →
+    // vale a configuração dela (IA desligada → só humano responde; especialista →
+    // ele responde); (b) template de cobrança (régua/2ª via, sem campanha) nas
+    // últimas 24h → agente default (Vivi); (c) regra de inbox; (d) default.
     let agent: any = null
 
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    const { data: recentTpl } = await supabase
-      .from('chat_messages').select('id')
+    const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const { data: lastTpl } = await supabase
+      .from('chat_messages').select('metadata, created_at')
       .eq('conversation_id', conversationId)
       .eq('direction', 'out').eq('type', 'template')
-      .gte('created_at', since24h)
+      .gte('created_at', since7d)
+      .order('created_at', { ascending: false })
       .limit(1).maybeSingle()
 
-    if (recentTpl) {
+    const campId = (lastTpl?.metadata as any)?.campaign_id
+    if (campId) {
+      const { data: camp } = await supabase
+        .from('chat_campaigns').select('agent_id, bot_ativo')
+        .eq('id', campId).maybeSingle()
+      if (camp && camp.bot_ativo === false) {
+        // IA desligada nesta campanha: a resposta do lead é assunto de humano.
+        // Marca a conversa para a fila humana e sai calado. (O auto-return-bot
+        // pode devolver a 'bot' horas depois; este bloco re-marca a cada nova
+        // mensagem enquanto o template da campanha for o último, até 7 dias.)
+        await supabase.from('chat_conversations')
+          .update({ handled_by: 'human' }).eq('id', conversationId)
+        return new Response(JSON.stringify({ skipped: true, reason: 'campanha com IA desligada' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (camp?.agent_id) {
+        const { data } = await supabase
+          .from('chat_agents').select('*')
+          .eq('id', camp.agent_id).eq('is_active', true).maybeSingle()
+        agent = data   // especialista da campanha (inativo → cascata normal)
+      }
+    }
+
+    // Template out nas últimas 24h = o disparo partiu de nós (usado também no
+    // gate de identidade lá embaixo).
+    const recentTpl = !!(lastTpl && lastTpl.created_at >= since24h)
+
+    if (!agent && recentTpl) {
       const { data } = await supabase
         .from('chat_agents').select('*')
         .eq('is_default', true).eq('is_active', true).maybeSingle()

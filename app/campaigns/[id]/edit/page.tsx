@@ -8,9 +8,9 @@ export default async function EditCampaignPage({ params }: { params: Promise<{ i
   const { id } = await params
   const supabase = await createClient()
 
-  const [{ data: campaign }, { data: inboxes }, { data: templates }, { data: attendants }, { data: memberships }] = await Promise.all([
+  const [{ data: campaign }, { data: inboxes }, { data: templates }, { data: attendants }, { data: memberships }, { data: agents }] = await Promise.all([
     supabase.from('chat_campaigns')
-      .select('id, name, status, inbox_id, template_id, owner_id, variable_mapping, audience, scheduled_at, deleted_at, header_media_path, header_media_filename, header_media_mode')
+      .select('id, name, status, inbox_id, template_id, owner_id, variable_mapping, audience, scheduled_at, deleted_at, header_media_path, header_media_filename, header_media_mode, bot_ativo, agent_id')
       .eq('id', id).single(),
     supabase.from('chat_inboxes').select('id, name').eq('is_active', true).order('name'),
     supabase.from('chat_wa_templates')
@@ -20,6 +20,8 @@ export default async function EditCampaignPage({ params }: { params: Promise<{ i
     supabase.from('chat_attendants').select('id, name, role')
       .eq('is_active', true).is('deleted_at', null).order('name'),
     supabase.from('chat_attendant_inboxes').select('attendant_id, inbox_id'),
+    supabase.from('chat_agents').select('id, name, avatar_emoji, is_default')
+      .eq('is_active', true).order('name'),
   ])
 
   // Só rascunho/agendada/pausada podem ser editadas (não mexer no que já enviou)
@@ -28,7 +30,7 @@ export default async function EditCampaignPage({ params }: { params: Promise<{ i
   return (
     <div className="max-w-3xl mx-auto px-6 py-8">
       <CampaignWizard inboxes={inboxes || []} templates={templates || []} campaign={campaign}
-        attendants={attendants || []} memberships={memberships || []} />
+        attendants={attendants || []} memberships={memberships || []} agents={agents || []} />
     </div>
   )
 }

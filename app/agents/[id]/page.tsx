@@ -8,15 +8,22 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   const { id } = await params
   const supabase = await createClient()
 
-  // Buscar inboxes, modelos e api_connections em paralelo
+  // Buscar inboxes, modelos, api_connections e campanhas vinculáveis em paralelo.
+  // Campanhas: não excluídas dos últimos 60 dias + as que já são deste agente.
+  const desde60d = new Date(Date.now() - 60 * 24 * 3600e3).toISOString()
   const [
     { data: inboxes },
     modelsResult,
     { data: apiConnections },
+    { data: campaigns },
   ] = await Promise.all([
     supabase.from('chat_inboxes').select('*').order('created_at', { ascending: true }),
     supabase.functions.invoke('list-models').catch(() => ({ data: null, error: null })),
     supabase.from('chat_api_connections').select('*').order('created_at', { ascending: true }),
+    supabase.from('chat_campaigns').select('id, name, status, agent_id')
+      .is('deleted_at', null)
+      .or(id === 'new' ? `created_at.gte.${desde60d}` : `created_at.gte.${desde60d},agent_id.eq.${id}`)
+      .order('created_at', { ascending: false }),
   ])
 
   const availableModels: string[] = (modelsResult as any)?.data?.models || []
@@ -33,6 +40,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         apiConnections={apiConnections || []}
         updateDefs={[]}
         subagents={[]}
+        campaigns={campaigns || []}
       />
     )
   }
@@ -71,6 +79,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       apiConnections={apiConnections || []}
       updateDefs={updateDefs || []}
       subagents={subagents || []}
+      campaigns={campaigns || []}
     />
   )
 }
