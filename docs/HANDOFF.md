@@ -84,7 +84,13 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
 - **PR #139 (22/08, veio de outra sessão)**: `test-api-call` endurecido — portão de role
   (authenticated/service_role; anon → 403), `{{env.X}}` só resolve `SIENGE_*`/`CV_*`, guarda SSRF.
   Deployado e verificado. O `_shared/apiExec.ts` é compartilhado com o `ai-responder` (compatível;
-  pega a allowlist no próximo deploy dele).
+  pega a allowlist no próximo deploy dele — feito em 25/08 junto do #141).
+- **PR #141 (25/08): IA por campanha** (mig 079) — `chat_campaigns.bot_ativo` (interruptor,
+  default true) + `agent_id` (especialista). No ai-responder, o ÚLTIMO template out até 7 dias
+  decide: campanha com IA desligada → `handled_by='human'` e bot mudo; especialista → ele
+  responde; sem especialista → janela de 24h (Vivi) como sempre. Vínculo editável no wizard
+  da campanha E no editor do agente (seção Roteamento). Bônus: corrigido `header_media_mode`
+  ausente no select do dispatch (modo "boleto de cada cliente" nunca funcionava).
 
 ---
 
@@ -111,6 +117,10 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
    internas usam service_role/edge_cron_key — mapear antes).
 10. Registro órfão `client_id=999999` em `sienge_clientes` (não existe na API; sobra de teste antigo) —
    limpar se o usuário quiser.
+11. **IA por campanha (PR #141)**: conferir a UI logado (bloco "Atendimento por IA" no wizard;
+   "Campanhas respondidas por este agente" no editor) e fazer o teste real controlado com
+   audiência = só o número do Olvando: especialista responde texto livre; campanha com IA
+   desligada fica muda e cai na fila humana; cobrança normal segue com a Vivi.
 
 ---
 
