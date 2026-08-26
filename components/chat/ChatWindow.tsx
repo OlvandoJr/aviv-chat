@@ -478,6 +478,42 @@ function MessageBubble({
   )
 }
 
+// ── Cabeçalho de mídia do template ───────────────────────────────────────────
+// Gravado em metadata.header_media no envio (_shared/whatsapp.ts). O link direto
+// da Meta expira, por isso guardamos bucket+caminho e pedimos uma URL assinada
+// fresca ao proxy autenticado /api/media.
+interface HeaderMedia { bucket: string; path: string; filename?: string; kind: 'image' | 'video' | 'document' }
+
+function cabecalhoMidia(msg: Message): HeaderMedia | null {
+  const h = (msg.metadata as any)?.header_media
+  return h?.bucket && h?.path ? (h as HeaderMedia) : null
+}
+
+function midiaUrl(h: HeaderMedia): string {
+  return `/api/media?bucket=${encodeURIComponent(h.bucket)}&path=${encodeURIComponent(h.path)}`
+}
+
+function TemplateHeaderMedia({ ref_: h, isOut, onZoom }: {
+  ref_: HeaderMedia; isOut: boolean; onZoom: (src: string) => void
+}) {
+  const src = midiaUrl(h)
+  if (h.kind === 'image') {
+    return <img src={src} alt={h.filename || 'Imagem'} onClick={() => onZoom(src)}
+      className="rounded-lg max-w-full max-h-64 object-cover cursor-zoom-in mb-1.5" />
+  }
+  if (h.kind === 'video') {
+    return <video src={src} controls preload="metadata" className="rounded-lg max-w-full max-h-64 mb-1.5" />
+  }
+  return (
+    <a href={src} target="_blank" rel="noopener noreferrer"
+      className={cn('flex items-center gap-2 mb-1.5 px-2 py-1.5 rounded-lg text-sm underline',
+        isOut ? 'bg-emerald-700/40 text-white' : 'bg-gray-100 text-gray-700')}>
+      <FileText className="w-4 h-4 shrink-0" />
+      <span className="truncate">{h.filename || 'Documento'}</span>
+    </a>
+  )
+}
+
 // ── MessageContent ────────────────────────────────────────────────────────────
 
 function MessageContent({ message: msg, isOut }: { message: Message; isOut: boolean }) {
@@ -488,9 +524,16 @@ function MessageContent({ message: msg, isOut }: { message: Message; isOut: bool
       {lightboxSrc && <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />}
 
       {msg.type === 'text' || msg.type === 'button' || msg.type === 'template' ? (
-        <p className={cn('text-sm whitespace-pre-wrap break-words', isOut ? 'text-white' : 'text-gray-900')}>
-          {renderWhatsApp(msg.content)}
-        </p>
+        <>
+          {/* Cabeçalho de mídia do template (imagem da campanha, PDF do boleto):
+              o cliente recebeu junto do texto, então o histórico mostra também. */}
+          {cabecalhoMidia(msg) && (
+            <TemplateHeaderMedia ref_={cabecalhoMidia(msg)!} isOut={isOut} onZoom={setLightboxSrc} />
+          )}
+          <p className={cn('text-sm whitespace-pre-wrap break-words', isOut ? 'text-white' : 'text-gray-900')}>
+            {renderWhatsApp(msg.content)}
+          </p>
+        </>
 
       ) : msg.type === 'image' ? (
         <div>

@@ -216,6 +216,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
     // o PDF); SEM PDF → template de texto (fallback). Mesmo mapeamento de variáveis.
     let tplToSend: any = tpl
     let mediaArg: { link: string; filename?: string } | null = null
+    let mediaRef: { bucket: string; path: string; filename?: string; kind: 'image' | 'video' | 'document' } | null = null
     if (precisaPdf) {
       // pdf_path vem da própria linha da audiência (por boleto) — a busca antiga
       // por phone+venc com maybeSingle quebraria com 2 boletos no mesmo dia.
@@ -225,6 +226,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       if (signedUrl) {
         const venc = String(r.due_date || '').slice(0, 10)
         mediaArg = { link: signedUrl, filename: `Boleto ${venc}.pdf` }     // → a_vencer1 com PDF
+        mediaRef = { bucket: 'boletos', path: r.pdf_path, filename: `Boleto ${venc}.pdf`, kind: 'document' }
       } else if (fallbackTpl) {
         tplToSend = fallbackTpl                                            // → a_vencer2_sem_pdf (texto)
       } else {
@@ -244,6 +246,7 @@ async function runStep(regua: any, step: any, inbox: any, now: Date, dryRun: boo
       conversationId: conv.conversationId,
       metaExtra: { regua_id: regua.id, regua_step_id: step.id },
       headerMedia: mediaArg,
+      headerMediaRef: mediaRef,
     })
 
     if (res.ok) {

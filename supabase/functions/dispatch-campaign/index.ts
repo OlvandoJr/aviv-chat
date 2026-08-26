@@ -154,6 +154,12 @@ async function processCampaign(camp: any) {
 
     // Modo 'boleto': anexa o PDF do próprio destinatário (signed URL por envio).
     let sendMedia = headerMedia
+    let mediaRef: { bucket: string; path: string; filename?: string; kind: 'image' | 'video' | 'document' } | null =
+      precisaMedia && mediaMode === 'upload' && camp.header_media_path
+        ? { bucket: 'campaign-media', path: camp.header_media_path,
+            filename: camp.header_media_filename || undefined,
+            kind: mediaType === 'IMAGE' ? 'image' : mediaType === 'VIDEO' ? 'video' : 'document' }
+        : null
     if (precisaMedia && mediaMode === 'boleto') {
       if (!r.boleto_pdf_path) {
         await markRecipient(r.id, 'failed', null, 'sem boleto com PDF para anexar')
@@ -167,6 +173,7 @@ async function processCampaign(camp: any) {
         failed++; continue
       }
       sendMedia = { link: signed.signedUrl, filename: 'Boleto.pdf' }
+      mediaRef = { bucket: 'boletos', path: r.boleto_pdf_path, filename: 'Boleto.pdf', kind: 'document' }
     }
 
     const res = await sendTemplateMessage({
@@ -177,6 +184,7 @@ async function processCampaign(camp: any) {
       variables: Array.isArray(r.variables) ? r.variables : [],
       conversationId: conv.conversationId,
       headerMedia: sendMedia,
+      headerMediaRef: mediaRef,
       metaExtra: { campaign_id: camp.id },
     })
     if (res.ok) {
