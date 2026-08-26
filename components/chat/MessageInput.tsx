@@ -2,16 +2,18 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Send, Paperclip, Mic, Square, X, LayoutTemplate } from 'lucide-react'
+import { Send, Paperclip, Mic, Square, X, LayoutTemplate, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface Props {
   conversationId:  string
   disabled?:       boolean
+  /** Cliente não escreve há mais de 24h: a Meta recusa texto livre, só template. */
+  janelaFechada?:  boolean
   onOpenTemplates?: () => void
 }
 
-export default function MessageInput({ conversationId, disabled, onOpenTemplates }: Props) {
+export default function MessageInput({ conversationId, disabled, janelaFechada, onOpenTemplates }: Props) {
   const supabase     = createClient()
   const textareaRef  = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -195,6 +197,35 @@ export default function MessageInput({ conversationId, disabled, onOpenTemplates
         <p className="text-center text-sm text-gray-400 py-1">
           Conversa encerrada — reabra para enviar mensagens
         </p>
+      </div>
+    )
+  }
+
+  // ── Render: fora da janela de 24h ─────────────────────────────────────────
+  // Digitar aqui seria perda de tempo: o envio falharia na Meta. Pior, o
+  // send-message devolve HTTP 200 mesmo quando a janela está fechada, então o
+  // texto sumia sem nenhum aviso. Bloqueamos ANTES, dizendo o que fazer.
+  if (janelaFechada) {
+    return (
+      <div className="px-4 py-3 bg-white border-t border-gray-200 shrink-0">
+        <div className="flex items-center gap-3 rounded-2xl border border-red-300 bg-red-50 px-3 py-2.5">
+          <Lock className="w-4 h-4 text-red-500 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-red-700">Fora da janela de 24 horas</p>
+            <p className="text-[11px] text-red-600/80 leading-snug">
+              O WhatsApp só permite texto livre até 24h depois da última mensagem do cliente.
+              Envie um template aprovado — quando ele responder, o campo libera sozinho.
+            </p>
+          </div>
+          {onOpenTemplates && (
+            <button
+              onClick={onOpenTemplates}
+              className="shrink-0 flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-white border border-red-300 text-red-700 hover:bg-red-100 transition-colors"
+            >
+              <LayoutTemplate className="w-3.5 h-3.5" /> Escolher template
+            </button>
+          )}
+        </div>
       </div>
     )
   }

@@ -122,6 +122,15 @@ export default async function ConversationPage({ params }: Props) {
       .order('captured_at', { ascending: false }),
   ])
 
+  // Janela de 24h do WhatsApp: só é possível mandar texto livre se o CLIENTE
+  // escreveu nas últimas 24h. Fora disso, apenas template aprovado.
+  const { data: ultimaEntrada } = await supabase
+    .from('chat_messages').select('created_at')
+    .eq('conversation_id', id).eq('direction', 'in')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  const janelaAberta = !!ultimaEntrada?.created_at &&
+    Date.now() - new Date(ultimaEntrada.created_at).getTime() < 24 * 60 * 60 * 1000
+
   return (
     <ChatWindow
       key={id}
@@ -132,6 +141,7 @@ export default async function ConversationPage({ params }: Props) {
       contactAttributes={contactAttributes || []}
       central={central || null}
       initialMessages={(initialMessages || []) as any}
+      janelaAbertaInicial={janelaAberta}
       templateButtons={templateButtons}
       reguaInfo={reguaInfo}
       campaignNames={campaignNames}
