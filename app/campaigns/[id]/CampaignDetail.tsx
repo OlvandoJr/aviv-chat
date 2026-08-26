@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2, CheckCheck, Eye, Reply } from 'lucide-react'
+import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2, CheckCheck, Eye, Reply, RotateCw, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { descreverFalha } from '@/lib/whatsapp/erros'
 
 const STATUS_LABEL: Record<string, string> = {
   draft: 'Rascunho', scheduled: 'Agendada', running: 'Enviando',
@@ -22,6 +23,7 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
   const [camp, setCamp] = useState(campaign)
   const [recipients, setRecipients] = useState(initialRecipients)
   const [busy, setBusy] = useState(false)
+  const [detalhe, setDetalhe] = useState<string | null>(null)   // id do destinatário com o erro cru aberto
 
   // Realtime: campanha + recipients
   useEffect(() => {
@@ -45,6 +47,26 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
     router.refresh()
   }
 
+  // Reenvio: sem ids, reenvia todos os que falharam. O servidor só reseta quem
+  // está 'failed' — a lista do browser nunca alcança quem já recebeu.
+  async function reenviar(recipientIds?: string[]) {
+    const alvo = recipientIds?.length
+    if (!confirm(alvo
+      ? 'Reenviar a mensagem desta campanha para este contato?'
+      : `Reenviar para os ${falhados.length} contatos que falharam?`)) return
+    setBusy(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    const r = await fetch(`/api/campaigns/${camp.id}/retry`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(recipientIds?.length ? { recipientIds } : {}),
+    })
+    const j = await r.json().catch(() => ({}))
+    setBusy(false)
+    if (!r.ok) { alert(j.error || 'Falha ao reenviar.'); return }
+    router.refresh()
+  }
+
   async function excluir() {
     if (!confirm(`Excluir a campanha "${camp.name}"?\n\nEla some da lista. O histórico de quem já recebeu fica preservado na ficha de cada cliente.`)) return
     setBusy(true)
@@ -54,6 +76,7 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
   }
 
   const editavel = ['draft', 'scheduled', 'paused'].includes(camp.status)
+  const falhados = recipients.filter((r: any) => r.status === 'failed')
 
   const pct = camp.total ? Math.round(((camp.sent + camp.failed) / camp.total) * 100) : 0
 
@@ -142,21 +165,65 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
 
       {/* Destinatários */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-gray-50 text-sm font-semibold text-gray-700">Destinatários</div>
+        <div className="px-5 py-3 border-b border-gray-50 flex items-center justify-between gap-3">
+          <span className="text-sm font-semibold text-gray-700">Destinatários</span>
+          {falhados.length > 0 && camp.status !== 'running' && (
+            <button onClick={() => reenviar()} disabled={busy}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50">
+              <RotateCw className="w-3.5 h-3.5" />
+              Reenviar os {falhados.length} que falharam
+            </button>
+          )}
+        </div>
         <div className="max-h-[50vh] overflow-y-auto divide-y divide-gray-50">
-          {recipients.map(r => (
-            <div key={r.id} className="flex items-center justify-between px-5 py-2.5 text-sm">
-              <div className="min-w-0">
-                <span className="text-gray-800">{r.name || r.wa_id}</span>
-                <span className="text-gray-400 ml-2 text-xs">{r.wa_id}</span>
-                {r.error && <p className="text-xs text-red-500 truncate max-w-md">{r.error}</p>}
+          {recipients.map(r => {
+            const falhou = r.status === 'failed'
+            const f = falhou ? descreverFalha(r.error) : null
+            return (
+              <div key={r.id} className="px-5 py-2.5 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-gray-800">{r.name || r.wa_id}</span>
+                    <span className="text-gray-400 ml-2 text-xs">{r.wa_id}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {r.replied_at && <span className="text-xs font-medium text-violet-600">Respondida</span>}
+                    <RecipientStatus status={r.status} />
+                    {falhou && camp.status !== 'running' && (
+                      <button onClick={() => reenviar([r.id])} disabled={busy} title="Reenviar para este contato"
+                        className="text-gray-400 hover:text-red-600 disabled:opacity-40">
+                        <RotateCw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Motivo da falha em linguagem de atendente; o texto cru da Meta
+                    fica atrás de "detalhes" para quem precisar investigar. */}
+                {f && (
+                  <div className="mt-1 border-l-2 border-red-100 pl-2">
+                    <p className="text-xs text-red-600 font-medium">
+                      {f.titulo}
+                      {!f.retentavel && <span className="ml-1.5 font-normal text-gray-400">· reenviar não resolve</span>}
+                    </p>
+                    <p className="text-[11px] text-gray-500 leading-snug">{f.explicacao}</p>
+                    {f.bruto && (
+                      <>
+                        <button onClick={() => setDetalhe(detalhe === r.id ? null : r.id)}
+                          className="mt-0.5 inline-flex items-center gap-0.5 text-[11px] text-gray-400 hover:text-gray-600">
+                          <ChevronDown className={cn('w-3 h-3 transition-transform', detalhe === r.id && 'rotate-180')} />
+                          {detalhe === r.id ? 'ocultar detalhes' : 'detalhes técnicos'}
+                        </button>
+                        {detalhe === r.id && (
+                          <pre className="mt-1 text-[10px] text-gray-500 bg-gray-50 rounded-lg p-2 whitespace-pre-wrap break-all">{f.bruto}</pre>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {r.replied_at && <span className="text-xs font-medium text-violet-600">Respondida</span>}
-                <RecipientStatus status={r.status} />
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </>
