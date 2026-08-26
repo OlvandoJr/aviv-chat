@@ -7,6 +7,7 @@ import { ArrowLeft, Megaphone, Users, Send } from 'lucide-react'
 import { AVAILABLE_COLUMNS, COLUMN_LABEL } from '@/lib/whatsapp/vars'
 import MappedPreview from '@/components/whatsapp/MappedPreview'
 import { cn } from '@/lib/utils'
+import { parseDelimited, fromMatrix, detectarColunas } from '@/lib/whatsapp/planilha'
 
 interface Tpl {
   id: string; name: string; inbox_id: string; language: string
@@ -20,40 +21,6 @@ interface Props {
   attendants?: { id: string; name: string; role: string }[]
   memberships?: { attendant_id: string; inbox_id: string }[]
   agents?: { id: string; name: string; avatar_emoji: string | null; is_default: boolean }[]
-}
-
-// ── Planilha (CSV/colar): parser com detecção de separador (; , tab) e aspas ──
-function parseDelimited(text: string): { headers: string[]; rows: Record<string, string>[] } | null {
-  const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim() !== '')
-  if (lines.length < 2) return null
-  const cand: Array<'\t' | ';' | ','> = ['\t', ';', ',']
-  const delim = cand.sort((a, b) => lines[0].split(b).length - lines[0].split(a).length)[0]
-  const split = (line: string): string[] => {
-    const out: string[] = []; let cur = ''; let inQ = false
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i]
-      if (ch === '"') { if (inQ && line[i + 1] === '"') { cur += '"'; i++ } else inQ = !inQ }
-      else if (ch === delim && !inQ) { out.push(cur); cur = '' }
-      else cur += ch
-    }
-    out.push(cur); return out.map(s => s.trim())
-  }
-  return fromMatrix(lines.map(split))
-}
-
-// Matriz (1ª linha = cabeçalhos) → { headers, rows } com cabeçalhos deduplicados
-function fromMatrix(matrix: string[][]): { headers: string[]; rows: Record<string, string>[] } | null {
-  if (!matrix || matrix.length < 2) return null
-  const seen = new Map<string, number>()
-  const headers = matrix[0].map((h, i) => {
-    const base = String(h || '').trim() || `coluna_${i + 1}`
-    const n = seen.get(base) || 0; seen.set(base, n + 1)
-    return n ? `${base}_${n + 1}` : base
-  })
-  const rows = matrix.slice(1)
-    .map(cells => { const o: Record<string, string> = {}; headers.forEach((h, i) => o[h] = String(cells[i] ?? '').trim()); return o })
-    .filter(o => Object.values(o).some(v => v !== ''))
-  return rows.length ? { headers, rows } : null
 }
 
 function varNums(text: string): number[] {
@@ -78,9 +45,10 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   const [inboxId, setInboxId] = useState(campaign?.inbox_id || inboxes[0]?.id || '')
   const [templateId, setTemplateId] = useState(campaign?.template_id || '')
   const [mapping, setMapping] = useState<Record<string, { type: 'static' | 'column'; value: string; format?: string }>>(campaign?.variable_mapping || {})
-  const [filter, setFilter]   = useState<{ source: string; dueFrom: string; dueTo: string; empreendimento: string }>(
+  const [filter, setFilter]   = useState<{ source: string; dueFrom: string; dueTo: string; empreendimento: string; nome: string; telefone: string }>(
     { source: campaign?.audience?.filter?.source || 'both', dueFrom: campaign?.audience?.filter?.dueFrom || '',
-      dueTo: campaign?.audience?.filter?.dueTo || '', empreendimento: campaign?.audience?.filter?.empreendimento || '' })
+      dueTo: campaign?.audience?.filter?.dueTo || '', empreendimento: campaign?.audience?.filter?.empreendimento || '',
+      nome: campaign?.audience?.filter?.nome || '', telefone: campaign?.audience?.filter?.telefone || '' })
   const [scheduledAt, setScheduledAt] = useState(toLocalInput(campaign?.scheduled_at || null))
   const [headerMediaPath, setHeaderMediaPath]         = useState<string | null>(campaign?.header_media_path || null)
   const [headerMediaFilename, setHeaderMediaFilename] = useState<string | null>(campaign?.header_media_filename || null)
@@ -110,10 +78,12 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   const aud0 = campaign?.audience || {}
   const [audMode, setAudMode]   = useState<'base' | 'upload'>(aud0.mode === 'manual' ? 'upload' : 'base')
   const [baseKind, setBaseKind] = useState<'boletos' | 'clientes'>(aud0.base === 'clientes' ? 'clientes' : 'boletos')
-  const [cfilter, setCfilter]   = useState<{ origem: string; empreendimento: string; contrato: string }>({
+  const [cfilter, setCfilter]   = useState<{ origem: string; empreendimento: string; contrato: string; nome: string; telefone: string }>({
     origem: aud0.base === 'clientes' ? (aud0.filter?.origem || 'todos') : 'todos',
     empreendimento: aud0.base === 'clientes' ? (aud0.filter?.empreendimento || '') : '',
     contrato: aud0.base === 'clientes' ? (aud0.filter?.contrato || '') : '',
+    nome: aud0.base === 'clientes' ? (aud0.filter?.nome || '') : '',
+    telefone: aud0.base === 'clientes' ? (aud0.filter?.telefone || '') : '',
   })
   const [sheet, setSheet]         = useState<{ headers: string[]; rows: Record<string, string>[]; fileName: string } | null>(null)
   const [phoneCol, setPhoneCol]   = useState('')
@@ -125,10 +95,8 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
     if (!parsed) { setParseErr('Não consegui ler os dados — a 1ª linha deve ter os cabeçalhos e as demais os contatos.'); return }
     setSheet({ ...parsed, fileName })
     setParseErr(null); setAudienceTotal(null)
-    // autodetecta telefone/nome pelos cabeçalhos
-    const tel = parsed.headers.find(h => /tele|fone|celular|whats|phone|contato/i.test(h)) || ''
-    const nom = parsed.headers.find(h => /nome|name|cliente/i.test(h)) || ''
-    setPhoneCol(tel); setNameCol(nom)
+    const det = detectarColunas(parsed.headers)
+    setPhoneCol(det.telefone); setNameCol(det.nome)
   }
 
   async function handleSheetFile(f: File) {
@@ -551,6 +519,16 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
                       <input type="date" value={filter.dueTo} onChange={e => { setFilter(f => ({ ...f, dueTo: e.target.value })); setAudienceTotal(null) }}
                         className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
                     </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">Nome (contém)</label>
+                      <input value={filter.nome} onChange={e => { setFilter(f => ({ ...f, nome: e.target.value })); setAudienceTotal(null) }}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="opcional" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">Telefone (contém)</label>
+                      <input value={filter.telefone} onChange={e => { setFilter(f => ({ ...f, telefone: e.target.value })); setAudienceTotal(null) }}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="DDD + número, pode ser parcial" />
+                    </div>
                   </div>
                 ) : (
                   <div className="grid grid-cols-3 gap-4">
@@ -574,6 +552,16 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
                       <label className="text-xs text-gray-500 mb-1 block">Situação do contrato (contém)</label>
                       <input value={cfilter.contrato} onChange={e => { setCfilter(f => ({ ...f, contrato: e.target.value })); setAudienceTotal(null) }}
                         className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="ex.: Emitido, Cancelado" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">Nome (contém)</label>
+                      <input value={cfilter.nome} onChange={e => { setCfilter(f => ({ ...f, nome: e.target.value })); setAudienceTotal(null) }}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="opcional" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">Telefone (contém)</label>
+                      <input value={cfilter.telefone} onChange={e => { setCfilter(f => ({ ...f, telefone: e.target.value })); setAudienceTotal(null) }}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="DDD + número, pode ser parcial" />
                     </div>
                   </div>
                 )}
