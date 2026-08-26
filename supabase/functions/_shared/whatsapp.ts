@@ -116,6 +116,18 @@ function renderTemplateText(text: string, vars: string[]): string {
   return out
 }
 
+/**
+ * Referência PERSISTENTE da mídia do cabeçalho (o `headerMedia.link` é uma signed
+ * URL que expira em minutos — guardá-la não serve para nada). Sem isto, a mensagem
+ * salva no histórico ficava só com o texto e o atendente não via o que foi anexado.
+ */
+export interface HeaderMediaRef {
+  bucket:   string                                  // campaign-media | boletos
+  path:     string
+  filename?: string
+  kind:     'image' | 'video' | 'document'
+}
+
 export interface SendTemplateArgs {
   // deno-lint-ignore no-explicit-any
   admin: any
@@ -127,6 +139,7 @@ export interface SendTemplateArgs {
   sentBy?: string
   attendantId?: string | null
   metaExtra?: Record<string, unknown>
+  headerMediaRef?: HeaderMediaRef | null
   headerMedia?: HeaderMedia | null
 }
 
@@ -174,7 +187,13 @@ export async function sendTemplateMessage(args: SendTemplateArgs): Promise<SendR
     content,
     wa_status: 'sent',
     attendant_id: args.attendantId ?? null,
-    metadata: { template_id: tpl.id, template_name: tpl.name, variables, ...(args.metaExtra || {}) },
+    metadata: {
+      template_id: tpl.id, template_name: tpl.name, variables,
+      // O cabeçalho de mídia vira parte do histórico: a tela do chat desenha a
+      // imagem/PDF que o cliente recebeu junto do texto.
+      ...(args.headerMediaRef ? { header_media: args.headerMediaRef } : {}),
+      ...(args.metaExtra || {}),
+    },
   })
 
   await admin.from('chat_conversations').update({

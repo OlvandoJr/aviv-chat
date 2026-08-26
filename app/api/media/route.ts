@@ -27,14 +27,23 @@ const admin = createAdminClient(
 export async function GET(req: NextRequest) {
   if (!(await isLogged())) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
 
-  let path = new URL(req.url).searchParams.get('path') || ''
+  const sp = new URL(req.url).searchParams
+  // Buckets servidos por este proxy. Allowlist explícita: 'bucket' vem da query e
+  // sem a lista viraria leitura arbitrária de qualquer bucket do projeto.
+  const BUCKETS = ['chat-media', 'campaign-media', 'boletos']
+  const bucket = sp.get('bucket') || 'chat-media'
+  if (!BUCKETS.includes(bucket)) {
+    return NextResponse.json({ error: 'bucket não permitido' }, { status: 400 })
+  }
+
+  let path = sp.get('path') || ''
   // aceita também a URL pública completa (compat com media_url antigos)
-  const m = path.match(/\/object\/(?:public|sign)\/chat-media\/(.+?)(?:\?|$)/)
+  const m = path.match(new RegExp(`/object/(?:public|sign)/${bucket}/(.+?)(?:\\?|$)`))
   if (m) path = decodeURIComponent(m[1])
   path = path.replace(/^\/+/, '')
   if (!path) return NextResponse.json({ error: 'path obrigatório' }, { status: 400 })
 
-  const { data, error } = await admin.storage.from('chat-media').createSignedUrl(path, 300)
+  const { data, error } = await admin.storage.from(bucket).createSignedUrl(path, 300)
   if (error || !data?.signedUrl) {
     return NextResponse.json({ error: error?.message || 'Arquivo não encontrado' }, { status: 404 })
   }
