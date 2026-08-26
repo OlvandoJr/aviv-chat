@@ -79,6 +79,21 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
           <p className="text-sm text-gray-400 mt-0.5">
             {camp.template?.name} · {camp.inbox?.name}
           </p>
+          {/* Estado da IA: o atendente precisa conferir isto SEM abrir o editor —
+              é o que decide se um robô responde aos leads desta campanha. */}
+          <p className="text-xs mt-1">
+            {camp.bot_ativo === false ? (
+              <span className="text-gray-500">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-400 mr-1.5 align-middle" />
+                IA desligada — respostas vão para atendimento humano
+              </span>
+            ) : (
+              <span className="text-emerald-700">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 align-middle" />
+                IA responde · {camp.agente?.name || 'agente padrão'}
+              </span>
+            )}
+          </p>
         </div>
         <div className="flex gap-2">
           {['running', 'scheduled'].includes(camp.status) && (

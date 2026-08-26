@@ -205,6 +205,27 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
     return { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` }
   }
 
+  // Configuração da campanha como está NA TELA. Usada ao salvar E ao iniciar/agendar:
+  // o que o usuário vê é o que vai para o banco.
+  function configPayload() {
+    const cleanMapping: any = {}
+    for (const n of allVars) {
+      const m = mapping[n]
+      cleanMapping[String(n)] = m.type === 'static'
+        ? { type: 'static', value: m.value }
+        : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
+    }
+    const usaUpload = isMediaTemplate && headerMediaMode === 'upload'
+    return {
+      name, inboxId, templateId, ownerId, variableMapping: cleanMapping,
+      scheduledAt: scheduledAt || null,
+      headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
+      headerMediaPath: usaUpload ? headerMediaPath : null,
+      headerMediaFilename: usaUpload ? headerMediaFilename : null,
+      incluirDistratados, botAtivo, agentId: botAtivo ? (agentId || null) : null,
+    }
+  }
+
   // Cria rascunho (se preciso) + resolve audiência → mostra total
   async function calcAudience() {
     setError(null)
@@ -220,19 +241,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
     try {
       const headers = await authHeader()
       let id = draftId
-      const cleanMapping: any = {}
-      for (const n of allVars) {
-        const m = mapping[n]
-        cleanMapping[String(n)] = m.type === 'static'
-          ? { type: 'static', value: m.value }
-          : { type: 'column', value: m.value, ...(m.format ? { format: m.format } : {}) }
-      }
-      const usaUpload = isMediaTemplate && headerMediaMode === 'upload'
-      const payload = { name, inboxId, templateId, ownerId, variableMapping: cleanMapping, scheduledAt: scheduledAt || null,
-        headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
-        headerMediaPath: usaUpload ? headerMediaPath : null,
-        headerMediaFilename: usaUpload ? headerMediaFilename : null,
-        incluirDistratados, botAtivo, agentId: botAtivo ? (agentId || null) : null }
+      const payload = configPayload()
       if (!id) {
         const r = await fetch('/api/campaigns', { method: 'POST', headers, body: JSON.stringify(payload) })
         const j = await r.json()
@@ -269,6 +278,15 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
     setBusy(true); setError(null)
     try {
       const headers = await authHeader()
+      // Regrava a configuração ANTES de disparar. Sem isso, qualquer ajuste feito
+      // depois do "Salvar e calcular audiência" — inclusive desligar a IA — era
+      // perdido em silêncio e a campanha saía com a configuração antiga.
+      const rc = await fetch(`/api/campaigns/${draftId}`, {
+        method: 'PATCH', headers, body: JSON.stringify(configPayload()),
+      })
+      const jc = await rc.json()
+      if (!rc.ok) throw new Error(jc.error || 'Falha ao salvar a configuração antes de iniciar')
+
       const r = await fetch(`/api/campaigns/${draftId}/start`, { method: 'POST', headers })
       const j = await r.json()
       if (!r.ok) throw new Error(j.error || 'Falha ao iniciar')

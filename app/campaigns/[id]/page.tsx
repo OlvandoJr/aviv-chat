@@ -10,7 +10,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
   const { data: campaign } = await supabase
     .from('chat_campaigns')
-    .select('id, name, status, total, sent, failed, scheduled_at, created_at, template:chat_wa_templates(name), inbox:chat_inboxes(name), deleted_at')
+    .select('id, name, status, total, sent, failed, scheduled_at, created_at, template:chat_wa_templates(name), inbox:chat_inboxes(name), bot_ativo, agente:chat_agents(name), deleted_at')
     .eq('id', id)
     .single()
 
