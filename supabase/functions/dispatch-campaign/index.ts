@@ -16,7 +16,9 @@ import {
   sendTemplateMessage,
   COBRANCA_AGENT_ID,
   SLEEP,
+  resolveVariables,
   type TemplateRow,
+  type VariableMapping,
 } from '../_shared/whatsapp.ts'
 
 const admin = createClient(
@@ -53,6 +55,10 @@ Deno.serve(async (req) => {
     const { data: campaigns } = await q
     const results: any[] = []
 
+    // Disparos ADICIONAIS vencidos (modelo da régua: cada disparo tem template e
+    // mapeamento próprios). Rodam independentes do envio principal.
+    const disparos = await processarDisparosDevidos(onlyId)
+
     for (const camp of campaigns || []) {
       if (camp.deleted_at) continue
       if (onlyId && camp.status !== 'running' && camp.status !== 'scheduled') continue
@@ -64,7 +70,7 @@ Deno.serve(async (req) => {
       if (r?.status === 'running' && r?.pending > 0) reinvoke(r.campaign)
     }
 
-    return json({ ok: true, processed: results })
+    return json({ ok: true, processed: results, disparos })
   } catch (err) {
     console.error('dispatch-campaign error:', err)
     return json({ error: String(err) }, 500)
@@ -219,6 +225,134 @@ async function processCampaign(camp: any) {
   }).eq('id', camp.id)
 
   return { campaign: camp.id, batchSent: sent, batchFailed: failed, ...counts, status }
+}
+
+/**
+ * Disparos adicionais da campanha (chat_campaign_disparos).
+ *
+ * Espelha a régua: um disparo = um template + mapeamento próprios, com data/hora
+ * absoluta (a campanha não tem vencimento para ancorar). A audiência é a MESMA da
+ * campanha — os destinatários vêm de chat_campaign_recipients, e o log por disparo
+ * (chat_campaign_envios, UNIQUE disparo+wa_id) garante que reprocessar não duplica.
+ */
+// deno-lint-ignore no-explicit-any
+async function processarDisparosDevidos(onlyCampaign?: string): Promise<any[]> {
+  let q = admin.from('chat_campaign_disparos')
+    .select('id, campaign_id, ordem, scheduled_at, template_id, variable_mapping, status')
+    .in('status', ['scheduled', 'running'])
+    .lte('scheduled_at', new Date().toISOString())
+    .order('scheduled_at')
+  if (onlyCampaign) q = q.eq('campaign_id', onlyCampaign)
+
+  const { data: devidos } = await q
+  const out: any[] = []
+  for (const d of devidos || []) out.push(await processarDisparo(d))
+  return out
+}
+
+// deno-lint-ignore no-explicit-any
+async function processarDisparo(d: any) {
+  const { data: camp } = await admin.from('chat_campaigns')
+    .select('id, inbox_id, status, owner_id, agent_id, bot_ativo, deleted_at')
+    .eq('id', d.campaign_id).maybeSingle()
+  if (!camp || camp.deleted_at) {
+    await admin.from('chat_campaign_disparos').update({ status: 'done' }).eq('id', d.id)
+    return { disparo: d.id, skip: 'campanha inexistente' }
+  }
+
+  const [{ data: inbox }, { data: tpl }] = await Promise.all([
+    admin.from('chat_inboxes').select('phone_number_id, access_token').eq('id', camp.inbox_id).single(),
+    admin.from('chat_wa_templates')
+      .select('id, name, language, header_text, header_var_count, body_var_count, body_text, header_type')
+      .eq('id', d.template_id).single(),
+  ])
+  if (!inbox?.phone_number_id || !tpl) {
+    await admin.from('chat_campaign_disparos').update({ status: 'failed' }).eq('id', d.id)
+    return { disparo: d.id, error: 'inbox ou template inválido' }
+  }
+
+  await admin.from('chat_campaign_disparos').update({ status: 'running' }).eq('id', d.id)
+
+  // Materializa a fila deste disparo a partir da audiência da campanha (idempotente
+  // pelo UNIQUE disparo+wa_id — quem já está não é reinserido nem reenviado).
+  const { data: audiencia } = await admin.from('chat_campaign_recipients')
+    .select('wa_id, name, dados').eq('campaign_id', camp.id).limit(5000)
+  const fila = (audiencia || []).map((r: any) => ({
+    disparo_id: d.id, campaign_id: camp.id, wa_id: r.wa_id, name: r.name, status: 'pending',
+  }))
+  for (let i = 0; i < fila.length; i += 500) {
+    await admin.from('chat_campaign_envios')
+      .upsert(fila.slice(i, i + 500), { onConflict: 'disparo_id,wa_id', ignoreDuplicates: true })
+  }
+  const dadosPorWa = new Map<string, Record<string, unknown>>(
+    (audiencia || []).map((r: any) => [String(r.wa_id), (r.dados || {}) as Record<string, unknown>]))
+
+  const staleISO = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+  await admin.from('chat_campaign_envios').update({ claimed_at: null })
+    .eq('disparo_id', d.id).eq('status', 'pending').lt('claimed_at', staleISO)
+
+  const { data: pendentes } = await admin.from('chat_campaign_envios')
+    .select('id, wa_id, name').eq('disparo_id', d.id).eq('status', 'pending')
+    .is('claimed_at', null).limit(BATCH)
+
+  let sent = 0, failed = 0
+  for (const e of pendentes || []) {
+    const { data: claim } = await admin.from('chat_campaign_envios')
+      .update({ claimed_at: new Date().toISOString() })
+      .eq('id', e.id).eq('status', 'pending').is('claimed_at', null)
+      .select('id').maybeSingle()
+    if (!claim) continue
+
+    const conv = await ensureConversation(
+      admin, camp.inbox_id, e.wa_id, e.name || undefined,
+      camp.agent_id || COBRANCA_AGENT_ID, camp.owner_id || null)
+    if (!conv) {
+      await marcarEnvio(e.id, 'failed', null, 'falha ao criar conversa'); failed++; continue
+    }
+
+    const res = await sendTemplateMessage({
+      admin,
+      inbox: { phone_number_id: inbox.phone_number_id, access_token: inbox.access_token },
+      toWaId: e.wa_id,
+      tpl: tpl as TemplateRow,
+      variables: resolveVariables(d.variable_mapping as VariableMapping, dadosPorWa.get(String(e.wa_id)) || {}),
+      conversationId: conv.conversationId,
+      metaExtra: { campaign_id: camp.id, disparo_id: d.id, disparo_ordem: d.ordem },
+    })
+
+    if (res.ok) {
+      await marcarEnvio(e.id, 'sent', res.waMessageId, null)
+      if (camp.bot_ativo !== false) {
+        await admin.from('chat_conversations')
+          .update({ handled_by: 'bot', ...(camp.agent_id ? { agent_id: camp.agent_id } : {}) })
+          .eq('id', conv.conversationId)
+      }
+      sent++
+    } else {
+      await marcarEnvio(e.id, 'failed', null, JSON.stringify(res.error).slice(0, 500))
+      await cleanupEmptyConversation(admin, conv)
+      failed++
+    }
+    await SLEEP(DELAY_MS)
+  }
+
+  const cont = async (st: string) => (await admin.from('chat_campaign_envios')
+    .select('id', { count: 'exact', head: true }).eq('disparo_id', d.id).eq('status', st)).count || 0
+  const [pend, okc, failc] = await Promise.all([cont('pending'), cont('sent'), cont('failed')])
+  await admin.from('chat_campaign_disparos').update({
+    status: pend === 0 ? 'done' : 'running',
+    sent: okc, failed: failc, updated_at: new Date().toISOString(),
+  }).eq('id', d.id)
+
+  if (pend > 0) reinvoke(camp.id)
+  return { disparo: d.id, ordem: d.ordem, batchSent: sent, batchFailed: failed, pendentes: pend }
+}
+
+async function marcarEnvio(id: string, status: string, waMessageId: string | null, error: string | null) {
+  await admin.from('chat_campaign_envios').update({
+    status, wa_message_id: waMessageId, error,
+    sent_at: status === 'sent' ? new Date().toISOString() : null,
+  }).eq('id', id)
 }
 
 async function markRecipient(id: string, status: string, waMessageId: string | null, error: string | null) {

@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Megaphone, Users, Send } from 'lucide-react'
+import { ArrowLeft, Megaphone, Users, Send, Plus, Trash2 } from 'lucide-react'
 import { AVAILABLE_COLUMNS, COLUMN_LABEL } from '@/lib/whatsapp/vars'
 import MappedPreview from '@/components/whatsapp/MappedPreview'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,7 @@ interface Props {
   attendants?: { id: string; name: string; role: string }[]
   memberships?: { attendant_id: string; inbox_id: string }[]
   agents?: { id: string; name: string; avatar_emoji: string | null; is_default: boolean }[]
+  disparos?: any[]
 }
 
 function varNums(text: string): number[] {
@@ -34,7 +35,7 @@ function defaultFormat(col: string): 'currency' | 'date' | undefined {
   return undefined
 }
 
-export default function CampaignWizard({ inboxes, templates, campaign, attendants = [], memberships = [], agents = [] }: Props) {
+export default function CampaignWizard({ inboxes, templates, campaign, attendants = [], memberships = [], agents = [], disparos: disparosIniciais = [] }: Props) {
   const router = useRouter()
   const supabase = createClient()
   const isEdit = !!campaign
@@ -69,6 +70,13 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   // Quem acompanha: atendentes liberados a VER esta campanha (e reenviar falhas).
   // Admin/gerente já veem todas, então a lista oferece só os demais.
   const [visivelPara, setVisivelPara] = useState<string[]>(campaign?.visivel_para || [])
+  // Disparos ADICIONAIS (modelo da régua): cada um com data/hora, template e
+  // mapeamento próprios. O envio principal da campanha continua o de sempre.
+  const [disparos, setDisparos] = useState<any[]>(
+    (disparosIniciais || []).map((d: any) => ({
+      id: d.id, scheduledAt: toLocalInput(d.scheduled_at), templateId: d.template_id,
+      mapping: d.variable_mapping || {}, status: d.status, sent: d.sent, failed: d.failed,
+    })))
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
   const tpl = templates.find(t => t.id === templateId) || null
@@ -226,6 +234,20 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
         const j = await r.json()
         if (!r.ok) throw new Error(j.error || 'Falha ao salvar a campanha')
       }
+      // Disparos adicionais: gravados junto da configuração, com o id já garantido.
+      if (disparos.length) {
+        const rd = await fetch(`/api/campaigns/${id}/disparos`, {
+          method: 'PUT', headers,
+          body: JSON.stringify({ disparos: disparos.map(d => ({ id: d.id, scheduledAt: d.scheduledAt, templateId: d.templateId, mapping: d.mapping })) }),
+        })
+        const jd = await rd.json()
+        if (!rd.ok) throw new Error(jd.error || 'Falha ao salvar os disparos')
+        setDisparos((jd.disparos || []).map((d: any) => ({
+          id: d.id, scheduledAt: toLocalInput(d.scheduled_at), templateId: d.template_id,
+          mapping: d.variable_mapping || {}, status: d.status, sent: d.sent, failed: d.failed,
+        })))
+      }
+
       const audiencePayload = audMode === 'upload'
         ? { mode: 'manual', rows: sheet!.rows.map(r => ({ ...r, wa_id: r[phoneCol], ...(nameCol ? { name: r[nameCol] } : {}) })) }
         : baseKind === 'clientes'
@@ -450,6 +472,109 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
                   ) : (
                     <input value={m.value} onChange={e => setVar(n, { value: e.target.value })} placeholder="Valor fixo"
                       className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm" />
+                  )}
+                </div>
+              )
+            })}
+          </section>
+        )}
+
+        {/* Disparos adicionais — mesmo modelo da régua de cobrança */}
+        {tpl && (
+          <section className="bg-white border border-gray-100 rounded-xl p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                  <Send className="w-4 h-4 text-gray-500" /> Disparos adicionais
+                </h2>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  Toques extras para a MESMA audiência, cada um com data, template e variáveis próprios.
+                  O envio principal continua sendo o de cima.
+                </p>
+              </div>
+              <button type="button"
+                onClick={() => setDisparos(d => [...d, { scheduledAt: '', templateId: '', mapping: {} }])}
+                className="flex items-center gap-1 text-xs font-medium text-emerald-700 hover:text-emerald-800">
+                <Plus className="w-3.5 h-3.5" /> Adicionar disparo
+              </button>
+            </div>
+
+            {disparos.length === 0 ? (
+              <p className="text-xs text-gray-400">Nenhum disparo adicional.</p>
+            ) : disparos.map((d, idx) => {
+              const dtpl = templates.find(t => t.id === d.templateId) || null
+              const dvars = dtpl ? [...new Set([...varNums(dtpl.header_text || ''), ...varNums(dtpl.body_text || '')])].sort((a, b) => a - b) : []
+              const enviado = d.status && d.status !== 'scheduled'
+              return (
+                <div key={d.id || idx} className="border border-gray-200 rounded-xl p-4 space-y-3 bg-gray-50/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-gray-700">
+                      Disparo {idx + 1}
+                      {enviado && (
+                        <span className="ml-2 font-normal text-gray-400">
+                          · já {d.status === 'done' ? 'concluído' : 'em envio'} ({d.sent || 0} enviados) — não editável
+                        </span>
+                      )}
+                    </span>
+                    {!enviado && (
+                      <button type="button" onClick={() => setDisparos(list => list.filter((_, i) => i !== idx))}
+                        className="text-gray-400 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] text-gray-500 mb-1 block">Data e hora</label>
+                      <input type="datetime-local" value={d.scheduledAt} disabled={enviado}
+                        onChange={e => setDisparos(l => l.map((x, i) => i === idx ? { ...x, scheduledAt: e.target.value } : x))}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-gray-500 mb-1 block">Template</label>
+                      <select value={d.templateId} disabled={enviado}
+                        onChange={e => setDisparos(l => l.map((x, i) => i === idx ? { ...x, templateId: e.target.value, mapping: {} } : x))}
+                        className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white disabled:bg-gray-100">
+                        <option value="">Selecione…</option>
+                        {inboxTemplates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+
+                  {dvars.length > 0 && (
+                    <div className="space-y-2">
+                      {dvars.map(n => {
+                        const m = d.mapping[n] || { type: 'column', value: '' }
+                        const setDVar = (patch: any) => setDisparos(l => l.map((x, i) =>
+                          i === idx ? { ...x, mapping: { ...x.mapping, [n]: { ...m, ...patch } } } : x))
+                        return (
+                          <div key={n} className="flex items-center gap-2">
+                            <span className="text-xs font-mono text-gray-500 w-9">{`{{${n}}}`}</span>
+                            <select value={m.type} disabled={enviado} onChange={e => setDVar({ type: e.target.value, value: '' })}
+                              className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white disabled:bg-gray-100">
+                              <option value="column">Coluna</option>
+                              <option value="static">Texto fixo</option>
+                            </select>
+                            {m.type === 'column' ? (
+                              <select value={m.value} disabled={enviado}
+                                onChange={e => setDVar({ value: e.target.value, format: defaultFormat(e.target.value) })}
+                                className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm bg-white disabled:bg-gray-100">
+                                <option value="">Escolha a coluna…</option>
+                                {columnOptions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                              </select>
+                            ) : (
+                              <input value={m.value} disabled={enviado} onChange={e => setDVar({ value: e.target.value })}
+                                placeholder="Valor fixo"
+                                className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm disabled:bg-gray-100" />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {dtpl && (
+                    <MappedPreview headerText={dtpl.header_text} bodyText={dtpl.body_text}
+                      footerText={dtpl.footer_text} mapping={d.mapping} />
                   )}
                 </div>
               )

@@ -30,6 +30,10 @@ export interface DestinatarioResolvido {
   variables: unknown
   boleto_pdf_path: string | null
   status: 'pending'
+  /** Linha de ORIGEM (planilha/base). Um disparo adicional tem template e
+   *  mapeamento próprios: sem os dados crus não haveria de onde resolver as
+   *  variáveis dele — só existiria o array já resolvido do template principal. */
+  dados: Record<string, unknown>
 }
 
 /** DDD + 8 dígitos (espelha normalize_phone do banco). */
@@ -138,6 +142,7 @@ export async function resolverAudiencia(
       variables:   resolveVariables(camp.variable_mapping as any, r),
       boleto_pdf_path: pdfByKey.get(`${r.phone_norm}|${String(r.due_date || '').slice(0, 10)}`)?.path || null,
       status:      'pending' as const,
+      dados:       r as Record<string, unknown>,
     }))
 
   return { recipients, removidosDistrato }

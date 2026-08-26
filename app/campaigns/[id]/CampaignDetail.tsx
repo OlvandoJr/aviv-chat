@@ -18,8 +18,10 @@ const STATUS_COLOR: Record<string, string> = {
   done: 'bg-emerald-100 text-emerald-700', failed: 'bg-red-100 text-red-700',
 }
 
-export default function CampaignDetail({ campaign, initialRecipients, supervisor = true }: {
+export default function CampaignDetail({ campaign, initialRecipients, disparos = [], supervisor = true }: {
   campaign: any; initialRecipients: any[]
+  /** Disparos adicionais (chat_campaign_disparos) — modelo da régua. */
+  disparos?: any[]
   // Quem foi apenas LIBERADO na campanha acompanha e reenvia falhas; editar,
   // iniciar/pausar e excluir seguem com admin/gerente (a API recusa o resto).
   supervisor?: boolean
@@ -177,6 +179,38 @@ export default function CampaignDetail({ campaign, initialRecipients, supervisor
           <span className="flex items-center gap-1.5 text-violet-600"><Reply className="w-4 h-4" /> {respondidas} respondidas</span>
         </div>
       </div>
+
+      {/* Disparos adicionais — visíveis também depois de enviados */}
+      {disparos.length > 0 && (
+        <div className="bg-white border border-gray-100 rounded-xl overflow-hidden mb-6">
+          <div className="px-5 py-3 border-b border-gray-50 text-sm font-semibold text-gray-700">
+            Disparos adicionais
+          </div>
+          <div className="divide-y divide-gray-50">
+            {disparos.map((d: any, i: number) => (
+              <div key={d.id} className="flex items-center justify-between px-5 py-2.5 text-sm">
+                <div className="min-w-0">
+                  <span className="text-gray-800">Disparo {i + 1}</span>
+                  <span className="text-gray-400 ml-2 text-xs">{d.template?.name || '—'}</span>
+                  <p className="text-[11px] text-gray-400">
+                    {new Date(d.scheduled_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0 text-xs">
+                  {d.sent > 0 && <span className="text-emerald-600">{d.sent} enviados</span>}
+                  {d.failed > 0 && <span className="text-red-500">{d.failed} falhas</span>}
+                  <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-bold uppercase',
+                    d.status === 'done' ? 'bg-emerald-100 text-emerald-700'
+                    : d.status === 'running' ? 'bg-amber-100 text-amber-700'
+                    : 'bg-blue-100 text-blue-700')}>
+                    {d.status === 'done' ? 'Concluído' : d.status === 'running' ? 'Enviando' : 'Agendado'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Destinatários */}
       <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">

@@ -19,6 +19,11 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
   if (!campaign || campaign.deleted_at) notFound()
 
+  const { data: disparos } = await supabase
+    .from('chat_campaign_disparos')
+    .select('id, ordem, scheduled_at, status, sent, failed, template:chat_wa_templates(name)')
+    .eq('campaign_id', id).order('scheduled_at')
+
   const { data: recipients } = await supabase
     .from('chat_campaign_recipients')
     .select('id, wa_id, name, status, error, sent_at, delivered_at, read_at, replied_at')
@@ -28,7 +33,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
-      <CampaignDetail supervisor={supervisor} campaign={campaign} initialRecipients={recipients || []} />
+      <CampaignDetail supervisor={supervisor} campaign={campaign} initialRecipients={recipients || []} disparos={disparos || []} />
     </div>
   )
 }
