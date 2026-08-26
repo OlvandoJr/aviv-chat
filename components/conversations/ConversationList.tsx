@@ -24,7 +24,12 @@ const ATTENDANCE_OPTS: { value: AttendanceFilter; label: string }[] = [
   { value: 'bot',   label: 'Agente IA' },
 ]
 
-export default function ConversationList() {
+export const INBOX_COOKIE = 'conversas_inbox'
+
+export default function ConversationList({ inboxes = [], initialInboxId = null }: {
+  inboxes?: { id: string; name: string }[]
+  initialInboxId?: string | null
+}) {
   const router   = useRouter()
   const pathname = usePathname()
   const supabase = createClient()
@@ -41,6 +46,9 @@ export default function ConversationList() {
   const [attendance,    setAttendance]    = useState<AttendanceFilter>('all')
   const [receiptOnly,   setReceiptOnly]   = useState(false)
   const [internalOnly,  setInternalOnly]  = useState(false)
+  // Caixa selecionada (null = todas). O valor inicial chega JÁ VALIDADO do servidor
+  // (cookie lido no layout), então a primeira renderização já é a lista certa.
+  const [inboxId,       setInboxId]       = useState<string | null>(initialInboxId)
   const [loading,       setLoading]       = useState(true)
   const [isPending, startTransition]      = useTransition()
   const [optimisticId, setOptimisticId]   = useState<string | null>(null)
@@ -49,6 +57,14 @@ export default function ConversationList() {
   const activeId = optimisticId ?? pathId
 
   useEffect(() => { setOptimisticId(null) }, [pathname])
+
+  // Troca de caixa: estado + cookie (1 ano), para o servidor lembrar na próxima visita.
+  const escolherCaixa = useCallback((id: string | null) => {
+    setInboxId(id)
+    document.cookie = id
+      ? `${INBOX_COOKIE}=${id}; path=/; max-age=31536000; samesite=lax`
+      : `${INBOX_COOKIE}=; path=/; max-age=0; samesite=lax`
+  }, [])
 
   const selectConversation = useCallback((convId: string) => {
     if (convId === pathId) return
@@ -83,6 +99,10 @@ export default function ConversationList() {
       .order('last_message_at', { ascending: false })
       .limit(50)
 
+    // A caixa escolhida é ESCOPO: vale inclusive durante a busca (diferente dos
+    // filtros de status/atendimento, que a busca ignora de propósito).
+    if (inboxId) query = query.eq('inbox_id', inboxId)
+
     if (idsDaBusca) {
       // Buscando: varre TODO o histórico (o caso de uso é justamente resgatar
       // conversa antiga, que costuma estar resolvida/arquivada). Os filtros de
@@ -113,22 +133,25 @@ export default function ConversationList() {
 
     setConversations(list)
     setLoading(false)
-  }, [statuses, attendance, receiptOnly, internalOnly, search])
+  }, [statuses, attendance, receiptOnly, internalOnly, search, inboxId])
 
-  // Contadores globais (independentes dos filtros ativos)
+  // Contadores: independentes dos filtros de status/atendimento, mas SEMPRE dentro
+  // da caixa selecionada — senão a etiqueta diria "3 aguardando" com a lista vazia.
   const fetchCounts = useCallback(async () => {
+    const base = () => {
+      const q = supabase.from('chat_conversations')
+        .select('id', { count: 'exact', head: true }).eq('status', 'open')
+      return inboxId ? q.eq('inbox_id', inboxId) : q
+    }
     const [{ count: pend }, { count: rec }, { count: intern }] = await Promise.all([
-      supabase.from('chat_conversations').select('id', { count: 'exact', head: true })
-        .eq('status', 'open').eq('handled_by', 'pending_human').eq('is_internal', false),
-      supabase.from('chat_conversations').select('id', { count: 'exact', head: true })
-        .eq('status', 'open').eq('receipt_validation', true).eq('is_internal', false),
-      supabase.from('chat_conversations').select('id', { count: 'exact', head: true })
-        .eq('status', 'open').eq('is_internal', true),
+      base().eq('handled_by', 'pending_human').eq('is_internal', false),
+      base().eq('receipt_validation', true).eq('is_internal', false),
+      base().eq('is_internal', true),
     ])
     setPendingCount(pend || 0)
     setReceiptCount(rec || 0)
     setInternalCount(intern || 0)
-  }, [])
+  }, [inboxId])
 
   useEffect(() => {
     fetchConversations()
@@ -165,50 +188,27 @@ export default function ConversationList() {
     <div className="w-80 flex flex-col border-r border-gray-200 bg-white shrink-0 h-full">
       {/* Header */}
       <div className="p-4 border-b border-gray-100">
-        <div className="flex items-center justify-between mb-3 gap-1.5">
+        {/* Título + caixa de entrada (só faz sentido com mais de uma) */}
+        <div className="flex items-center gap-2 mb-3 min-w-0">
           <h1 className="text-base font-semibold text-gray-900 shrink-0">Conversas</h1>
-          <div className="flex items-center gap-1.5 flex-wrap justify-end">
-            {pendingCount > 0 && (
-              <button
-                onClick={() => { setStatuses(['open']); setAttendance('human'); setReceiptOnly(false); setInternalOnly(false) }}
-                className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-700 text-[11px] font-semibold animate-pulse hover:bg-amber-100 transition-colors"
-                title="Ver conversas aguardando atendente"
-              >
-                <Bell className="w-3 h-3" />
-                {pendingCount} aguardando
-              </button>
-            )}
-            {receiptCount > 0 && (
-              <button
-                onClick={() => { setStatuses(['open']); setReceiptOnly(true); setAttendance('all'); setInternalOnly(false) }}
-                className={cn(
-                  'flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition-colors',
-                  receiptOnly
-                    ? 'bg-violet-600 border-violet-600 text-white'
-                    : 'bg-violet-50 border-violet-300 text-violet-700 hover:bg-violet-100'
-                )}
-                title="Ver conversas aguardando validação de comprovante"
-              >
-                <FileCheck2 className="w-3 h-3" />
-                {receiptCount} comprovante
-              </button>
-            )}
-            {internalCount > 0 && (
-              <button
-                onClick={() => { setStatuses(['open']); setInternalOnly(true); setReceiptOnly(false); setAttendance('all') }}
-                className={cn(
-                  'flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition-colors',
-                  internalOnly
-                    ? 'bg-slate-600 border-slate-600 text-white'
-                    : 'bg-slate-50 border-slate-300 text-slate-600 hover:bg-slate-100'
-                )}
-                title="Ver conversas internas (notificações a corretores)"
-              >
-                <Lock className="w-3 h-3" />
-                {internalCount} internas
-              </button>
-            )}
-          </div>
+          {inboxes.length > 1 && (
+            <FilterDropdown
+              variant="inline"
+              label={inboxId ? (inboxes.find((i) => i.id === inboxId)?.name || 'Caixa') : 'Todas as caixas'}
+              className="min-w-0"
+            >
+              <OptionRow label="Todas as caixas" radio checked={!inboxId} onClick={() => escolherCaixa(null)} />
+              {inboxes.map((i) => (
+                <OptionRow
+                  key={i.id}
+                  label={i.name}
+                  radio
+                  checked={inboxId === i.id}
+                  onClick={() => escolherCaixa(i.id)}
+                />
+              ))}
+            </FilterDropdown>
+          )}
         </div>
 
         {/* Busca */}
@@ -251,28 +251,53 @@ export default function ConversationList() {
           </FilterDropdown>
         </div>
 
-        {/* Filtro ativo de comprovante */}
-        {receiptOnly && (
-          <button
-            onClick={() => setReceiptOnly(false)}
-            className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-md bg-violet-50 border border-violet-200 text-violet-700 text-[11px] font-medium hover:bg-violet-100 transition-colors"
-          >
-            <FileCheck2 className="w-3 h-3" />
-            Filtrando: Validação de comprovante
-            <span className="ml-1 text-violet-400">✕ limpar</span>
-          </button>
-        )}
-
-        {/* Filtro ativo de internas */}
-        {internalOnly && (
-          <button
-            onClick={() => setInternalOnly(false)}
-            className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-medium hover:bg-slate-200 transition-colors"
-          >
-            <Lock className="w-3 h-3" />
-            Filtrando: Internas (corretores)
-            <span className="ml-1 text-slate-400">✕ limpar</span>
-          </button>
+        {/* Contadores: ponto + texto, discretos. Clique filtra; clicar de novo limpa.
+            Zerado some — sem nenhum, a fileira inteira desaparece. */}
+        {(pendingCount > 0 || receiptCount > 0 || internalCount > 0) && (
+          <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2">
+            {pendingCount > 0 && (
+              <button
+                onClick={() => { setStatuses(['open']); setAttendance('human'); setReceiptOnly(false); setInternalOnly(false) }}
+                className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-900 transition-colors"
+                title="Ver conversas aguardando atendente"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                {pendingCount} aguardando
+              </button>
+            )}
+            {receiptCount > 0 && (
+              <button
+                onClick={() => {
+                  if (receiptOnly) { setReceiptOnly(false); return }
+                  setStatuses(['open']); setReceiptOnly(true); setAttendance('all'); setInternalOnly(false)
+                }}
+                className={cn(
+                  'flex items-center gap-1.5 text-[11px] transition-colors',
+                  receiptOnly ? 'text-violet-700 font-medium' : 'text-gray-500 hover:text-gray-900'
+                )}
+                title={receiptOnly ? 'Limpar filtro de comprovante' : 'Ver conversas aguardando validação de comprovante'}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
+                {receiptCount} comprovante
+              </button>
+            )}
+            {internalCount > 0 && (
+              <button
+                onClick={() => {
+                  if (internalOnly) { setInternalOnly(false); return }
+                  setStatuses(['open']); setInternalOnly(true); setReceiptOnly(false); setAttendance('all')
+                }}
+                className={cn(
+                  'flex items-center gap-1.5 text-[11px] transition-colors',
+                  internalOnly ? 'text-slate-700 font-medium' : 'text-gray-500 hover:text-gray-900'
+                )}
+                title={internalOnly ? 'Limpar filtro de internas' : 'Ver conversas internas (notificações a corretores)'}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
+                {internalCount} internas
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -316,8 +341,8 @@ export default function ConversationList() {
 }
 
 // ── Dropdown de filtro (abre painel com opções) ──────────────────────────────
-function FilterDropdown({ label, className, children }: {
-  label: string; className?: string; children: React.ReactNode
+function FilterDropdown({ label, className, variant = 'field', children }: {
+  label: string; className?: string; variant?: 'field' | 'inline'; children: React.ReactNode
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -333,15 +358,31 @@ function FilterDropdown({ label, className, children }: {
       <button
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'w-full flex items-center justify-between gap-1 px-2.5 py-1.5 text-xs rounded-md border transition-colors',
-          open ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+          'flex items-center gap-1 transition-colors',
+          // 'field': campo de filtro (Status/Atendimento). 'inline': rótulo discreto
+          // ao lado de um título — sem borda nem fundo.
+          variant === 'field'
+            ? cn('w-full justify-between px-2.5 py-1.5 text-xs rounded-md border',
+                 open ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50')
+            : cn('min-w-0 max-w-[140px] text-xs', open ? 'text-emerald-700' : 'text-gray-500 hover:text-gray-800')
         )}
       >
         <span className="truncate">{label}</span>
-        <ChevronDown className={cn('w-3.5 h-3.5 shrink-0 transition-transform', open && 'rotate-180')} />
+        <ChevronDown className={cn(
+          'shrink-0 transition-transform',
+          variant === 'field' ? 'w-3.5 h-3.5' : 'w-3 h-3',
+          open && 'rotate-180',
+        )} />
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1 w-full min-w-[150px] bg-white border border-gray-200 rounded-xl shadow-lg z-50 overflow-hidden py-1">
+        // No inline (caixa de entrada) a escolha é única e troca o escopo da tela:
+        // fecha ao escolher. Status é multi-seleção e continua aberto.
+        <div
+          onClick={() => { if (variant === 'inline') setOpen(false) }}
+          className={cn(
+          'absolute left-0 top-full mt-1 min-w-[150px] bg-white border border-gray-200 rounded-xl shadow-lg z-50 overflow-hidden py-1',
+          variant === 'field' ? 'w-full' : 'w-max max-w-[220px]',
+        )}>
           {children}
         </div>
       )}
