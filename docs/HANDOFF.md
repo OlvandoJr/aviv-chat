@@ -85,6 +85,11 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
   (authenticated/service_role; anon → 403), `{{env.X}}` só resolve `SIENGE_*`/`CV_*`, guarda SSRF.
   Deployado e verificado. O `_shared/apiExec.ts` é compartilhado com o `ai-responder` (compatível;
   pega a allowlist no próximo deploy dele — feito em 25/08 junto do #141).
+- **PR #143 (25/08): conversas por caixa** — seletor discreto ao lado do título (só as
+  caixas que o usuário atende; admin/gerente veem todas; escondido com uma só), escolha
+  lembrada em cookie lido no server component, e a caixa vira escopo (lista + 3 contadores
+  + busca). Etiquetas aguardando/comprovante/internas viraram ponto+texto abaixo dos
+  filtros; os chips "Filtrando: …" foram aposentados (comprovante/internas alternam).
 - **PR #141 (25/08): IA por campanha** (mig 079) — `chat_campaigns.bot_ativo` (interruptor,
   default true) + `agent_id` (especialista). No ai-responder, o ÚLTIMO template out até 7 dias
   decide: campanha com IA desligada → `handled_by='human'` e bot mudo; especialista → ele
@@ -117,7 +122,11 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
    internas usam service_role/edge_cron_key — mapear antes).
 10. Registro órfão `client_id=999999` em `sienge_clientes` (não existe na API; sobra de teste antigo) —
    limpar se o usuário quiser.
-11. **IA por campanha (PR #141)**: conferir a UI logado (bloco "Atendimento por IA" no wizard;
+11. **Seletor de caixa nas conversas (PR #143)**: hoje TODOS os atendentes têm exatamente
+   1 caixa vinculada, então só o admin vê o seletor. Se um atendente passar a atender 2+
+   caixas, conferir com ele. A preferência vai no cookie `conversas_inbox` (lido no
+   layout server) — limpar o cookie volta para "Todas as caixas".
+12. **IA por campanha (PR #141)**: conferir a UI logado (bloco "Atendimento por IA" no wizard;
    "Campanhas respondidas por este agente" no editor) e fazer o teste real controlado com
    audiência = só o número do Olvando: especialista responde texto livre; campanha com IA
    desligada fica muda e cai na fila humana; cobrança normal segue com a Vivi.
