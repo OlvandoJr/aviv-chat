@@ -85,6 +85,13 @@ Cada item tem PR com o caso real no corpo. Ordem cronológica:
   (authenticated/service_role; anon → 403), `{{env.X}}` só resolve `SIENGE_*`/`CV_*`, guarda SSRF.
   Deployado e verificado. O `_shared/apiExec.ts` é compartilhado com o `ai-responder` (compatível;
   pega a allowlist no próximo deploy dele — feito em 25/08 junto do #141).
+- **PR #145 (26/08): config de campanha não se perde mais** — a configuração só era gravada
+  pelo "Salvar e calcular audiência"; `start()` disparava sem regravar, descartando em
+  silêncio ajustes posteriores (caso real: `entrega_chaves_texas` saiu com a IA ligada
+  para 63 clientes e a Vivi respondeu convidados da entrega de chaves). Agora
+  `configPayload()` é única e o `start()` faz PATCH antes do `/start`, abortando se falhar.
+  A tela da campanha mostra o estado da IA. **Regra: config crítica não pode depender de um
+  botão anterior — persistir no ato do disparo.**
 - **PR #143 (25/08): conversas por caixa** — seletor discreto ao lado do título (só as
   caixas que o usuário atende; admin/gerente veem todas; escondido com uma só), escolha
   lembrada em cookie lido no server component, e a caixa vira escopo (lista + 3 contadores
