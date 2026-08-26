@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient }              from '@/lib/supabase/server'
+import { usuarioAtual, ehSupervisor } from '@/lib/api/papel'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 
 const admin = createAdminClient(
@@ -13,10 +14,16 @@ export async function POST(req: NextRequest) {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+    // Criar/editar/disparar campanha é de admin/gerente. Sem esta checagem, a trava
+    // ficava só na tela e a rota atendia qualquer atendente logado.
+    const eu = await usuarioAtual()
+    if (!ehSupervisor(eu?.papel)) {
+      return NextResponse.json({ error: 'Apenas administradores e gerentes gerenciam campanhas.' }, { status: 403 })
+    }
 
     const { name, inboxId, templateId, ownerId, variableMapping = {}, scheduledAt = null,
             headerMediaPath = null, headerMediaFilename = null, headerMediaMode = 'upload',
-            incluirDistratados = false, botAtivo = true, agentId = null } = await req.json()
+            incluirDistratados = false, botAtivo = true, agentId = null, visivelPara = [] } = await req.json()
     if (!name || !inboxId || !templateId) {
       return NextResponse.json({ error: 'name, inboxId e templateId são obrigatórios' }, { status: 400 })
     }
@@ -42,6 +49,8 @@ export async function POST(req: NextRequest) {
       // IA da campanha: interruptor + agente especialista (migration 079).
       bot_ativo: botAtivo !== false,
       agent_id:  agentId || null,
+      // Atendentes liberados a acompanhar (admin/gerente veem todas de qualquer forma).
+      visivel_para: Array.isArray(visivelPara) ? visivelPara : [],
     }).select('id').single()
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })

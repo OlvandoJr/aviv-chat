@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient }              from '@/lib/supabase/server'
+import { usuarioAtual, ehSupervisor } from '@/lib/api/papel'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 
 const admin = createAdminClient(
@@ -30,8 +31,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       : null
 
     const { data: camp } = await admin
-      .from('chat_campaigns').select('id, status, deleted_at').eq('id', id).maybeSingle()
+      .from('chat_campaigns').select('id, status, deleted_at, visivel_para').eq('id', id).maybeSingle()
     if (!camp || camp.deleted_at) return NextResponse.json({ error: 'Campanha não encontrada' }, { status: 404 })
+
+    // Reenviar falha é a ÚNICA ação que quem foi liberado na campanha pode fazer
+    // (criar, editar, disparar e excluir seguem restritos a admin/gerente).
+    const eu = await usuarioAtual()
+    const liberado = ehSupervisor(eu?.papel) || (eu ? (camp.visivel_para || []).includes(eu.id) : false)
+    if (!liberado) {
+      return NextResponse.json({ error: 'Você não tem acesso a esta campanha.' }, { status: 403 })
+    }
     if (camp.status === 'running') {
       return NextResponse.json({ error: 'A campanha ainda está enviando — aguarde terminar para reenviar.' }, { status: 422 })
     }

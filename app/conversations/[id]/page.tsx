@@ -77,8 +77,10 @@ export default async function ConversationPage({ params }: Props) {
       }
     }
     if (campaignIds.length) {
-      const { data } = await supabase.from('chat_campaigns').select('id, name').in('id', campaignIds)
-      for (const c of data || []) campaignNames[c.id] = c.name
+      // Via RPC: desde a migration 080 a campanha só é visível a quem foi liberado,
+      // mas o RÓTULO da mensagem tem de aparecer para quem atende a conversa.
+      const { data } = await supabase.rpc('campanha_nomes', { _ids: campaignIds })
+      for (const c of (data as { id: string; name: string }[]) || []) campaignNames[c.id] = c.name
     }
   }
 

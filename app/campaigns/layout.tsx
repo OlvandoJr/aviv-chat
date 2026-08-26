@@ -13,7 +13,14 @@ export default async function CampaignsLayout({ children }: { children: React.Re
     .eq('id', user.id)
     .single()
 
-  if (attendant?.role !== 'admin' && attendant?.role !== 'manager') redirect('/conversations')
+  // Admin/gerente entram sempre. Atendente entra só se houver ao menos uma campanha
+  // liberada para ele — a RLS (migration 080) é quem filtra, então basta perguntar.
+  const supervisor = attendant?.role === 'admin' || attendant?.role === 'manager'
+  if (!supervisor) {
+    const { data: liberadas } = await supabase
+      .from('chat_campaigns').select('id').is('deleted_at', null).limit(1)
+    if (!liberadas?.length) redirect('/conversations')
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">

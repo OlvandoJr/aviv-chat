@@ -7,6 +7,9 @@ export const dynamic = 'force-dynamic'
 export default async function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: eu } = await supabase.from('chat_attendants').select('role').eq('id', user?.id || '').maybeSingle()
+  const supervisor = eu?.role === 'admin' || eu?.role === 'manager'
 
   const { data: campaign } = await supabase
     .from('chat_campaigns')
@@ -25,7 +28,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-8">
-      <CampaignDetail campaign={campaign} initialRecipients={recipients || []} />
+      <CampaignDetail supervisor={supervisor} campaign={campaign} initialRecipients={recipients || []} />
     </div>
   )
 }
