@@ -40,7 +40,18 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   const supabase = createClient()
   const isEdit = !!campaign
 
-  const toLocalInput = (iso: string | null) => iso ? new Date(iso).toISOString().slice(0, 16) : ''
+  // datetime-local ("2026-08-27T09:00") é hora LOCAL do navegador, sem fuso. O
+  // servidor roda em UTC e interpretava o texto puro como UTC — a campanha
+  // agendada para 8h37 saiu 5h37 (26/08). A conversão nos DOIS sentidos tem de
+  // acontecer AQUI no navegador, o único que conhece o fuso do usuário:
+  // exibir = UTC→local; enviar = local→ISO com Z.
+  const toLocalInput = (iso: string | null) => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+  }
+  const paraISO = (local: string) => (local ? new Date(local).toISOString() : null)
 
   const [name, setName]       = useState(campaign?.name || '')
   const [inboxId, setInboxId] = useState(campaign?.inbox_id || inboxes[0]?.id || '')
@@ -198,7 +209,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
     const usaUpload = isMediaTemplate && headerMediaMode === 'upload'
     return {
       name, inboxId, templateId, ownerId, variableMapping: cleanMapping,
-      scheduledAt: scheduledAt || null,
+      scheduledAt: paraISO(scheduledAt),
       headerMediaMode: isMediaTemplate ? headerMediaMode : 'upload',
       headerMediaPath: usaUpload ? headerMediaPath : null,
       headerMediaFilename: usaUpload ? headerMediaFilename : null,
@@ -238,7 +249,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
       if (disparos.length) {
         const rd = await fetch(`/api/campaigns/${id}/disparos`, {
           method: 'PUT', headers,
-          body: JSON.stringify({ disparos: disparos.map(d => ({ id: d.id, scheduledAt: d.scheduledAt, templateId: d.templateId, mapping: d.mapping })) }),
+          body: JSON.stringify({ disparos: disparos.map(d => ({ id: d.id, scheduledAt: paraISO(d.scheduledAt), templateId: d.templateId, mapping: d.mapping })) }),
         })
         const jd = await rd.json()
         if (!rd.ok) throw new Error(jd.error || 'Falha ao salvar os disparos')
