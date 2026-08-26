@@ -3,12 +3,13 @@
 import { useEffect, useState, useCallback, useTransition, useRef } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Search, Bell, Loader2, ChevronDown, FileCheck2, Check, Lock, Ban } from 'lucide-react'
+import { Search, Bell, Loader2, ChevronDown, FileCheck2, Check, Lock, Ban, Plus } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { formatTime, getInitials, cn } from '@/lib/utils'
 import type { Conversation } from '@/lib/types'
+import NovoContatoDialog from '@/components/contacts/NovoContatoDialog'
 
 type StatusFilter     = 'open' | 'resolved' | 'archived'
 type AttendanceFilter = 'all' | 'bot' | 'human'
@@ -49,6 +50,7 @@ export default function ConversationList({ inboxes = [], initialInboxId = null }
   // Caixa selecionada (null = todas). O valor inicial chega JÁ VALIDADO do servidor
   // (cookie lido no layout), então a primeira renderização já é a lista certa.
   const [inboxId,       setInboxId]       = useState<string | null>(initialInboxId)
+  const [novoAberto,    setNovoAberto]    = useState(false)
   const [loading,       setLoading]       = useState(true)
   const [isPending, startTransition]      = useTransition()
   const [optimisticId, setOptimisticId]   = useState<string | null>(null)
@@ -209,7 +211,16 @@ export default function ConversationList({ inboxes = [], initialInboxId = null }
               ))}
             </FilterDropdown>
           )}
+          {/* Iniciar conversa com um número que nunca escreveu */}
+          {inboxes.length > 0 && (
+            <button onClick={() => setNovoAberto(true)} title="Novo contato"
+              className="ml-auto shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-gray-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors">
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
         </div>
+
+        {novoAberto && <NovoContatoDialog inboxes={inboxes} onClose={() => setNovoAberto(false)} />}
 
         {/* Busca */}
         <div className="relative">

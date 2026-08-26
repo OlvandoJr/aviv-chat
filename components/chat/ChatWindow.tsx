@@ -30,6 +30,8 @@ interface Props {
   templateButtons?:  Record<string, { text: string; type: string }[]>
   reguaInfo?:        Record<string, { name: string; origin: string }>
   campaignNames?:    Record<string, string>
+  /** Cliente escreveu nas últimas 24h? Fora da janela, só template. */
+  janelaAbertaInicial?: boolean
 }
 
 export type TplButton = { text: string; type: string }
@@ -61,7 +63,7 @@ const ORIGEM_TAG: Record<string, { label: string; cls: string }> = {
   ambos:  { label: 'Sienge + SGL',  cls: 'bg-violet-100 text-violet-700' },
 }
 
-export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages, templateButtons, reguaInfo, campaignNames }: Props) {
+export default function ChatWindow({ conversation, attendants, siengeBoletos, sglBoletos, contactAttributes, central, initialMessages, templateButtons, reguaInfo, campaignNames, janelaAbertaInicial = false }: Props) {
   const origem = central?.origem as string | undefined
   const supabase  = createClient()
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -72,6 +74,14 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
   const [conv,        setConv]        = useState(conversation)
   const [currentAttendantId, setCurrentAttendantId] = useState<string | null>(null)
   const [templateOpen, setTemplateOpen] = useState(false)
+
+  // Janela de 24h derivada das mensagens em memória: quando o cliente responde, o
+  // realtime insere a mensagem e o campo de digitação destrava sozinho. Cai para o
+  // valor calculado no servidor enquanto não há entrada carregada.
+  const ultimaEntrada = messages.filter(m => m.direction === 'in').at(-1)?.created_at
+  const janelaAberta = ultimaEntrada
+    ? Date.now() - new Date(ultimaEntrada).getTime() < 24 * 60 * 60 * 1000
+    : janelaAbertaInicial
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
