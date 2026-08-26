@@ -98,6 +98,9 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   // IA da campanha: liga/desliga (nasce ligada) + agente especialista opcional.
   const [botAtivo, setBotAtivo] = useState<boolean>(campaign ? campaign.bot_ativo !== false : true)
   const [agentId, setAgentId]   = useState<string>(campaign?.agent_id || '')
+  // Quem acompanha: atendentes liberados a VER esta campanha (e reenviar falhas).
+  // Admin/gerente já veem todas, então a lista oferece só os demais.
+  const [visivelPara, setVisivelPara] = useState<string[]>(campaign?.visivel_para || [])
 
   const inboxTemplates = templates.filter(t => t.inbox_id === inboxId)
   const tpl = templates.find(t => t.id === templateId) || null
@@ -162,6 +165,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
   // atribuídas a ele — só ele (e admin/gerente) as vê. Opções: atendentes
   // vinculados à caixa selecionada + admins/gerentes (veem tudo).
   const [ownerId, setOwnerId] = useState<string>(campaign?.owner_id || '')
+  const naoSupervisores = attendants.filter(a => a.role !== 'admin' && a.role !== 'manager')
   const inboxOwners = attendants.filter(a =>
     a.role === 'admin' || a.role === 'manager' ||
     memberships.some(m => m.attendant_id === a.id && m.inbox_id === inboxId))
@@ -223,6 +227,7 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
       headerMediaPath: usaUpload ? headerMediaPath : null,
       headerMediaFilename: usaUpload ? headerMediaFilename : null,
       incluirDistratados, botAtivo, agentId: botAtivo ? (agentId || null) : null,
+      visivelPara,
     }
   }
 
@@ -378,6 +383,32 @@ export default function CampaignWizard({ inboxes, templates, campaign, attendant
               </select>
             </div>
           </div>
+
+          {/* Quem acompanha — a aba Campanhas é de admin/gerente; liberar aqui dá a um
+              atendente acesso a ESTA campanha (ver progresso e reenviar falhas). */}
+          {naoSupervisores.length > 0 && (
+            <div>
+              <label className="text-xs font-medium text-gray-600 mb-1 block">Quem pode acompanhar esta campanha</label>
+              <div className="flex flex-wrap gap-2">
+                {naoSupervisores.map(a => {
+                  const on = visivelPara.includes(a.id)
+                  return (
+                    <button key={a.id} type="button"
+                      onClick={() => setVisivelPara(on ? visivelPara.filter(i => i !== a.id) : [...visivelPara, a.id])}
+                      className={cn('text-xs px-2.5 py-1 rounded-full border transition-colors',
+                        on ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'border-gray-200 text-gray-500 hover:border-gray-300')}>
+                      {on ? '✓ ' : ''}{a.name}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1">
+                Quem for marcado vê esta campanha (progresso, quem recebeu e as falhas) e pode
+                reenviar quem falhou. Editar e disparar continua com administradores e gerentes,
+                que enxergam todas as campanhas.
+              </p>
+            </div>
+          )}
 
           {/* Mídia do template (header DOCUMENT/IMAGE/VIDEO): mesmo arquivo p/ todos OU boleto de cada cliente */}
           {isMediaTemplate && (

@@ -17,7 +17,12 @@ const STATUS_COLOR: Record<string, string> = {
   done: 'bg-emerald-100 text-emerald-700', failed: 'bg-red-100 text-red-700',
 }
 
-export default function CampaignDetail({ campaign, initialRecipients }: { campaign: any; initialRecipients: any[] }) {
+export default function CampaignDetail({ campaign, initialRecipients, supervisor = true }: {
+  campaign: any; initialRecipients: any[]
+  // Quem foi apenas LIBERADO na campanha acompanha e reenvia falhas; editar,
+  // iniciar/pausar e excluir seguem com admin/gerente (a API recusa o resto).
+  supervisor?: boolean
+}) {
   const router = useRouter()
   const supabase = createClient()
   const [camp, setCamp] = useState(campaign)
@@ -119,28 +124,28 @@ export default function CampaignDetail({ campaign, initialRecipients }: { campai
           </p>
         </div>
         <div className="flex gap-2">
-          {['running', 'scheduled'].includes(camp.status) && (
+          {supervisor && ['running', 'scheduled'].includes(camp.status) && (
             <button onClick={() => action('pause')} disabled={busy}
               className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-orange-100 text-orange-700 hover:bg-orange-200">
               <Pause className="w-4 h-4" /> Pausar
             </button>
           )}
-          {['paused', 'draft'].includes(camp.status) && camp.total > 0 && (
+          {supervisor && ['paused', 'draft'].includes(camp.status) && camp.total > 0 && (
             <button onClick={() => action('start')} disabled={busy}
               className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">
               <Play className="w-4 h-4" /> {camp.status === 'paused' ? 'Retomar' : 'Iniciar'}
             </button>
           )}
-          {editavel && (
+          {supervisor && editavel && (
             <button onClick={() => router.push(`/campaigns/${camp.id}/edit`)} disabled={busy}
               className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">
               <Pencil className="w-4 h-4" /> Editar
             </button>
           )}
-          <button onClick={excluir} disabled={busy} title="Excluir campanha"
+          {supervisor && <button onClick={excluir} disabled={busy} title="Excluir campanha"
             className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50">
             <Trash2 className="w-4 h-4" /> Excluir
-          </button>
+          </button>}
         </div>
       </div>
 

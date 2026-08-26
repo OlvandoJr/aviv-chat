@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient }              from '@/lib/supabase/server'
+import { usuarioAtual, ehSupervisor } from '@/lib/api/papel'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import { resolveVariables }          from '@/lib/whatsapp/vars'
 
@@ -21,6 +22,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+    // Criar/editar/disparar campanha é de admin/gerente. Sem esta checagem, a trava
+    // ficava só na tela e a rota atendia qualquer atendente logado.
+    const eu = await usuarioAtual()
+    if (!ehSupervisor(eu?.papel)) {
+      return NextResponse.json({ error: 'Apenas administradores e gerentes gerenciam campanhas.' }, { status: 403 })
+    }
 
     const { id } = await ctx.params
     const { mode = 'view', base = 'boletos', filter = {}, rows = [] } = await req.json()

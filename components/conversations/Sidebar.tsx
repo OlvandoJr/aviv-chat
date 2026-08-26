@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { MessageSquare, LogOut, Users, Bot, Inbox, Plug, Puzzle, CalendarDays, LayoutTemplate, Megaphone, CalendarClock, UsersRound, Receipt } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
@@ -25,6 +26,17 @@ export default function Sidebar({ attendant }: SidebarProps) {
 
   const isAdmin   = attendant?.role === 'admin'
   const isManager = attendant?.role === 'admin' || attendant?.role === 'manager'
+
+  // Atendente comum vê "Campanhas" apenas se houver alguma liberada para ele
+  // (migration 080). A RLS já filtra — basta perguntar se sobrou alguma linha.
+  const [temCampanha, setTemCampanha] = useState(false)
+  useEffect(() => {
+    if (isManager || !attendant) return
+    let vivo = true
+    supabase.from('chat_campaigns').select('id').is('deleted_at', null).limit(1)
+      .then(({ data }) => { if (vivo) setTemCampanha(!!data?.length) })
+    return () => { vivo = false }
+  }, [isManager, attendant?.id])
 
   return (
     // Placeholder de 56px mantém o layout estável; o menu real flutua por cima e expande no hover.
@@ -56,10 +68,12 @@ export default function Sidebar({ attendant }: SidebarProps) {
               <NavItem href="/clients"             icon={<UsersRound     className="w-5 h-5" />} label="Central de Clientes" active={pathname.startsWith('/clients')} />
               <NavItem href="/agents"              icon={<Bot            className="w-5 h-5" />} label="Agentes IA"          active={pathname.startsWith('/agents')} />
               <NavItem href="/templates"           icon={<LayoutTemplate className="w-5 h-5" />} label="Templates"           active={pathname.startsWith('/templates')} />
-              <NavItem href="/campaigns"           icon={<Megaphone      className="w-5 h-5" />} label="Campanhas"           active={pathname.startsWith('/campaigns')} />
               <NavItem href="/regua"               icon={<CalendarClock  className="w-5 h-5" />} label="Régua de Cobrança"   active={pathname.startsWith('/regua')} />
               <NavItem href="/settings/attendants" icon={<Users          className="w-5 h-5" />} label="Usuários"            active={pathname.startsWith('/settings')} />
             </>
+          )}
+          {(isManager || temCampanha) && (
+            <NavItem href="/campaigns" icon={<Megaphone className="w-5 h-5" />} label="Campanhas" active={pathname.startsWith('/campaigns')} />
           )}
         </nav>
 

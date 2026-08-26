@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient }              from '@/lib/supabase/server'
+import { usuarioAtual, ehSupervisor } from '@/lib/api/papel'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 
 const admin = createAdminClient(
@@ -17,6 +18,12 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+    // Criar/editar/disparar campanha é de admin/gerente. Sem esta checagem, a trava
+    // ficava só na tela e a rota atendia qualquer atendente logado.
+    const eu = await usuarioAtual()
+    if (!ehSupervisor(eu?.papel)) {
+      return NextResponse.json({ error: 'Apenas administradores e gerentes gerenciam campanhas.' }, { status: 403 })
+    }
 
     const { id } = await ctx.params
     const b = await req.json()
@@ -32,6 +39,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     // desligar o bot (ou trocar o especialista) vale já para a próxima resposta de lead.
     if (b.botAtivo !== undefined) patch.bot_ativo = b.botAtivo !== false
     if (b.agentId !== undefined)  patch.agent_id = b.agentId || null
+    if (b.visivelPara !== undefined) patch.visivel_para = Array.isArray(b.visivelPara) ? b.visivelPara : []
 
     const mudaConfig = b.inboxId !== undefined || b.templateId !== undefined
       || b.variableMapping !== undefined || b.scheduledAt !== undefined || b.ownerId !== undefined
@@ -75,6 +83,12 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: str
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
+    // Criar/editar/disparar campanha é de admin/gerente. Sem esta checagem, a trava
+    // ficava só na tela e a rota atendia qualquer atendente logado.
+    const eu = await usuarioAtual()
+    if (!ehSupervisor(eu?.papel)) {
+      return NextResponse.json({ error: 'Apenas administradores e gerentes gerenciam campanhas.' }, { status: 403 })
+    }
 
     const { id } = await ctx.params
     const { data: camp } = await admin
