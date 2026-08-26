@@ -3,9 +3,10 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2, CheckCheck, Eye, Reply, RotateCw, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Pause, Play, CheckCircle2, XCircle, Clock, Pencil, Trash2, CheckCheck, Eye, Reply, RotateCw, ChevronDown, UserPlus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { descreverFalha } from '@/lib/whatsapp/erros'
+import AdicionarContatosDialog from '@/components/campaigns/AdicionarContatosDialog'
 
 const STATUS_LABEL: Record<string, string> = {
   draft: 'Rascunho', scheduled: 'Agendada', running: 'Enviando',
@@ -28,7 +29,8 @@ export default function CampaignDetail({ campaign, initialRecipients, supervisor
   const [camp, setCamp] = useState(campaign)
   const [recipients, setRecipients] = useState(initialRecipients)
   const [busy, setBusy] = useState(false)
-  const [detalhe, setDetalhe] = useState<string | null>(null)   // id do destinatário com o erro cru aberto
+  const [detalhe, setDetalhe] = useState<string | null>(null)
+  const [addAberto, setAddAberto] = useState(false)   // id do destinatário com o erro cru aberto
 
   // Realtime: campanha + recipients
   useEffect(() => {
@@ -136,6 +138,12 @@ export default function CampaignDetail({ campaign, initialRecipients, supervisor
               <Play className="w-4 h-4" /> {camp.status === 'paused' ? 'Retomar' : 'Iniciar'}
             </button>
           )}
+          {supervisor && camp.status !== 'running' && (
+            <button onClick={() => setAddAberto(true)} disabled={busy}
+              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">
+              <UserPlus className="w-4 h-4" /> Adicionar contatos
+            </button>
+          )}
           {supervisor && editavel && (
             <button onClick={() => router.push(`/campaigns/${camp.id}/edit`)} disabled={busy}
               className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">
@@ -148,6 +156,8 @@ export default function CampaignDetail({ campaign, initialRecipients, supervisor
           </button>}
         </div>
       </div>
+
+      {addAberto && <AdicionarContatosDialog campaignId={camp.id} onClose={() => setAddAberto(false)} />}
 
       {/* Progresso */}
       <div className="bg-white border border-gray-100 rounded-xl p-5 mb-6">
