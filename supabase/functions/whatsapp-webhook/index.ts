@@ -71,7 +71,9 @@ Deno.serve(async (req) => {
           .eq('wa_message_id', status.id)
 
         // Propagar entrega/leitura para o destinatário de campanha (no-op se não for de campanha).
-        await propagateCampaignStatus(status.id, status.status)
+        // O erro vai junto: falha de ENTREGA (mensagem aceita e não entregue) era
+        // registrada sem motivo nenhum, e o atendente via só "Falhou" na campanha.
+        await propagateCampaignStatus(status.id, status.status, status.errors?.[0])
 
         // Detectar janela de 24h fechada (erro 131047 via webhook assíncrono)
         if (status.status === 'failed') {
@@ -290,7 +292,8 @@ async function processMessage(msg: any, value: any, inboxId: string) {
 // ── Indicadores de campanha (delivered/read/replied) ─────────────────────────
 // Propaga o status da Meta para o destinatário de campanha, casando por wa_message_id.
 // Idempotente (timestamp só se null) e monotônico (nunca rebaixa o status).
-async function propagateCampaignStatus(waMessageId: string, waStatus: string) {
+// deno-lint-ignore no-explicit-any
+async function propagateCampaignStatus(waMessageId: string, waStatus: string, erro?: any) {
   if (!waMessageId) return
   const now = new Date().toISOString()
   const T = () => supabase.from('chat_campaign_recipients')
@@ -303,7 +306,13 @@ async function propagateCampaignStatus(waMessageId: string, waStatus: string) {
     await T().update({ delivered_at: now }).eq('wa_message_id', waMessageId).is('delivered_at', null)
     await T().update({ status: 'read' }).eq('wa_message_id', waMessageId).in('status', ['sent', 'delivered'])
   } else if (waStatus === 'failed') {
-    await T().update({ status: 'failed' }).eq('wa_message_id', waMessageId).eq('status', 'sent')
+    // Formato lido por lib/whatsapp/erros.ts: "[código] Título — detalhe".
+    const motivo = erro
+      ? `[${erro.code ?? '?'}] ${erro.title || erro.message || 'Falha na entrega'}`
+        + (erro.error_data?.details ? ` — ${erro.error_data.details}` : '')
+      : 'Falha na entrega (a Meta não informou o motivo)'
+    await T().update({ status: 'failed', error: motivo.slice(0, 500) })
+      .eq('wa_message_id', waMessageId).eq('status', 'sent')
   }
 }
 
