@@ -4,6 +4,7 @@ import { useEffect, useState }    from 'react'
 import { createClient }           from '@/lib/supabase/client'
 import { X, Send, Search, LayoutTemplate } from 'lucide-react'
 import { cn }                     from '@/lib/utils'
+import { descreverFalha } from '@/lib/whatsapp/erros'
 import type { WaTemplate }        from '@/lib/types'
 
 interface Props {
@@ -94,7 +95,11 @@ export default function TemplateSelector({ conversationId, onClose, onSent }: Pr
 
     if (!resp.ok) {
       const result = await resp.json().catch(() => ({}))
-      setError(result.error || 'Falha ao enviar template')
+      // A rota devolve o erro CRU da Meta em `details`; sem traduzir, o atendente
+      // via só "Falha ao enviar template" e não sabia se era o número, o template
+      // ou a janela.
+      const f = result.details ? descreverFalha(JSON.stringify(result.details)) : null
+      setError(f ? `${f.titulo} — ${f.explicacao}` : (result.error || 'Falha ao enviar template'))
       setSending(false)
       return
     }

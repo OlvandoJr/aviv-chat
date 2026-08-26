@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { X, Loader2, MessageSquarePlus } from 'lucide-react'
-import { mascaraTelefone, telefoneValido } from '@/lib/whatsapp/telefone'
+import { mascaraTelefone, telefoneValido, normalizeWaId, formatBrPhone } from '@/lib/whatsapp/telefone'
 
 /**
  * Criar contato + conversa. Usado na lista de Conversas e na Central de Clientes —
@@ -22,6 +22,20 @@ export default function NovoContatoDialog({ inboxes, onClose }: {
   const [inboxId, setInboxId]   = useState(inboxes[0]?.id || '')
   const [busy, setBusy]         = useState(false)
   const [erro, setErro]         = useState<string | null>(null)
+  // Quem é esse número? Mostrar ANTES de criar evita o contato fantasma: um
+  // dígito a mais/menos cria um número inexistente e ninguém percebe.
+  const [achado, setAchado] = useState<{ nome: string | null } | null | 'novo'>(null)
+
+  useEffect(() => {
+    if (!telefoneValido(telefone)) { setAchado(null); return }
+    const wa = normalizeWaId(telefone)
+    let vivo = true
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from('chat_contacts').select('name').eq('wa_id', wa).maybeSingle()
+      if (vivo) setAchado(data ? { nome: data.name } : 'novo')
+    }, 300)
+    return () => { vivo = false; clearTimeout(t) }
+  }, [telefone])
 
   const podeSalvar = telefoneValido(telefone) && !!inboxId && !busy
 
@@ -71,6 +85,16 @@ export default function NovoContatoDialog({ inboxes, onClose }: {
             {telefone.length > 0 && !telefoneValido(telefone) && (
               <p className="text-[11px] text-amber-600 mt-1">Informe DDD + número.</p>
             )}
+            {telefoneValido(telefone) && (
+              <p className="text-[11px] mt-1">
+                <span className="text-gray-400">Será usado: </span>
+                <span className="font-medium text-gray-600">+55 {formatBrPhone(normalizeWaId(telefone))}</span>
+                {achado === 'novo' && <span className="text-gray-400"> · contato novo</span>}
+                {achado && achado !== 'novo' && (
+                  <span className="text-emerald-700"> · já cadastrado{achado.nome ? `: ${achado.nome}` : ''}</span>
+                )}
+              </p>
+            )}
           </div>
 
           <div>
@@ -78,7 +102,7 @@ export default function NovoContatoDialog({ inboxes, onClose }: {
             <input
               value={nome}
               onChange={(e) => setNome(e.target.value)}
-              placeholder="Como o cliente será exibido"
+              placeholder={achado && achado !== 'novo' && achado.nome ? `${achado.nome} (deixe em branco para manter)` : 'Como o cliente será exibido'}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>

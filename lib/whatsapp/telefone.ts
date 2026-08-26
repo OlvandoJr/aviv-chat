@@ -63,9 +63,21 @@ export function formatBrPhone(raw: string): string {
   return raw || ''
 }
 
-/** Máscara progressiva enquanto o usuário digita. */
+/**
+ * Máscara progressiva enquanto o usuário digita.
+ *
+ * Aceita o número COLADO COM DDI ("5543996365032" — é assim que ele aparece no
+ * cabeçalho da conversa). Cortar cegamente em 11 dígitos descartava os dois
+ * últimos e a normalização prefixava outro 55, criando um contato fantasma com
+ * número inexistente. Um número local tem no máximo 11 dígitos, então um "55" na
+ * frente de algo mais longo só pode ser o país — 55 também é DDD válido (RS), por
+ * isso a regra depende do comprimento, não do prefixo sozinho.
+ */
 export function mascaraTelefone(raw: string): string {
-  const d = String(raw || '').replace(/\D/g, '').slice(0, 11)
+  let d = String(raw || '').replace(/\D/g, '')
+  if (d.startsWith('0')) d = d.replace(/^0+/, '')
+  if (d.length > 11 && d.startsWith('55')) d = d.slice(2)
+  d = d.slice(0, 11)
   if (d.length <= 2) return d
   if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`
   if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`
