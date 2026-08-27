@@ -311,9 +311,58 @@ async function propagateCampaignStatus(waMessageId: string, waStatus: string, er
       ? `[${erro.code ?? '?'}] ${erro.title || erro.message || 'Falha na entrega'}`
         + (erro.error_data?.details ? ` — ${erro.error_data.details}` : '')
       : 'Falha na entrega (a Meta não informou o motivo)'
-    await T().update({ status: 'failed', error: motivo.slice(0, 500) })
+    const { data: afetados } = await T()
+      .update({ status: 'failed', error: motivo.slice(0, 500) })
       .eq('wa_message_id', waMessageId).eq('status', 'sent')
+      .select('campaign_id')
+    // Falha ASSÍNCRONA muda o placar depois da recontagem do dispatch — sem isto
+    // o topo da tela dizia "4 falhas" com 5 na lista (caso de 27/08).
+    for (const a of afetados || []) await recontarCampanha(a.campaign_id)
   }
+
+  // Disparos adicionais: mesma propagação para chat_campaign_envios.
+  const E = () => supabase.from('chat_campaign_envios')
+  if (waStatus === 'delivered') {
+    await E().update({ delivered_at: now }).eq('wa_message_id', waMessageId).is('delivered_at', null)
+    await E().update({ status: 'delivered' }).eq('wa_message_id', waMessageId).eq('status', 'sent')
+  } else if (waStatus === 'read') {
+    await E().update({ read_at: now }).eq('wa_message_id', waMessageId).is('read_at', null)
+    await E().update({ delivered_at: now }).eq('wa_message_id', waMessageId).is('delivered_at', null)
+    await E().update({ status: 'read' }).eq('wa_message_id', waMessageId).in('status', ['sent', 'delivered'])
+  } else if (waStatus === 'failed') {
+    const motivoE = erro
+      ? `[${erro.code ?? '?'}] ${erro.title || erro.message || 'Falha na entrega'}`
+        + (erro.error_data?.details ? ` — ${erro.error_data.details}` : '')
+      : 'Falha na entrega (a Meta não informou o motivo)'
+    const { data: envAfetados } = await E()
+      .update({ status: 'failed', error: motivoE.slice(0, 500) })
+      .eq('wa_message_id', waMessageId).eq('status', 'sent')
+      .select('disparo_id')
+    for (const a of envAfetados || []) await recontarDisparo(a.disparo_id)
+  }
+}
+
+// Placar da campanha a partir dos destinatários (fonte da verdade).
+async function recontarCampanha(campaignId: string) {
+  if (!campaignId) return
+  const conta = async (filtro: string[]) => (await supabase.from('chat_campaign_recipients')
+    .select('id', { count: 'exact', head: true })
+    .eq('campaign_id', campaignId).in('status', filtro)).count || 0
+  const [ok, falhas] = await Promise.all([conta(['sent', 'delivered', 'read']), conta(['failed'])])
+  await supabase.from('chat_campaigns')
+    .update({ sent: ok, failed: falhas, updated_at: new Date().toISOString() })
+    .eq('id', campaignId)
+}
+
+async function recontarDisparo(disparoId: string) {
+  if (!disparoId) return
+  const conta = async (filtro: string[]) => (await supabase.from('chat_campaign_envios')
+    .select('id', { count: 'exact', head: true })
+    .eq('disparo_id', disparoId).in('status', filtro)).count || 0
+  const [ok, falhas] = await Promise.all([conta(['sent', 'delivered', 'read']), conta(['failed'])])
+  await supabase.from('chat_campaign_disparos')
+    .update({ sent: ok, failed: falhas, updated_at: new Date().toISOString() })
+    .eq('id', disparoId)
 }
 
 // Marca replied_at quando o cliente clica no botão DO template da campanha.
@@ -324,6 +373,10 @@ async function markCampaignReply(msg: any) {
   const ctxId = msg?.context?.id
   if (!ctxId) return
   await supabase.from('chat_campaign_recipients')
+    .update({ replied_at: new Date().toISOString() })
+    .eq('wa_message_id', ctxId)
+    .is('replied_at', null)
+  await supabase.from('chat_campaign_envios')
     .update({ replied_at: new Date().toISOString() })
     .eq('wa_message_id', ctxId)
     .is('replied_at', null)
