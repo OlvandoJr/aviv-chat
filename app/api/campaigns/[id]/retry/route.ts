@@ -41,9 +41,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (!liberado) {
       return NextResponse.json({ error: 'Você não tem acesso a esta campanha.' }, { status: 403 })
     }
-    if (camp.status === 'running') {
-      return NextResponse.json({ error: 'A campanha ainda está enviando — aguarde terminar para reenviar.' }, { status: 422 })
-    }
+    // NÃO recusar com a campanha 'running': o dispatch só processa quem está
+    // 'pending' e reserva cada destinatário atomicamente, então resetar falhas no
+    // meio de um envio é seguro. A trava antiga criava uma armadilha real: um
+    // reenvio individual deixava a campanha 'running' por ~30s e o clique no
+    // "Reenviar todos" nessa janela era rejeitado — parecia que nada aconteceu.
 
     let q = admin.from('chat_campaign_recipients')
       .update({ status: 'pending', error: null, wa_message_id: null, sent_at: null, claimed_at: null })
