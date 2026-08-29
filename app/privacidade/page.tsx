@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { MessageSquare } from 'lucide-react'
+import { LegalShell, Secao } from '@/components/legal/LegalShell'
 
 export const metadata: Metadata = {
   title:       'Política de Privacidade — Aviv Chat',
@@ -15,38 +15,9 @@ export const metadata: Metadata = {
 
 const ATUALIZACAO = '27 de agosto de 2026'
 
-function Secao({ numero, titulo, children }: {
-  numero: string; titulo: string; children: React.ReactNode
-}) {
-  return (
-    <section className="scroll-mt-20" id={`sec-${numero}`}>
-      <h2 className="text-lg font-semibold text-gray-900 mt-10 mb-3">
-        <span className="text-emerald-600 mr-2">{numero}.</span>{titulo}
-      </h2>
-      <div className="space-y-3 text-[15px] leading-relaxed text-gray-600">{children}</div>
-    </section>
-  )
-}
-
 export default function PoliticaPrivacidade() {
   return (
-    <div className="min-h-screen bg-white">
-      {/* Cabeçalho */}
-      <header className="border-b border-gray-100">
-        <div className="max-w-3xl mx-auto px-6 py-5 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-emerald-500 flex items-center justify-center shrink-0">
-            <MessageSquare className="w-4.5 h-4.5 text-white" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-gray-900">Aviv Chat</p>
-            <p className="text-xs text-gray-400">Aviv Construtora e Incorporadora</p>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-3xl mx-auto px-6 py-10">
-        <h1 className="text-2xl font-bold text-gray-900">Política de Privacidade</h1>
-        <p className="text-sm text-gray-400 mt-1">Última atualização: {ATUALIZACAO}</p>
+    <LegalShell titulo="Política de Privacidade" atualizacao={ATUALIZACAO}>
 
         <p className="mt-6 text-[15px] leading-relaxed text-gray-600">
           Esta Política de Privacidade explica como a{' '}
@@ -320,11 +291,6 @@ export default function PoliticaPrivacidade() {
           </p>
         </Secao>
 
-        <footer className="mt-14 pt-6 border-t border-gray-100 text-xs text-gray-400">
-          <p>Aviv Construtora e Incorporadora · Aviv Chat — atendimento oficial via WhatsApp.</p>
-          <p className="mt-1">Política de Privacidade · última atualização em {ATUALIZACAO}.</p>
-        </footer>
-      </main>
-    </div>
+    </LegalShell>
   )
 }
