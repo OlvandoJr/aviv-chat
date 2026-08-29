@@ -14,6 +14,15 @@ Deno.serve(async (req) => {
     const token     = url.searchParams.get('hub.verify_token')
     const challenge = url.searchParams.get('hub.challenge')
 
+    // Token de verificação NO NÍVEL DO APP (Cadastro Incorporado): o webhook do
+    // app novo da Meta é verificado ANTES de existir qualquer caixa — o token por
+    // caixa não serve nesse momento. META_WEBHOOK_VERIFY_TOKEN cobre esse caso;
+    // os tokens por caixa continuam valendo para as caixas já cadastradas.
+    const appToken = Deno.env.get('META_WEBHOOK_VERIFY_TOKEN')
+    if (mode === 'subscribe' && appToken && token === appToken) {
+      return new Response(challenge, { status: 200 })
+    }
+
     const { data: inbox } = await supabase
       .from('chat_inboxes')
       .select('verify_token')
