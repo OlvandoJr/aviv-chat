@@ -39,8 +39,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'META_APP_SECRET/NEXT_PUBLIC_META_APP_ID não configurados no servidor.' }, { status: 500 })
     }
 
-    const { code, waba_id: wabaId, phone_number_id: phoneNumberId } = await req.json()
-    if (!code || !wabaId || !phoneNumberId) {
+    const { code, waba_id: wabaId, phone_number_id: phoneNumberIdIn, evento = 'finish' } = await req.json()
+    const coex = evento === 'finish_coexistence'
+    // Coexistência: o payload de sessão traz SÓ o waba_id — o número vem depois,
+    // consultando os phone_numbers da WABA. No fluxo padrão os dois são exigidos.
+    if (!code || !wabaId || (!coex && !phoneNumberIdIn)) {
       return NextResponse.json({
         error: 'Fluxo incompleto: a Meta não devolveu conta/número. Refaça o cadastro até a tela final.',
       }, { status: 400 })
@@ -57,6 +60,17 @@ export async function POST(req: NextRequest) {
       }, { status: 502 })
     }
 
+    let phoneNumberId: string = String(phoneNumberIdIn || '')
+    if (coex && !phoneNumberId) {
+      const numsResp = await fetch(`${GRAPH}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name`,
+        { headers: { Authorization: `Bearer ${accessToken}` } })
+      const nums = await numsResp.json().catch(() => ({}))
+      phoneNumberId = String(nums?.data?.[0]?.id || '')
+      if (!phoneNumberId) {
+        return NextResponse.json({ error: 'A WABA conectada não tem número de telefone visível.' }, { status: 502 })
+      }
+    }
+
     // 2. assina o app na WABA (é o que faz os webhooks desta conta chegarem a nós)
     const subResp = await fetch(`${GRAPH}/${wabaId}/subscribed_apps`, {
       method: 'POST', headers: { Authorization: `Bearer ${accessToken}` },
@@ -65,16 +79,29 @@ export async function POST(req: NextRequest) {
     const avisos: string[] = []
     if (!subResp.ok) avisos.push(`subscribed_apps: ${subJson?.error?.message || 'falhou'}`)
 
-    // 3. registra o número na Cloud API. O PIN é o "two-step" do número — se ele já
-    // tinha um PIN definido, a Meta recusa este e o registro fica manual.
-    const pin = process.env.META_ES_PIN || String(Math.floor(100000 + Math.random() * 900000))
-    const regResp = await fetch(`${GRAPH}/${phoneNumberId}/register`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
-    })
-    const regJson = await regResp.json().catch(() => ({}))
-    if (!regResp.ok) avisos.push(`register: ${regJson?.error?.message || 'falhou'} (se o número já tem PIN de duas etapas, registre pelo painel da Meta)`)
+    // 3. registro na Cloud API — SÓ no fluxo padrão. Na coexistência o número já
+    // está registrado pelo app do celular; chamar /register dá erro. Em vez disso,
+    // confirmamos o estado esperado (is_on_biz_app + CLOUD_API).
+    let pin: string | null = null
+    let registrou = false
+    if (!coex) {
+      pin = process.env.META_ES_PIN || String(Math.floor(100000 + Math.random() * 900000))
+      const regResp = await fetch(`${GRAPH}/${phoneNumberId}/register`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+      })
+      const regJson = await regResp.json().catch(() => ({}))
+      registrou = regResp.ok
+      if (!regResp.ok) avisos.push(`register: ${regJson?.error?.message || 'falhou'} (se o número já tem PIN de duas etapas, registre pelo painel da Meta)`)
+    } else {
+      const stResp = await fetch(`${GRAPH}/${phoneNumberId}?fields=is_on_biz_app,platform_type`,
+        { headers: { Authorization: `Bearer ${accessToken}` } })
+      const st = await stResp.json().catch(() => ({}))
+      if (st?.is_on_biz_app !== true || String(st?.platform_type || '').toUpperCase() !== 'CLOUD_API') {
+        avisos.push(`estado inesperado do número: is_on_biz_app=${st?.is_on_biz_app}, platform_type=${st?.platform_type}`)
+      }
+    }
 
     // Dados do número para nomear a caixa
     const infoResp = await fetch(
@@ -86,19 +113,50 @@ export async function POST(req: NextRequest) {
     const verifyToken = crypto.randomUUID().replace(/-/g, '')
     const { data: inbox, error } = await admin.from('chat_inboxes').insert({
       name:            info?.verified_name || info?.display_phone_number || 'WhatsApp (Cadastro Incorporado)',
-      description:     'Criada pelo Cadastro Incorporado da Meta',
+      description:     coex ? 'Coexistência — número segue no app do celular' : 'Criada pelo Cadastro Incorporado da Meta',
       phone_number:    String(info?.display_phone_number || '').replace(/\D/g, '') || null,
       phone_number_id: String(phoneNumberId),
       waba_id:         String(wabaId),
       access_token:    accessToken,
       verify_token:    verifyToken,
       is_active:       true,
+      connection_mode:   coex ? 'coexistence' : 'cloud_api',
+      connection_status: 'connected',
+      ...(coex ? { history_share: 'pending', sync_progress: 0 } : {}),
     }).select('id').single()
     if (error || !inbox) {
       return NextResponse.json({ error: `Meta conectada, mas falhou ao salvar a caixa: ${error?.message}` }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true, inboxId: inbox.id, pin: regResp.ok ? pin : null, avisos })
+    // 5. Coexistência: sincronização em DUAS chamadas, nesta ordem, dentro da
+    // janela de 24h. REGRA CRÍTICA: cada sync_type só pode ser chamado UMA vez
+    // por conexão (repetir exige offboard) — o guard atômico na coluna do
+    // request_id impede o segundo disparo; falha de rede devolve a coluna a NULL
+    // para permitir nova tentativa (a chamada que falhou não contou na Meta).
+    if (coex) {
+      const sincronizar = async (syncType: 'smb_app_state_sync' | 'history', col: string) => {
+        const { data: claim } = await admin.from('chat_inboxes')
+          .update({ [col]: 'aguardando', sync_requested_at: new Date().toISOString() })
+          .eq('id', inbox.id).is(col, null).select('id').maybeSingle()
+        if (!claim) return                     // já disparado nesta conexão — nunca repetir
+        const r = await fetch(`${GRAPH}/${phoneNumberId}/smb_app_data`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
+        })
+        const j = await r.json().catch(() => ({}))
+        if (r.ok && j?.request_id) {
+          await admin.from('chat_inboxes').update({ [col]: String(j.request_id) }).eq('id', inbox.id)
+        } else {
+          await admin.from('chat_inboxes').update({ [col]: null }).eq('id', inbox.id)
+          avisos.push(`sync ${syncType}: ${j?.error?.message || 'falhou'} — refaça em até 24h pela tela da caixa`)
+        }
+      }
+      await sincronizar('smb_app_state_sync', 'contacts_sync_request_id')
+      await sincronizar('history', 'history_sync_request_id')
+    }
+
+    return NextResponse.json({ ok: true, inboxId: inbox.id, pin: registrou ? pin : null, coexistencia: coex, avisos })
   } catch (err) {
     console.error('[embedded-signup]', err)
     return NextResponse.json({ error: 'Erro interno' }, { status: 500 })

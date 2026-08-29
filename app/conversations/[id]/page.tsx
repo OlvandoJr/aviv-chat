@@ -124,9 +124,13 @@ export default async function ConversationPage({ params }: Props) {
 
   // Janela de 24h do WhatsApp: só é possível mandar texto livre se o CLIENTE
   // escreveu nas últimas 24h. Fora disso, apenas template aprovado.
+  // Mensagens importadas do histórico (coexistência) têm timestamps antigos mas
+  // podem cair dentro das 24h — e NÃO abrem janela (regra da Meta: só mensagem
+  // recebida via API após o onboarding conta).
   const { data: ultimaEntrada } = await supabase
     .from('chat_messages').select('created_at')
     .eq('conversation_id', id).eq('direction', 'in')
+    .or('origin.is.null,origin.neq.history')
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   const janelaAberta = !!ultimaEntrada?.created_at &&
     Date.now() - new Date(ultimaEntrada.created_at).getTime() < 24 * 60 * 60 * 1000

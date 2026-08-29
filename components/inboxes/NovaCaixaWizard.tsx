@@ -160,7 +160,7 @@ function EmbeddedSignup() {
   // usando — o featureType muda o fluxo da Meta para esse modo.
   const [coexistencia, setCoexistencia] = useState(false)
   // ids chegam por postMessage; o code chega pelo callback do FB.login — juntamos os dois
-  const idsRef = useRef<{ waba_id?: string; phone_number_id?: string }>({})
+  const idsRef = useRef<{ waba_id?: string; phone_number_id?: string; evento?: string }>({})
 
   // Auditoria da jornada (meta_signup_log): saber em que tela a pessoa travou
   // vale mais que o erro genérico. Best-effort — nunca bloqueia o fluxo.
@@ -200,11 +200,15 @@ function EmbeddedSignup() {
         if (data?.type !== 'WA_EMBEDDED_SIGNUP') return
         // FINISH = fluxo padrão; FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING = coexistência.
         if (data.event === 'FINISH' || data.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') {
+          // O EVENTO REAL decide o ramo do backend (register vs smb_app_data) —
+          // não o checkbox: a pessoa pode marcar coexistência e a Meta concluir
+          // o fluxo padrão, ou vice-versa.
           idsRef.current = {
             waba_id:        data.data?.waba_id,
             phone_number_id: data.data?.phone_number_id,
+            evento:         data.event === 'FINISH' ? 'finish' : 'finish_coexistence',
           }
-          logar(data.event === 'FINISH' ? 'finish' : 'finish_coexistence', data.data)
+          logar(idsRef.current.evento!, data.data)
         } else if (data.event === 'CANCEL') {
           // current_step = a TELA em que a pessoa desistiu — ouro para o suporte.
           logar('cancel', data.data)
@@ -286,7 +290,9 @@ function EmbeddedSignup() {
         <span>
           Este número <strong>já usa o aplicativo WhatsApp Business no celular</strong> e vai
           continuar usando (coexistência). Marque para a Meta conduzir a conexão sem desativar
-          o aplicativo — será pedido escanear um QR Code com o celular do número.
+          o aplicativo — será pedido escanear um QR Code com o celular do número.{' '}
+          <strong>Mantenha o app aberto</strong> durante e após a conexão: a sincronização de
+          contatos e histórico pode levar alguns minutos.
         </span>
       </label>
 
