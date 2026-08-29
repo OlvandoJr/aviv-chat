@@ -231,18 +231,41 @@ function EmbeddedSignup() {
     // Popup bloqueado não gera NENHUM callback — sem este timeout o botão ficava
     // preso em "Aguardando a Meta…" para sempre (aconteceu no Arc e no Safari,
     // que bloqueiam popup silenciosamente por padrão).
+    // O SDK abre a janela da Meta com window.open. Interceptamos a chamada para
+    // saber se ela REALMENTE abriu: popup bloqueado devolve null (ou uma janela
+    // já fechada) e o FB.login nunca chama o callback — sem isto o botão só
+    // dizia "não respondeu", sem distinguir bloqueio de falha da Meta.
+    let janela: Window | null | undefined
+    const openOriginal = window.open
+    window.open = function (...args: unknown[]) {
+      // deno-lint-ignore no-explicit-any
+      janela = (openOriginal as any).apply(window, args)
+      return janela as Window | null
+    } as typeof window.open
+
+    const bloqueio = setTimeout(() => {
+      const naoAbriu = !janela || janela.closed
+      if (!naoAbriu) return
+      setFase((f) => (f === 'meta' ? 'idle' : f))
+      setErro('O navegador BLOQUEOU a janela da Meta (ela nem chegou a abrir). Permita pop-ups para '
+        + 'aviv-chat.vercel.app e tente de novo — Chrome: ícone de pop-up na barra de endereço ou '
+        + 'chrome://settings/content/popups; Safari: Ajustes → Sites → Janelas pop-up; Arc: '
+        + 'arc://settings/content/popups. Se usa bloqueador de anúncios, desative para este site.')
+      logar('popup_bloqueado', { coexistencia })
+    }, 2000)
+
     const timeout = setTimeout(() => {
       setFase((f) => {
         if (f !== 'meta') return f
-        setErro('A janela da Meta não respondeu. O mais comum é o navegador ter BLOQUEADO o popup — '
-          + 'procure o aviso na barra de endereço, permita popups para este site e tente de novo. '
-          + 'No Safari: Ajustes → Sites → Janelas pop-up → permitir para aviv-chat.vercel.app.')
+        setErro('A janela da Meta abriu, mas não devolveu resposta. Se você a fechou, tente de novo; '
+          + 'se ela mostrou algum erro, me diga o que apareceu.')
         logar('popup_sem_resposta', { coexistencia })
         return 'idle'
       })
-    }, 30000)
+    }, 60000)
+
     window.FB?.login(async (resp: any) => {
-      clearTimeout(timeout)
+      clearTimeout(timeout); clearTimeout(bloqueio)
       const code = resp?.authResponse?.code
       if (!code) { setFase('idle'); setErro('Login cancelado ou não autorizado na Meta.'); return }
       setFase('trocando')
@@ -272,6 +295,7 @@ function EmbeddedSignup() {
         ...(coexistencia ? { featureType: 'whatsapp_business_app_onboarding' } : {}),
       },
     })
+    window.open = openOriginal      // restaura na mesma volta do event loop
   }
 
   if (!configurado) {
