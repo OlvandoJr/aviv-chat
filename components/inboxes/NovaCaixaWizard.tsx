@@ -156,8 +156,24 @@ function EmbeddedSignup() {
   const [sdkPronto, setSdkPronto] = useState(false)
   const [fase, setFase] = useState<'idle' | 'meta' | 'trocando' | 'ok'>('idle')
   const [erro, setErro] = useState<string | null>(null)
+  // Coexistência: número que JÁ usa o app WhatsApp Business no celular e continua
+  // usando — o featureType muda o fluxo da Meta para esse modo.
+  const [coexistencia, setCoexistencia] = useState(false)
   // ids chegam por postMessage; o code chega pelo callback do FB.login — juntamos os dois
   const idsRef = useRef<{ waba_id?: string; phone_number_id?: string }>({})
+
+  // Auditoria da jornada (meta_signup_log): saber em que tela a pessoa travou
+  // vale mais que o erro genérico. Best-effort — nunca bloqueia o fluxo.
+  async function logar(evento: string, dados?: unknown) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      await fetch('/api/inboxes/signup-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ evento, dados: dados ?? null }),
+      })
+    } catch { /* auditoria não derruba cadastro */ }
+  }
 
   const configurado = !!APP_ID && !!CONFIG_ID
 
@@ -181,11 +197,23 @@ function EmbeddedSignup() {
       if (!String(event.origin).endsWith('facebook.com')) return
       try {
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
-        if (data?.type === 'WA_EMBEDDED_SIGNUP' && data?.event === 'FINISH') {
+        if (data?.type !== 'WA_EMBEDDED_SIGNUP') return
+        // FINISH = fluxo padrão; FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING = coexistência.
+        if (data.event === 'FINISH' || data.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING') {
           idsRef.current = {
             waba_id:        data.data?.waba_id,
             phone_number_id: data.data?.phone_number_id,
           }
+          logar(data.event === 'FINISH' ? 'finish' : 'finish_coexistence', data.data)
+        } else if (data.event === 'CANCEL') {
+          // current_step = a TELA em que a pessoa desistiu — ouro para o suporte.
+          logar('cancel', data.data)
+          setFase('idle')
+          setErro(`Cadastro cancelado${data.data?.current_step ? ` na etapa "${data.data.current_step}"` : ''}.`)
+        } else if (data.event === 'ERROR') {
+          logar('error', data.data)
+          setFase('idle')
+          setErro(`A Meta reportou um erro: ${data.data?.error_message || 'sem detalhes'}`)
         }
       } catch { /* mensagens de outros widgets da Meta — ignora */ }
     }
@@ -207,7 +235,8 @@ function EmbeddedSignup() {
           body: JSON.stringify({ code, ...idsRef.current }),
         })
         const j = await r.json()
-        if (!r.ok) throw new Error(j.error || 'Falha ao concluir o cadastro.')
+        if (!r.ok) { logar('backend_erro', { erro: j.error }); throw new Error(j.error || 'Falha ao concluir o cadastro.') }
+        logar('backend_ok', { inboxId: j.inboxId, avisos: j.avisos })
         setFase('ok')
         router.push(`/inboxes/${j.inboxId}`)
       } catch (e) {
@@ -218,7 +247,11 @@ function EmbeddedSignup() {
       config_id: CONFIG_ID,
       response_type: 'code',
       override_default_response_type: true,
-      extras: { setup: {}, sessionInfoVersion: '3' },
+      extras: {
+        setup: {},
+        sessionInfoVersion: '3',
+        ...(coexistencia ? { featureType: 'whatsapp_business_app_onboarding' } : {}),
+      },
     })
   }
 
@@ -246,6 +279,16 @@ function EmbeddedSignup() {
           nada. É preciso ser administrador do portfólio empresarial na Meta.
         </p>
       </div>
+
+      <label className="flex items-start gap-2 text-xs text-gray-600 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={coexistencia}
+          onChange={e => setCoexistencia(e.target.checked)} />
+        <span>
+          Este número <strong>já usa o aplicativo WhatsApp Business no celular</strong> e vai
+          continuar usando (coexistência). Marque para a Meta conduzir a conexão sem desativar
+          o aplicativo — será pedido escanear um QR Code com o celular do número.
+        </span>
+      </label>
 
       {erro && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{erro}</p>}
       {fase === 'ok' && (
