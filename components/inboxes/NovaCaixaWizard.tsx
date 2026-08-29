@@ -227,7 +227,22 @@ function EmbeddedSignup() {
 
   async function iniciar() {
     setErro(null); setFase('meta')
+    logar('login_click', { coexistencia })
+    // Popup bloqueado não gera NENHUM callback — sem este timeout o botão ficava
+    // preso em "Aguardando a Meta…" para sempre (aconteceu no Arc e no Safari,
+    // que bloqueiam popup silenciosamente por padrão).
+    const timeout = setTimeout(() => {
+      setFase((f) => {
+        if (f !== 'meta') return f
+        setErro('A janela da Meta não respondeu. O mais comum é o navegador ter BLOQUEADO o popup — '
+          + 'procure o aviso na barra de endereço, permita popups para este site e tente de novo. '
+          + 'No Safari: Ajustes → Sites → Janelas pop-up → permitir para aviv-chat.vercel.app.')
+        logar('popup_sem_resposta', { coexistencia })
+        return 'idle'
+      })
+    }, 30000)
     window.FB?.login(async (resp: any) => {
+      clearTimeout(timeout)
       const code = resp?.authResponse?.code
       if (!code) { setFase('idle'); setErro('Login cancelado ou não autorizado na Meta.'); return }
       setFase('trocando')
