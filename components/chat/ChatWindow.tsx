@@ -78,7 +78,9 @@ export default function ChatWindow({ conversation, attendants, siengeBoletos, sg
   // Janela de 24h derivada das mensagens em memória: quando o cliente responde, o
   // realtime insere a mensagem e o campo de digitação destrava sozinho. Cai para o
   // valor calculado no servidor enquanto não há entrada carregada.
-  const ultimaEntrada = messages.filter(m => m.direction === 'in').at(-1)?.created_at
+  const ultimaEntrada = messages
+    .filter(m => m.direction === 'in' && (m as any).origin !== 'history' && (m.metadata as any)?.origin !== 'history')
+    .at(-1)?.created_at
   const janelaAberta = ultimaEntrada
     ? Date.now() - new Date(ultimaEntrada).getTime() < 24 * 60 * 60 * 1000
     : janelaAbertaInicial

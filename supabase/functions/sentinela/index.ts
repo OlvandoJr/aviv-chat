@@ -103,6 +103,13 @@ Deno.serve(async () => {
       .or(`reconciled_at.gte.${inicioDia.toISOString()},last_attempt_at.gte.${inicioDia.toISOString()},created_at.gte.${inicioDia.toISOString()}`))
     checks.push({ invariante: 'cota_sienge_api_hoje', ok: gastoApi <= 80, valor: gastoApi, limite: 80,
       detalhe: 'chamadas [api] registradas hoje — teto do plano Free é 100/dia' })
+    // 9. Caixa de coexistência desconectada (celular fechado ~14 dias é a razão
+    //    mais comum). Desconectada, ela PARA de espelhar — atendente fica cego.
+    const desconectadas = await contar(admin.from('chat_inboxes')
+      .select('id', { count: 'exact', head: true })
+      .eq('connection_mode', 'coexistence').eq('connection_status', 'disconnected'))
+    checks.push({ invariante: 'coexistencia_desconectada', ok: desconectadas === 0, valor: desconectadas, limite: 0,
+      detalhe: 'caixas em coexistência com connection_status=disconnected — reconectar no app do celular' })
   } catch (e) {
     checks.push({ invariante: 'sentinela_executou', ok: false, valor: 0, limite: 1, detalhe: `erro: ${String(e).slice(0, 200)}` })
   }

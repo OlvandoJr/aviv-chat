@@ -137,6 +137,30 @@ export default function InboxEditor({ inbox }: Props) {
         </div>
       )}
 
+      {/* Coexistência: estado da conexão e da sincronização — atualizado pelo
+          webhook (account_update / history). Desconectada, a caixa para de
+          espelhar até reconectar no celular. */}
+      {inbox?.connection_mode === 'coexistence' && (
+        <div className={cn('mb-4 p-3 rounded-lg text-sm border',
+          inbox.connection_status === 'disconnected'
+            ? 'bg-red-50 border-red-200 text-red-700'
+            : 'bg-blue-50 border-blue-200 text-blue-800')}>
+          <p className="font-medium">
+            Coexistência — número conectado ao app do celular
+            {inbox.connection_status === 'disconnected' && ' · DESCONECTADA'}
+          </p>
+          <p className="text-xs mt-1">
+            {inbox.connection_status === 'disconnected'
+              ? `A caixa parou de espelhar (motivo: ${inbox.disconnect_reason || 'não informado'}). Reconecte no celular: WhatsApp Business → Configurações → Conta → Plataforma de negócios.`
+              : inbox.history_share === 'declined'
+              ? 'Conectada. O compartilhamento de histórico foi recusado no celular — só as conversas novas são espelhadas.'
+              : (inbox.sync_progress ?? 100) < 100
+              ? `Conectada. Sincronizando histórico… ${inbox.sync_progress ?? 0}% — mantenha o app do celular aberto.`
+              : 'Conectada. Histórico sincronizado; mensagens do app do celular aparecem nas conversas com o selo 📱.'}
+          </p>
+        </div>
+      )}
+
       <div className="space-y-5">
 
         {/* ── IDENTIFICAÇÃO ── */}

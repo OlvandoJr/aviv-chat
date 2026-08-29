@@ -11,6 +11,12 @@ export interface Inbox {
   waba_id:         string | null
   is_active:       boolean
   created_at:      string
+  // Coexistência (migration 083) — número que segue no app do celular
+  connection_mode?:   'cloud_api' | 'coexistence'
+  connection_status?: 'connected' | 'disconnected'
+  disconnect_reason?: string | null
+  sync_progress?:     number | null
+  history_share?:     'pending' | 'shared' | 'declined' | null
 }
 
 export type WaTemplateStatus   = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAUSED' | 'DISABLED'

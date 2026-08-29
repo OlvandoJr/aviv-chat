@@ -52,51 +52,28 @@ Deno.serve(async (req) => {
   // Responder IMEDIATAMENTE para a Meta (< 5 segundos)
   const responsePromise = new Response('OK', { status: 200 })
 
-  // Processar em background
+  // Processar em background. Coexistência multiplica os tipos de evento: além de
+  // messages/statuses, chegam ecos do app do celular, chunks de histórico,
+  // contatos da agenda e saúde da conexão — cada um em um change.field próprio,
+  // e um POST pode trazer vários changes. Por isso o loop completo.
   ;(async () => {
     try {
-      const entry   = payload.entry?.[0]
-      const change  = entry?.changes?.[0]
-      const value   = change?.value
-      if (!value) return
-
-      const phoneNumberId = value.metadata?.phone_number_id
-      if (!phoneNumberId) return
-
-      // Buscar inbox
-      const { data: inbox } = await supabase
-        .from('chat_inboxes')
-        .select('id')
-        .eq('phone_number_id', phoneNumberId)
-        .single()
-      if (!inbox) return
-
-      // Processar status updates (mensagens entregues/lidas/falhas)
-      const statuses = value.statuses || []
-      for (const status of statuses) {
-        await supabase
-          .from('chat_messages')
-          .update({ wa_status: status.status })
-          .eq('wa_message_id', status.id)
-
-        // Propagar entrega/leitura para o destinatário de campanha (no-op se não for de campanha).
-        // O erro vai junto: falha de ENTREGA (mensagem aceita e não entregue) era
-        // registrada sem motivo nenhum, e o atendente via só "Falhou" na campanha.
-        await propagateCampaignStatus(status.id, status.status, status.errors?.[0])
-
-        // Detectar janela de 24h fechada (erro 131047 via webhook assíncrono)
-        if (status.status === 'failed') {
-          const errCode = status.errors?.[0]?.code
-          if (errCode === 131047 || errCode === '131047') {
-            await handleWindowClosed(status.id)
+      for (const entry of payload.entry || []) {
+        for (const change of entry?.changes || []) {
+          const value = change?.value
+          if (!value) continue
+          try {
+            switch (change.field) {
+              case 'smb_message_echoes':  await handleEchoes(value); break
+              case 'history':             await handleHistory(value); break
+              case 'smb_app_state_sync':  await handleStateSync(value); break
+              case 'account_update':      await handleAccountUpdate(value, entry.id); break
+              default:                    await handleMessagesChange(value)
+            }
+          } catch (err) {
+            console.error(`Webhook handler error (${change.field}):`, err)
           }
         }
-      }
-
-      // Processar mensagens recebidas
-      const messages = value.messages || []
-      for (const msg of messages) {
-        await processMessage(msg, value, inbox.id)
       }
     } catch (err) {
       console.error('Webhook processing error:', err)
@@ -105,6 +82,42 @@ Deno.serve(async (req) => {
 
   return responsePromise
 })
+
+// ── Fluxo clássico: messages + statuses ──────────────────────────────────────
+// deno-lint-ignore no-explicit-any
+async function handleMessagesChange(value: any) {
+  const phoneNumberId = value.metadata?.phone_number_id
+  if (!phoneNumberId) return
+
+  const { data: inbox } = await supabase
+    .from('chat_inboxes')
+    .select('id')
+    .eq('phone_number_id', phoneNumberId)
+    .single()
+  if (!inbox) return
+
+  const statuses = value.statuses || []
+  for (const status of statuses) {
+    await supabase
+      .from('chat_messages')
+      .update({ wa_status: status.status })
+      .eq('wa_message_id', status.id)
+
+    await propagateCampaignStatus(status.id, status.status, status.errors?.[0])
+
+    if (status.status === 'failed') {
+      const errCode = status.errors?.[0]?.code
+      if (errCode === 131047 || errCode === '131047') {
+        await handleWindowClosed(status.id)
+      }
+    }
+  }
+
+  const messages = value.messages || []
+  for (const msg of messages) {
+    await processMessage(msg, value, inbox.id)
+  }
+}
 
 async function processMessage(msg: any, value: any, inboxId: string) {
   // Normaliza o número recebido (a Meta pode mandar BR sem o "9") para casar com o
@@ -232,7 +245,16 @@ async function processMessage(msg: any, value: any, inboxId: string) {
       break
     }
     default:
-      content = JSON.stringify(msg[msgType] || {})
+      // Coexistência: 'unsupported' com erro 131060 é NORMAL em dois cenários —
+      // primeira mensagem de um usuário (resolve em segundos) e mensagem enviada
+      // por companion não suportado (WhatsApp Windows/WearOS, que não espelha).
+      // Não é falha de sistema; o operador confere no app do celular.
+      if (String(msg.errors?.[0]?.code) === '131060') {
+        console.log(`[coex] mensagem 131060 (não espelhável) de ${msg.from}`)
+        content = '⚠️ Mensagem não disponível pela API — verifique o app WhatsApp Business do celular.'
+      } else {
+        content = JSON.stringify(msg[msgType] || {})
+      }
   }
 
   const preview = content || `[${msgType}]`
@@ -296,6 +318,246 @@ async function processMessage(msg: any, value: any, inboxId: string) {
       },
     })
   }
+}
+
+// ═══════════════════════════ COEXISTÊNCIA (CoEx) ═══════════════════════════
+// Número que continua no app WhatsApp Business do celular, espelhado na Cloud
+// API. Payloads conforme o brief de 29/08/2026 (doc oficial da Meta).
+
+// deno-lint-ignore no-explicit-any
+async function inboxPorPhoneNumberId(value: any): Promise<{ id: string } | null> {
+  const pnid = value?.metadata?.phone_number_id
+  if (!pnid) return null
+  const { data } = await supabase.from('chat_inboxes').select('id').eq('phone_number_id', pnid).maybeSingle()
+  return data || null
+}
+
+// Conteúdo de eco/histórico (shape dos payloads de ENVIO da Meta).
+// deno-lint-ignore no-explicit-any
+function extrairConteudo(m: any): { content: string | null; mime: string | null; mediaId: string | null; filename: string | null } {
+  const t = m.type
+  const bloco = m[t] || {}
+  switch (t) {
+    case 'text':     return { content: bloco.body ?? null, mime: null, mediaId: null, filename: null }
+    case 'image':
+    case 'video':
+    case 'audio':
+    case 'voice':
+    case 'sticker':  return { content: bloco.caption ?? null, mime: bloco.mime_type ?? null, mediaId: bloco.id ?? null, filename: null }
+    case 'document': return { content: bloco.caption ?? null, mime: bloco.mime_type ?? null, mediaId: bloco.id ?? null, filename: bloco.filename ?? null }
+    case 'media_placeholder':
+      // Histórico: mídia com mais de 14 dias fica como placeholder para sempre;
+      // a recente chega depois num webhook próprio que atualiza esta linha.
+      return { content: '[Mídia do histórico não disponível]', mime: null, mediaId: null, filename: null }
+    default:         return { content: bloco.body ?? bloco.text ?? null, mime: null, mediaId: null, filename: null }
+  }
+}
+
+// Garante contato + conversa para um número de usuário. `statusNova` controla o
+// estado da conversa CRIADA aqui (histórico antigo nasce 'resolved' para não
+// inundar a fila de Abertas; eco nasce 'open' — a empresa está falando agora).
+async function garantirConversa(inboxId: string, userWaId: string, statusNova: 'open' | 'resolved') {
+  const waId = normalizeWaId(userWaId) || userWaId
+  const { data: contact } = await supabase
+    .from('chat_contacts')
+    .upsert({ wa_id: waId }, { onConflict: 'wa_id' })
+    .select('id')
+    .single()
+  if (!contact) return null
+
+  const { data: existente } = await supabase
+    .from('chat_conversations')
+    .select('id, last_message_at')
+    .eq('contact_id', contact.id).eq('inbox_id', inboxId)
+    .not('status', 'eq', 'archived')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (existente) return { ...existente, contactId: contact.id, created: false }
+
+  const { data: nova } = await supabase
+    .from('chat_conversations')
+    .insert({ inbox_id: inboxId, contact_id: contact.id, status: statusNova, handled_by: 'human' })
+    .select('id, last_message_at')
+    .single()
+  return nova ? { ...nova, contactId: contact.id, created: true } : null
+}
+
+// ── smb_message_echoes: mensagem enviada pelo APP DO CELULAR ─────────────────
+// O coração da coexistência: espelha na thread o que o negócio digitou no
+// aparelho. NUNCA dispara bot/automação — é a própria empresa falando.
+// deno-lint-ignore no-explicit-any
+async function handleEchoes(value: any) {
+  const inbox = await inboxPorPhoneNumberId(value)
+  if (!inbox) return
+
+  for (const eco of value.message_echoes || []) {
+    if (!eco?.id) continue
+    const { data: jaExiste } = await supabase
+      .from('chat_messages').select('id').eq('wa_message_id', eco.id).maybeSingle()
+    if (jaExiste) continue                      // Meta reenvia webhooks — dedup por wamid
+
+    const conv = await garantirConversa(inbox.id, eco.to, 'open')
+    if (!conv) continue
+
+    const { content, mime, mediaId, filename } = extrairConteudo(eco)
+    const ts = new Date(parseInt(eco.timestamp) * 1000).toISOString()
+    await supabase.from('chat_messages').insert({
+      conversation_id: conv.id,
+      wa_message_id:   eco.id,
+      direction:       'out',
+      type:            eco.type,
+      content,
+      media_mime_type: mime,
+      media_filename:  filename,
+      origin:          'app_echo',
+      wa_status:       'sent',
+      metadata:        { origin: 'app_echo', ...(mediaId ? { wa_media_id: mediaId } : {}) },
+      created_at:      ts,
+    })
+    await supabase.from('chat_conversations').update({
+      last_message_at: ts,
+      last_message_preview: `📱 ${content || `[${eco.type}]`}`.slice(0, 120),
+      status: 'open',
+    }).eq('id', conv.id)
+  }
+}
+
+// ── history: importação do histórico (até 180 dias, em fases/chunks) ─────────
+// deno-lint-ignore no-explicit-any
+async function handleHistory(value: any) {
+  const inbox = await inboxPorPhoneNumberId(value)
+  if (!inbox) return
+  const bizDigits = String(value.metadata?.display_phone_number || '').replace(/\D/g, '')
+
+  // Webhook complementar de mídia recente (≤14 dias): array `messages` com o
+  // asset — ATUALIZA o placeholder já importado, casando por wamid.
+  for (const m of value.messages || []) {
+    if (!m?.id || !m?.type) continue
+    const bloco = m[m.type] || {}
+    const { data: row } = await supabase.from('chat_messages')
+      .select('id, metadata').eq('wa_message_id', m.id).maybeSingle()
+    if (!row) continue
+    await supabase.from('chat_messages').update({
+      type: m.type,
+      media_mime_type: bloco.mime_type ?? null,
+      content: bloco.caption ?? null,
+      metadata: { ...(row.metadata || {}), wa_media_id: bloco.id ?? null },
+    }).eq('id', row.id)
+  }
+
+  for (const h of value.history || []) {
+    // Recusa de compartilhamento: conclusão legítima, não erro de sistema.
+    const recusa = (h.errors || []).some((e: { code?: number | string }) => String(e?.code) === '2593109')
+    if (recusa) {
+      await supabase.from('chat_inboxes')
+        .update({ history_share: 'declined', sync_progress: 100 }).eq('id', inbox.id)
+      continue
+    }
+
+    const progress = Number(h.metadata?.progress)
+    if (!isNaN(progress)) {
+      await supabase.from('chat_inboxes').update({
+        sync_progress: progress,
+        ...(progress >= 100 ? { history_share: 'shared' } : {}),
+      }).eq('id', inbox.id).neq('history_share', 'declined')
+    }
+
+    for (const thread of h.threads || []) {
+      const conv = await garantirConversa(inbox.id, thread.id, 'resolved')
+      if (!conv) continue
+
+      const msgs = (thread.messages || []).filter((m: { id?: string }) => m?.id)
+      if (!msgs.length) continue
+
+      // Dedup em lote por wamid (um chunk pode ter milhares de mensagens).
+      const wamids = msgs.map((m: { id: string }) => m.id)
+      const existentes = new Set<string>()
+      for (let i = 0; i < wamids.length; i += 200) {
+        const { data } = await supabase.from('chat_messages')
+          .select('wa_message_id').in('wa_message_id', wamids.slice(i, i + 200))
+        for (const r of data || []) existentes.add(r.wa_message_id)
+      }
+
+      let maxTs = ''
+      // deno-lint-ignore no-explicit-any
+      const linhas = msgs.filter((m: any) => !existentes.has(m.id)).map((m: any) => {
+        const fromDigits = String(m.from || '').replace(/\D/g, '')
+        const out = bizDigits && fromDigits.slice(-8) === bizDigits.slice(-8)
+        const ts = new Date(parseInt(m.timestamp) * 1000).toISOString()
+        if (ts > maxTs) maxTs = ts
+        const { content, mime, mediaId, filename } = extrairConteudo(m)
+        return {
+          conversation_id: conv.id,
+          wa_message_id:   m.id,
+          direction:       out ? 'out' : 'in',
+          type:            m.type,
+          content,
+          media_mime_type: mime,
+          media_filename:  filename,
+          origin:          'history',
+          wa_status:       String(m.history_context?.status || '').toLowerCase() || null,
+          metadata:        { origin: 'history', ...(mediaId ? { wa_media_id: mediaId } : {}) },
+          created_at:      ts,
+        }
+      })
+      for (let i = 0; i < linhas.length; i += 500) {
+        await supabase.from('chat_messages').insert(linhas.slice(i, i + 500))
+      }
+
+      // Não reordena a lista de conversas com papo antigo: só preenche quando a
+      // conversa ainda não tem last_message_at (recém-criada pelo histórico).
+      if (linhas.length && !conv.last_message_at) {
+        await supabase.from('chat_conversations')
+          .update({ last_message_at: maxTs, last_message_preview: '[Histórico importado]' })
+          .eq('id', conv.id).is('last_message_at', null)
+      }
+    }
+  }
+}
+
+// ── smb_app_state_sync: agenda de contatos do celular ────────────────────────
+// deno-lint-ignore no-explicit-any
+async function handleStateSync(value: any) {
+  const inbox = await inboxPorPhoneNumberId(value)
+  if (!inbox) return
+  for (const item of value.state_sync || []) {
+    if (item?.type !== 'contact' || !item.contact?.phone_number) continue
+    const phone = normalizeWaId(item.contact.phone_number) || String(item.contact.phone_number).replace(/\D/g, '')
+    if (item.action === 'remove') {
+      await supabase.from('chat_inbox_synced_contacts')
+        .update({ removed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('inbox_id', inbox.id).eq('phone_number', phone)
+    } else {
+      // 'add' cobre também edição de contato existente
+      await supabase.from('chat_inbox_synced_contacts').upsert({
+        inbox_id: inbox.id,
+        phone_number: phone,
+        full_name: item.contact.full_name ?? null,
+        first_name: item.contact.first_name ?? null,
+        removed_at: null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'inbox_id,phone_number' })
+    }
+  }
+}
+
+// ── account_update: saúde da conexão de coexistência ─────────────────────────
+// Desconectada, a caixa PARA de espelhar até o cliente reconectar no celular
+// (Configurações → Conta → Plataforma de negócios). A razão mais comum é
+// PRIMARY_INACTIVITY: celular fechado ~14 dias.
+// deno-lint-ignore no-explicit-any
+async function handleAccountUpdate(value: any, wabaId: string | undefined) {
+  const evento = value?.event
+  if (!evento || !wabaId) return
+  const patch =
+    evento === 'ACCOUNT_RECONNECTED'
+      ? { connection_status: 'connected', disconnect_reason: null }
+      : (evento === 'PARTNER_REMOVED' || evento === 'ACCOUNT_OFFBOARDED')
+      ? { connection_status: 'disconnected',
+          disconnect_reason: value?.disconnection_info?.reason || evento }
+      : null                                     // demais eventos de account_update: fora do escopo
+  if (!patch) return
+  await supabase.from('chat_inboxes').update(patch).eq('waba_id', String(wabaId))
+  console.log(`[coex] account_update ${evento} → WABA ${wabaId}`, value?.disconnection_info || '')
 }
 
 // ── Indicadores de campanha (delivered/read/replied) ─────────────────────────
