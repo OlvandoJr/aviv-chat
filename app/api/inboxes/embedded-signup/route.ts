@@ -39,14 +39,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'META_APP_SECRET/NEXT_PUBLIC_META_APP_ID não configurados no servidor.' }, { status: 500 })
     }
 
-    const { code, waba_id: wabaId, phone_number_id: phoneNumberIdIn, evento = 'finish' } = await req.json()
+    const { code, waba_id: wabaIdIn, phone_number_id: phoneNumberIdIn, evento = 'finish' } = await req.json()
     const coex = evento === 'finish_coexistence'
-    // Coexistência: o payload de sessão traz SÓ o waba_id — o número vem depois,
-    // consultando os phone_numbers da WABA. No fluxo padrão os dois são exigidos.
-    if (!code || !wabaId || (!coex && !phoneNumberIdIn)) {
-      return NextResponse.json({
-        error: 'Fluxo incompleto: a Meta não devolveu conta/número. Refaça o cadastro até a tela final.',
-      }, { status: 400 })
+    // waba_id e phone_number_id chegam por postMessage NO MODO POP-UP. No modo
+    // redirecionamento não há postMessage — os dois são descobertos a partir do
+    // próprio token (debug_token → granular_scopes), logo abaixo.
+    if (!code) {
+      return NextResponse.json({ error: 'Fluxo incompleto: a Meta não devolveu o código.' }, { status: 400 })
     }
 
     // 1. code → business token
@@ -60,8 +59,26 @@ export async function POST(req: NextRequest) {
       }, { status: 502 })
     }
 
+    // Descoberta da WABA quando ela não veio na sessão (modo redirecionamento):
+    // o token do Embedded Signup carrega os ativos concedidos em granular_scopes.
+    let wabaId: string = String(wabaIdIn || '')
+    if (!wabaId) {
+      const dbgResp = await fetch(
+        `${GRAPH}/debug_token?input_token=${encodeURIComponent(accessToken)}&access_token=${appId}|${appSecret}`)
+      const dbg = await dbgResp.json().catch(() => ({}))
+      const escopos: { scope?: string; target_ids?: string[] }[] = dbg?.data?.granular_scopes || []
+      const alvo = escopos.find(e => e.scope === 'whatsapp_business_management')
+        || escopos.find(e => e.scope === 'whatsapp_business_messaging')
+      wabaId = String(alvo?.target_ids?.[0] || '')
+      if (!wabaId) {
+        return NextResponse.json({
+          error: 'Não foi possível identificar a conta do WhatsApp Business concedida. Refaça o cadastro escolhendo a conta até o fim.',
+        }, { status: 502 })
+      }
+    }
+
     let phoneNumberId: string = String(phoneNumberIdIn || '')
-    if (coex && !phoneNumberId) {
+    if (!phoneNumberId) {
       const numsResp = await fetch(`${GRAPH}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name`,
         { headers: { Authorization: `Bearer ${accessToken}` } })
       const nums = await numsResp.json().catch(() => ({}))
