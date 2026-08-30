@@ -302,10 +302,27 @@ function EmbeddedSignup() {
       })
     }, 60000)
 
-    // Garante que ESTA instância da página inicializou o SDK antes de logar.
-    try { window.FB?.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v20.0' }) } catch { /* já inicializado */ }
+    // O SDK precisa existir DE FATO: `window.FB?.login(...)` com FB indefinido não
+    // faz nada e não avisa — era um dos caminhos possíveis do silêncio observado.
+    const fb = window.FB
+    if (!fb?.login) {
+      clearTimeout(timeout)
+      setFase('idle')
+      setErro('O SDK da Meta não carregou nesta página (connect.facebook.net bloqueado por extensão, '
+        + 'rede ou modo de navegação). Recarregue com ⌘⇧R; se persistir, desative bloqueadores para este site.')
+      logar('sdk_ausente')
+      return
+    }
 
-    window.FB?.login(async (resp: any) => {
+    try {
+      // Garante que ESTA instância da página inicializou o SDK antes de logar.
+      fb.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v20.0' })
+    } catch (e) {
+      logar('fb_init_excecao', { msg: String(e) })
+    }
+
+    try {
+    fb.login(async (resp: any) => {
       clearTimeout(timeout)
       const code = resp?.authResponse?.code
       if (!code) { setFase('idle'); setErro('Login cancelado ou não autorizado na Meta.'); return }
@@ -336,6 +353,16 @@ function EmbeddedSignup() {
         ...(coexistencia ? { featureType: 'whatsapp_business_app_onboarding' } : {}),
       },
     })
+    } catch (e) {
+      // Exceção síncrona do SDK (config_id inválido, produto não habilitado,
+      // versão sem suporte a Business Login): sem isto ela sumia numa promessa
+      // rejeitada e a tela só dizia "não respondeu".
+      clearTimeout(timeout)
+      setFase('idle')
+      const msg = e instanceof Error ? e.message : String(e)
+      setErro(`O SDK da Meta recusou a chamada: ${msg}`)
+      logar('fb_login_excecao', { msg })
+    }
   }
 
   // ── Modo redirecionamento (sem pop-up) ───────────────────────────────────
@@ -419,6 +446,13 @@ function EmbeddedSignup() {
         {fase === 'trocando' ? 'Configurando a caixa…' : fase === 'meta' ? 'Aguardando a Meta…' : 'Continuar com o Facebook'}
       </button>
       {!sdkPronto && <p className="text-[11px] text-gray-400">Carregando o SDK da Meta…</p>}
+
+      {/* Diagnóstico visível: sem isto, "não abriu" não distingue SDK ausente de
+          variável faltando ou de recusa da Meta. */}
+      <p className="text-[11px] text-gray-400">
+        Diagnóstico: SDK {sdkPronto ? '✓ carregado' : '… carregando'} · App {APP_ID ? `✓ ${APP_ID}` : '✗ ausente'} ·
+        {' '}Configuração {CONFIG_ID ? `✓ ${CONFIG_ID}` : '✗ ausente'}
+      </p>
 
       <div className="pt-2 border-t border-gray-100">
         <button onClick={conectarPorRedirect} disabled={fase === 'trocando'}
