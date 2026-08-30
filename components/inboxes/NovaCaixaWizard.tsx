@@ -177,6 +177,47 @@ function EmbeddedSignup() {
 
   const configurado = !!APP_ID && !!CONFIG_ID
 
+  // Retorno do modo redirecionamento: a Meta devolve ?code= nesta mesma URL.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search)
+    const code = q.get('code')
+    if (!code) {
+      const err = q.get('error_description') || q.get('error')
+      if (err) { setErro(`A Meta recusou o cadastro: ${err}`); logar('redirect_erro', { err }) }
+      return
+    }
+    const estadoOk = (() => {
+      try { return sessionStorage.getItem('meta_es_state') === q.get('state') } catch { return true }
+    })()
+    let coex = coexistencia
+    try { coex = sessionStorage.getItem('meta_es_coex') === '1' } catch { /* usa o checkbox */ }
+    // Limpa a URL para um F5 não reenviar o mesmo code (que a Meta já invalidou).
+    window.history.replaceState({}, '', '/inboxes/new')
+    if (!estadoOk) { setErro('Retorno da Meta não confere com esta sessão. Tente conectar de novo.'); return }
+
+    ;(async () => {
+      setFase('trocando')
+      logar('redirect_volta', { coex })
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const r = await fetch('/api/inboxes/embedded-signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+          body: JSON.stringify({ code, evento: coex ? 'finish_coexistence' : 'finish' }),
+        })
+        const j = await r.json()
+        if (!r.ok) { logar('backend_erro', { erro: j.error }); throw new Error(j.error || 'Falha ao concluir o cadastro.') }
+        logar('backend_ok', { inboxId: j.inboxId, avisos: j.avisos })
+        setFase('ok')
+        router.push(`/inboxes/${j.inboxId}`)
+      } catch (e) {
+        setFase('idle')
+        setErro(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     if (!configurado) return
     let cancelado = false
@@ -251,34 +292,11 @@ function EmbeddedSignup() {
     // Popup bloqueado não gera NENHUM callback — sem este timeout o botão ficava
     // preso em "Aguardando a Meta…" para sempre (aconteceu no Arc e no Safari,
     // que bloqueiam popup silenciosamente por padrão).
-    // O SDK abre a janela da Meta com window.open. Interceptamos a chamada para
-    // saber se ela REALMENTE abriu: popup bloqueado devolve null (ou uma janela
-    // já fechada) e o FB.login nunca chama o callback — sem isto o botão só
-    // dizia "não respondeu", sem distinguir bloqueio de falha da Meta.
-    let janela: Window | null | undefined
-    const openOriginal = window.open
-    window.open = function (...args: unknown[]) {
-      // deno-lint-ignore no-explicit-any
-      janela = (openOriginal as any).apply(window, args)
-      return janela as Window | null
-    } as typeof window.open
-
-    const bloqueio = setTimeout(() => {
-      const naoAbriu = !janela || janela.closed
-      if (!naoAbriu) return
-      setFase((f) => (f === 'meta' ? 'idle' : f))
-      setErro('O navegador BLOQUEOU a janela da Meta (ela nem chegou a abrir). Permita pop-ups para '
-        + 'aviv-chat.vercel.app e tente de novo — Chrome: ícone de pop-up na barra de endereço ou '
-        + 'chrome://settings/content/popups; Safari: Ajustes → Sites → Janelas pop-up; Arc: '
-        + 'arc://settings/content/popups. Se usa bloqueador de anúncios, desative para este site.')
-      logar('popup_bloqueado', { coexistencia })
-    }, 2000)
-
     const timeout = setTimeout(() => {
       setFase((f) => {
         if (f !== 'meta') return f
-        setErro('A janela da Meta abriu, mas não devolveu resposta. Se você a fechou, tente de novo; '
-          + 'se ela mostrou algum erro, me diga o que apareceu.')
+        setErro('A janela da Meta não respondeu. Use o botão "Conectar sem janela pop-up" abaixo — '
+          + 'ele faz o mesmo cadastro pela própria aba, sem depender de pop-up.')
         logar('popup_sem_resposta', { coexistencia })
         return 'idle'
       })
@@ -288,7 +306,7 @@ function EmbeddedSignup() {
     try { window.FB?.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v20.0' }) } catch { /* já inicializado */ }
 
     window.FB?.login(async (resp: any) => {
-      clearTimeout(timeout); clearTimeout(bloqueio)
+      clearTimeout(timeout)
       const code = resp?.authResponse?.code
       if (!code) { setFase('idle'); setErro('Login cancelado ou não autorizado na Meta.'); return }
       setFase('trocando')
@@ -318,7 +336,37 @@ function EmbeddedSignup() {
         ...(coexistencia ? { featureType: 'whatsapp_business_app_onboarding' } : {}),
       },
     })
-    window.open = openOriginal      // restaura na mesma volta do event loop
+  }
+
+  // ── Modo redirecionamento (sem pop-up) ───────────────────────────────────
+  // O SDK depende de uma janela pop-up que alguns navegadores engolem em
+  // silêncio. Este caminho leva a própria aba ao diálogo oficial da Meta (o
+  // mesmo que responde no teste por URL direta) e volta com ?code= — sem
+  // pop-up nenhum. O waba_id não vem por postMessage aqui: o servidor o
+  // descobre pelo debug_token.
+  function conectarPorRedirect() {
+    const estado = Math.random().toString(36).slice(2)
+    try {
+      sessionStorage.setItem('meta_es_state', estado)
+      sessionStorage.setItem('meta_es_coex', coexistencia ? '1' : '0')
+    } catch { /* sem sessionStorage: segue sem validação de estado */ }
+    logar('redirect_inicio', { coexistencia })
+
+    const extras = {
+      feature: 'whatsapp_embedded_signup',
+      setup: {},
+      sessionInfoVersion: '3',
+      ...(coexistencia ? { featureType: 'whatsapp_business_app_onboarding' } : {}),
+    }
+    const url = new URL('https://www.facebook.com/v20.0/dialog/oauth')
+    url.searchParams.set('client_id', APP_ID)
+    url.searchParams.set('config_id', CONFIG_ID)
+    url.searchParams.set('response_type', 'code')
+    url.searchParams.set('override_default_response_type', 'true')
+    url.searchParams.set('redirect_uri', `${window.location.origin}/inboxes/new`)
+    url.searchParams.set('state', estado)
+    url.searchParams.set('extras', JSON.stringify(extras))
+    window.location.href = url.toString()
   }
 
   if (!configurado) {
@@ -371,6 +419,16 @@ function EmbeddedSignup() {
         {fase === 'trocando' ? 'Configurando a caixa…' : fase === 'meta' ? 'Aguardando a Meta…' : 'Continuar com o Facebook'}
       </button>
       {!sdkPronto && <p className="text-[11px] text-gray-400">Carregando o SDK da Meta…</p>}
+
+      <div className="pt-2 border-t border-gray-100">
+        <button onClick={conectarPorRedirect} disabled={fase === 'trocando'}
+          className="text-xs text-gray-500 underline hover:text-gray-800 disabled:opacity-50">
+          A janela não abre? Conectar sem janela pop-up
+        </button>
+        <p className="text-[11px] text-gray-400 mt-1">
+          Leva você ao site da Meta nesta mesma aba e volta ao final — mesmo cadastro, sem depender de pop-up.
+        </p>
+      </div>
     </div>
   )
 }
