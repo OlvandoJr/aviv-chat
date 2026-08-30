@@ -179,18 +179,34 @@ function EmbeddedSignup() {
 
   useEffect(() => {
     if (!configurado) return
-    window.fbAsyncInit = () => {
-      window.FB?.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v20.0' })
-      setSdkPronto(true)
+    let cancelado = false
+
+    // O SDK chama fbAsyncInit UMA vez, quando carrega. Se o componente remonta
+    // (voltar para a tela, StrictMode em dev), a nova instância registra um
+    // fbAsyncInit que nunca mais é chamado — o botão ficava preso em "Carregando
+    // o SDK" e, pior, o FB.init podia não rodar nesta instância, fazendo o
+    // FB.login falhar sem abrir janela nenhuma. Por isso: tentamos inicializar
+    // já, registramos o callback E deixamos um poll de segurança.
+    const tentarInit = (): boolean => {
+      if (!window.FB) return false
+      try { window.FB.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v20.0' }) } catch { /* init repetido é inofensivo */ }
+      if (!cancelado) setSdkPronto(true)
+      return true
     }
-    if (!document.getElementById('facebook-jssdk')) {
-      const js = document.createElement('script')
-      js.id = 'facebook-jssdk'
-      js.src = 'https://connect.facebook.net/en_US/sdk.js'
-      js.async = true; js.defer = true
-      document.body.appendChild(js)
-    } else if (window.FB) {
-      setSdkPronto(true)
+
+    let poll: ReturnType<typeof setInterval> | undefined
+    if (!tentarInit()) {
+      window.fbAsyncInit = () => { tentarInit() }
+      if (!document.getElementById('facebook-jssdk')) {
+        const js = document.createElement('script')
+        js.id = 'facebook-jssdk'
+        js.src = 'https://connect.facebook.net/en_US/sdk.js'
+        js.async = true; js.defer = true
+        document.body.appendChild(js)
+      }
+      // Rede de segurança para o caso do script já estar carregado (remount).
+      poll = setInterval(() => { if (tentarInit() && poll) clearInterval(poll) }, 300)
+      setTimeout(() => poll && clearInterval(poll), 20000)
     }
 
     const onMessage = (event: MessageEvent) => {
@@ -222,7 +238,11 @@ function EmbeddedSignup() {
       } catch { /* mensagens de outros widgets da Meta — ignora */ }
     }
     window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
+    return () => {
+      cancelado = true
+      if (poll) clearInterval(poll)
+      window.removeEventListener('message', onMessage)
+    }
   }, [configurado])
 
   async function iniciar() {
@@ -263,6 +283,9 @@ function EmbeddedSignup() {
         return 'idle'
       })
     }, 60000)
+
+    // Garante que ESTA instância da página inicializou o SDK antes de logar.
+    try { window.FB?.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: false, version: 'v20.0' }) } catch { /* já inicializado */ }
 
     window.FB?.login(async (resp: any) => {
       clearTimeout(timeout); clearTimeout(bloqueio)
