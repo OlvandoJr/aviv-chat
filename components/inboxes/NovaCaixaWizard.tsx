@@ -321,11 +321,41 @@ function EmbeddedSignup() {
       logar('fb_init_excecao', { msg: String(e) })
     }
 
+    // O SDK escreve o motivo da recusa no console e segue em silêncio para quem
+    // chamou. Capturamos console.error/warn e erros globais durante a tentativa
+    // e mandamos para a telemetria — sem isto, o diagnóstico depende de alguém
+    // estar com o console aberto no momento certo.
+    const capturado: string[] = []
+    const errOriginal = console.error
+    const warnOriginal = console.warn
+    const capturar = (orig: typeof console.error) => (...args: unknown[]) => {
+      try { capturado.push(args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ').slice(0, 300)) } catch { /* ignora */ }
+      orig(...args)
+    }
+    console.error = capturar(errOriginal)
+    console.warn  = capturar(warnOriginal)
+    const onErroGlobal = (ev: ErrorEvent) => capturado.push(`window.onerror: ${ev.message}`)
+    window.addEventListener('error', onErroGlobal)
+    setTimeout(() => {
+      console.error = errOriginal
+      console.warn  = warnOriginal
+      window.removeEventListener('error', onErroGlobal)
+      if (capturado.length) logar('sdk_console', { linhas: capturado.slice(0, 8) })
+    }, 6000)
+
     try {
     fb.login(async (resp: any) => {
       clearTimeout(timeout)
+      // Registra a resposta INTEIRA: status 'unknown'/'not_authorized' explica a
+      // recusa muito melhor do que "cancelado".
+      logar('fb_callback', { status: resp?.status, temCode: !!resp?.authResponse?.code })
       const code = resp?.authResponse?.code
-      if (!code) { setFase('idle'); setErro('Login cancelado ou não autorizado na Meta.'); return }
+      if (!code) {
+        setFase('idle')
+        setErro(`A Meta não devolveu autorização (status: ${resp?.status || 'desconhecido'}). `
+          + 'Se você fechou a janela, tente de novo; se ela nem abriu, me avise.')
+        return
+      }
       setFase('trocando')
       try {
         const { data: { session } } = await supabase.auth.getSession()
