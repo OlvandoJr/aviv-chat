@@ -458,7 +458,14 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
 
-    if (isNew) router.push(`/agents/${agentId}`)
+    if (isNew) {
+      // Veio do formulário de caixa de entrada ("Criar agente")? Volta para lá
+      // com o agente novo pré-selecionado; o rascunho da caixa está guardado em
+      // sessionStorage e é restaurado na chegada.
+      const retorno = new URLSearchParams(window.location.search).get('retorno')
+      if (retorno && retorno.startsWith('/')) router.push(`${retorno}?novoAgente=${agentId}`)
+      else router.push(`/agents/${agentId}`)
+    }
     else router.refresh()
   }
 
