@@ -25,18 +25,21 @@ export default function InboxEditor({ inbox }: Props) {
   const [verifyToken,   setVerifyToken]   = useState(inbox?.verify_token || '')
   const [isActive,      setIsActive]      = useState(inbox?.is_active ?? true)
 
-  // ── Atendimento por IA (migration 084) ─────────────────────────────────────
+  // ── Atendimento por IA (migrations 084/085) ────────────────────────────────
   // 'sem'    → caixa 100% humana (ia_ativa=false)
+  // 'auto'   → ia_ativa=false + auto_resposta: texto fixo enviado UMA vez na
+  //            primeira mensagem do contato (saudação do app WhatsApp Business)
   // 'agente' → agente alocado à caixa (default_agent_id)
   // 'padrao' → comportamento legado (regras + agente padrão) — só existe para
   //            caixas antigas que nunca escolheram; não é oferecido em caixa nova.
-  const [iaModo,  setIaModo]  = useState<'sem' | 'agente' | 'padrao'>(
+  const [iaModo,  setIaModo]  = useState<'sem' | 'auto' | 'agente' | 'padrao'>(
     isNew ? 'sem'
-      : inbox!.ia_ativa === false ? 'sem'
+      : inbox!.ia_ativa === false ? (inbox!.auto_resposta ? 'auto' : 'sem')
       : inbox!.default_agent_id  ? 'agente'
       : 'padrao'
   )
-  const [agentId, setAgentId] = useState(inbox?.default_agent_id || '')
+  const [agentId,      setAgentId]      = useState(inbox?.default_agent_id || '')
+  const [autoResposta, setAutoResposta] = useState(inbox?.auto_resposta || '')
   const [agentes, setAgentes] = useState<{ id: string; name: string; avatar_emoji: string | null; is_default: boolean }[]>([])
   // Caixa antiga que nunca escolheu: mantém o cartão "Roteamento padrão" visível
   // (e reversível) enquanto o formulário estiver aberto.
@@ -63,6 +66,7 @@ export default function InboxEditor({ inbox }: Props) {
           setWabaId(d.wabaId ?? '');       setAccessToken(d.accessToken ?? '')
           setVerifyToken(d.verifyToken ?? ''); setIsActive(d.isActive ?? true)
           setIaModo(d.iaModo ?? 'agente'); setAgentId(d.agentId ?? '')
+          setAutoResposta(d.autoResposta ?? '')
         }
       }
     } catch { /* sem sessionStorage: formulário recomeça vazio */ }
@@ -87,7 +91,7 @@ export default function InboxEditor({ inbox }: Props) {
       sessionStorage.setItem('inbox_draft', JSON.stringify({
         inboxId: inbox?.id ?? null,
         name, description, phoneNumber, phoneNumberId, wabaId,
-        accessToken, verifyToken, isActive, iaModo: 'agente', agentId,
+        accessToken, verifyToken, isActive, iaModo: 'agente', agentId, autoResposta,
       }))
     } catch { /* segue mesmo assim */ }
     const retorno = inbox ? `/inboxes/${inbox.id}` : '/inboxes/new'
@@ -112,6 +116,9 @@ export default function InboxEditor({ inbox }: Props) {
     if (iaModo === 'agente' && !agentId) {
       setError('Selecione o agente de IA que atende esta caixa — ou marque "Sem agente".'); return
     }
+    if (iaModo === 'auto' && !autoResposta.trim()) {
+      setError('Escreva o texto da resposta automática — ou escolha outra opção.'); return
+    }
 
     setLoading(true)
     setError('')
@@ -125,8 +132,9 @@ export default function InboxEditor({ inbox }: Props) {
       access_token:    accessToken.trim(),
       verify_token:    verifyToken.trim(),
       is_active:       isActive,
-      ia_ativa:        iaModo !== 'sem',
+      ia_ativa:        iaModo === 'agente' || iaModo === 'padrao',
       default_agent_id: iaModo === 'agente' ? agentId : null,
+      auto_resposta:   iaModo === 'auto' ? autoResposta.trim() : null,
     }
 
     if (isNew) {
@@ -282,6 +290,28 @@ export default function InboxEditor({ inbox }: Props) {
               <span>
                 <span className="text-sm font-medium text-gray-800 block">Sem agente — 100% humana</span>
                 <span className="text-xs text-gray-500">Nenhum bot ou IA responde nesta caixa. Toda mensagem vai direto para a fila de atendimento humano.</span>
+              </span>
+            </label>
+
+            <label className={cn('flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+              iaModo === 'auto' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-200 hover:border-gray-300')}>
+              <input type="radio" name="iaModo" checked={iaModo === 'auto'} onChange={() => setIaModo('auto')}
+                className="mt-0.5 accent-emerald-600" />
+              <span className="flex-1">
+                <span className="text-sm font-medium text-gray-800 block">Resposta automática (sem IA)</span>
+                <span className="text-xs text-gray-500 block mb-2">
+                  Um texto fixo é enviado uma única vez, na primeira mensagem do contato — como a saudação do app WhatsApp Business.
+                  Depois disso a conversa fica 100% humana. Ideal para QR code / lista de espera.
+                </span>
+                {iaModo === 'auto' && (
+                  <textarea
+                    value={autoResposta}
+                    onChange={(e) => setAutoResposta(e.target.value)}
+                    rows={6}
+                    placeholder="Texto enviado automaticamente na primeira mensagem…"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                )}
               </span>
             </label>
 
