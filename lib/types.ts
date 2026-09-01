@@ -17,6 +17,9 @@ export interface Inbox {
   disconnect_reason?: string | null
   sync_progress?:     number | null
   history_share?:     'pending' | 'shared' | 'declined' | null
+  // Agente por caixa (migration 084)
+  default_agent_id?:  string | null
+  ia_ativa?:          boolean
 }
 
 export type WaTemplateStatus   = 'PENDING' | 'APPROVED' | 'REJECTED' | 'PAUSED' | 'DISABLED'

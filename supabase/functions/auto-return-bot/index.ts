@@ -34,7 +34,7 @@ Deno.serve(async () => {
 
     const { data: convs } = await supabase
       .from('chat_conversations')
-      .select('id, contact:chat_contacts(bot_bloqueado)')
+      .select('id, contact:chat_contacts(bot_bloqueado), caixa:chat_inboxes(ia_ativa)')
       .eq('handled_by', 'human')
       .eq('status', 'open')
       .limit(500)
@@ -47,6 +47,10 @@ Deno.serve(async () => {
       // o ai-responder não responde e a conversa sai da fila humana, virando
       // órfã silenciosa. Quem atende bloqueado é humano. Ver migration 074.
       if ((c as any).contact?.bot_bloqueado) continue
+
+      // Caixa 100% humana (migration 084): devolver ao bot seria o mesmo vazio —
+      // o ai-responder tem portão e re-marcaria 'human' na próxima mensagem.
+      if ((c as any).caixa?.ia_ativa === false) continue
 
       const { data: last } = await supabase
         .from('chat_messages')

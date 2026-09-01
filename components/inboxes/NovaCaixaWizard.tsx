@@ -36,6 +36,19 @@ export default function NovaCaixaWizard() {
 
   const escolherCanal = (c: Canal) => setCanal(c)
 
+  // Volta da criação de agente (fluxo "Criar agente" do formulário manual): há
+  // um rascunho de caixa NOVA em sessionStorage → pula as etapas de cartões e
+  // reabre o formulário, que restaura o rascunho sozinho.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('inbox_draft')
+      if (raw && JSON.parse(raw)?.inboxId == null) {
+        setMetodo('manual')
+        setCanal('wa_oficial')
+      }
+    } catch { /* sem sessionStorage: fluxo normal */ }
+  }, [])
+
   // Manual + WhatsApp Oficial → formulário clássico
   if (metodo === 'manual' && canal === 'wa_oficial') {
     return <InboxEditor inbox={null} />

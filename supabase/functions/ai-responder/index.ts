@@ -167,7 +167,7 @@ Deno.serve(async (req) => {
     // ── 1. Buscar conversa ────────────────────────────────────────────────────
     const { data: conv, error: convErr } = await supabase
       .from('chat_conversations')
-      .select('id, handled_by, contact_id, agent_id, inbox_id, bloqueio:chat_contacts(bot_bloqueado)')
+      .select('id, handled_by, contact_id, agent_id, inbox_id, bloqueio:chat_contacts(bot_bloqueado), caixa:chat_inboxes(ia_ativa, default_agent_id)')
       .eq('id', conversationId)
       .single()
 
@@ -202,6 +202,21 @@ Deno.serve(async (req) => {
 
     if (conv.handled_by === 'human' || conv.handled_by === 'pending_human') {
       return new Response(JSON.stringify({ skipped: true, reason: 'human handling' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    // ── 1a½. CAIXA 100% HUMANA (migration 084) ────────────────────────────────
+    // Caixa criada com "Sem agente": nenhum bot responde nela, nunca. O portão
+    // vem antes do debounce (não gastar 8s+ por mensagem) e antes do
+    // routeSubagentFlow (caminho de ENVIO paralelo — depois dele vazaria fluxo
+    // de subagente). Marca a conversa para a fila humana, como no bloco de
+    // campanha com IA desligada; o auto-return-bot ignora caixas assim.
+    const caixa = (conv as any).caixa as { ia_ativa?: boolean; default_agent_id?: string | null } | null
+    if (caixa && caixa.ia_ativa === false) {
+      await supabase.from('chat_conversations')
+        .update({ handled_by: 'human' }).eq('id', conversationId)
+      return new Response(JSON.stringify({ skipped: true, reason: 'caixa 100% humana' }), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       })
     }
@@ -308,8 +323,9 @@ Deno.serve(async (req) => {
     // ── 2. Buscar agente ──────────────────────────────────────────────────────
     // Precedência: (a) o ÚLTIMO template out até 7 dias veio de uma CAMPANHA →
     // vale a configuração dela (IA desligada → só humano responde; especialista →
-    // ele responde); (b) template de cobrança (régua/2ª via, sem campanha) nas
-    // últimas 24h → agente default (Vivi); (c) regra de inbox; (d) default.
+    // ele responde); (b) agente padrão da CAIXA (migration 084); (c) template de
+    // cobrança (régua/2ª via, sem campanha) nas últimas 24h → agente default
+    // (Vivi); (d) regra de inbox; (e) default.
     let agent: any = null
 
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
@@ -344,6 +360,17 @@ Deno.serve(async (req) => {
           .eq('id', camp.agent_id).eq('is_active', true).maybeSingle()
         agent = data   // especialista da campanha (inativo → cascata normal)
       }
+    }
+
+    // (b) Agente da CAIXA: quem aloca um agente na criação da caixa quer que ele
+    // atenda tudo dela — inclusive respostas a template. A regra das 24h abaixo
+    // só alcança caixas SEM agente próprio, o que preserva a régua: a caixa de
+    // Cobrança não tem default_agent_id, então a Vivi segue dona da janela.
+    if (!agent && caixa?.default_agent_id) {
+      const { data } = await supabase
+        .from('chat_agents').select('*')
+        .eq('id', caixa.default_agent_id).eq('is_active', true).maybeSingle()
+      agent = data   // inativo/apagado → cascata normal
     }
 
     // Template out nas últimas 24h = o disparo partiu de nós (usado também no

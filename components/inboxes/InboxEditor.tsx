@@ -1,9 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { ArrowLeft, Save, Trash2, Eye, EyeOff, Inbox as InboxIcon, Copy, Check } from 'lucide-react'
+import { ArrowLeft, Save, Trash2, Eye, EyeOff, Inbox as InboxIcon, Copy, Check, Bot, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Inbox } from '@/lib/types'
 
@@ -25,11 +25,74 @@ export default function InboxEditor({ inbox }: Props) {
   const [verifyToken,   setVerifyToken]   = useState(inbox?.verify_token || '')
   const [isActive,      setIsActive]      = useState(inbox?.is_active ?? true)
 
+  // ── Atendimento por IA (migration 084) ─────────────────────────────────────
+  // 'sem'    → caixa 100% humana (ia_ativa=false)
+  // 'agente' → agente alocado à caixa (default_agent_id)
+  // 'padrao' → comportamento legado (regras + agente padrão) — só existe para
+  //            caixas antigas que nunca escolheram; não é oferecido em caixa nova.
+  const [iaModo,  setIaModo]  = useState<'sem' | 'agente' | 'padrao'>(
+    isNew ? 'sem'
+      : inbox!.ia_ativa === false ? 'sem'
+      : inbox!.default_agent_id  ? 'agente'
+      : 'padrao'
+  )
+  const [agentId, setAgentId] = useState(inbox?.default_agent_id || '')
+  const [agentes, setAgentes] = useState<{ id: string; name: string; avatar_emoji: string | null; is_default: boolean }[]>([])
+  // Caixa antiga que nunca escolheu: mantém o cartão "Roteamento padrão" visível
+  // (e reversível) enquanto o formulário estiver aberto.
+  const tinhaLegado = !isNew && inbox!.ia_ativa !== false && !inbox!.default_agent_id
+
   const [showToken,  setShowToken]  = useState(false)
   const [copied,     setCopied]     = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState('')
   const [saved,      setSaved]      = useState(false)
+
+  useEffect(() => {
+    // Volta da criação de agente: restaura o rascunho do formulário (guardado
+    // antes de navegar para /agents/new) e pré-seleciona o agente recém-criado
+    // (que chega por ?novoAgente=<id> no redirect do AgentEditor).
+    try {
+      const raw = sessionStorage.getItem('inbox_draft')
+      if (raw) {
+        const d = JSON.parse(raw)
+        if ((d.inboxId ?? null) === (inbox?.id ?? null)) {
+          sessionStorage.removeItem('inbox_draft')
+          setName(d.name ?? '');           setDescription(d.description ?? '')
+          setPhoneNumber(d.phoneNumber ?? ''); setPhoneNumberId(d.phoneNumberId ?? '')
+          setWabaId(d.wabaId ?? '');       setAccessToken(d.accessToken ?? '')
+          setVerifyToken(d.verifyToken ?? ''); setIsActive(d.isActive ?? true)
+          setIaModo(d.iaModo ?? 'agente'); setAgentId(d.agentId ?? '')
+        }
+      }
+    } catch { /* sem sessionStorage: formulário recomeça vazio */ }
+    const q = new URLSearchParams(window.location.search)
+    const novo = q.get('novoAgente')
+    if (novo) {
+      setIaModo('agente')
+      setAgentId(novo)
+      q.delete('novoAgente')
+      window.history.replaceState(null, '', window.location.pathname + (q.toString() ? `?${q}` : ''))
+    }
+    supabase.from('chat_agents')
+      .select('id, name, avatar_emoji, is_default')
+      .eq('is_active', true).order('name')
+      .then(({ data }) => setAgentes(data || []))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function criarAgente() {
+    // Guarda o formulário para não perder nada na ida e volta.
+    try {
+      sessionStorage.setItem('inbox_draft', JSON.stringify({
+        inboxId: inbox?.id ?? null,
+        name, description, phoneNumber, phoneNumberId, wabaId,
+        accessToken, verifyToken, isActive, iaModo: 'agente', agentId,
+      }))
+    } catch { /* segue mesmo assim */ }
+    const retorno = inbox ? `/inboxes/${inbox.id}` : '/inboxes/new'
+    router.push(`/agents/new?retorno=${encodeURIComponent(retorno)}`)
+  }
 
   const webhookUrl = typeof window !== 'undefined'
     ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/whatsapp-webhook`
@@ -46,6 +109,9 @@ export default function InboxEditor({ inbox }: Props) {
     if (!phoneNumberId.trim()) { setError('Phone Number ID é obrigatório'); return }
     if (!accessToken.trim())   { setError('Access Token é obrigatório'); return }
     if (!verifyToken.trim())   { setError('Verify Token é obrigatório'); return }
+    if (iaModo === 'agente' && !agentId) {
+      setError('Selecione o agente de IA que atende esta caixa — ou marque "Sem agente".'); return
+    }
 
     setLoading(true)
     setError('')
@@ -59,6 +125,8 @@ export default function InboxEditor({ inbox }: Props) {
       access_token:    accessToken.trim(),
       verify_token:    verifyToken.trim(),
       is_active:       isActive,
+      ia_ativa:        iaModo !== 'sem',
+      default_agent_id: iaModo === 'agente' ? agentId : null,
     }
 
     if (isNew) {
@@ -201,6 +269,65 @@ export default function InboxEditor({ inbox }: Props) {
                 <span className="text-sm text-gray-700 font-medium">Caixa ativa</span>
               </label>
             </div>
+          </div>
+        </Section>
+
+        {/* ── ATENDIMENTO POR IA ── */}
+        <Section icon={<Bot className="w-4 h-4" />} title="Atendimento por IA">
+          <div className="space-y-2">
+            <label className={cn('flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+              iaModo === 'sem' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-200 hover:border-gray-300')}>
+              <input type="radio" name="iaModo" checked={iaModo === 'sem'} onChange={() => setIaModo('sem')}
+                className="mt-0.5 accent-emerald-600" />
+              <span>
+                <span className="text-sm font-medium text-gray-800 block">Sem agente — 100% humana</span>
+                <span className="text-xs text-gray-500">Nenhum bot ou IA responde nesta caixa. Toda mensagem vai direto para a fila de atendimento humano.</span>
+              </span>
+            </label>
+
+            <label className={cn('flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+              iaModo === 'agente' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-200 hover:border-gray-300')}>
+              <input type="radio" name="iaModo" checked={iaModo === 'agente'} onChange={() => setIaModo('agente')}
+                className="mt-0.5 accent-emerald-600" />
+              <span className="flex-1">
+                <span className="text-sm font-medium text-gray-800 block">Agente de IA da caixa</span>
+                <span className="text-xs text-gray-500 block mb-2">O agente escolhido responde as conversas desta caixa (um humano pode assumir a qualquer momento).</span>
+                {iaModo === 'agente' && (
+                  <span className="flex items-center gap-2">
+                    <select
+                      value={agentId}
+                      onChange={(e) => setAgentId(e.target.value)}
+                      className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      <option value="">Selecione um agente…</option>
+                      {agentes.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.avatar_emoji ? `${a.avatar_emoji} ` : ''}{a.name}{a.is_default ? ' (padrão do sistema)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={criarAgente}
+                      className="flex items-center gap-1 px-3 py-2 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 shrink-0 transition-colors">
+                      <Plus className="w-3.5 h-3.5" /> Criar agente
+                    </button>
+                  </span>
+                )}
+              </span>
+            </label>
+
+            {/* Estado legado: caixas criadas antes desta opção seguem no roteamento
+                por regras + agente padrão até alguém escolher de propósito. */}
+            {tinhaLegado && (
+              <label className={cn('flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                iaModo === 'padrao' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-200 hover:border-gray-300')}>
+                <input type="radio" name="iaModo" checked={iaModo === 'padrao'} onChange={() => setIaModo('padrao')}
+                  className="mt-0.5 accent-emerald-600" />
+                <span>
+                  <span className="text-sm font-medium text-gray-800 block">Roteamento padrão (comportamento atual)</span>
+                  <span className="text-xs text-gray-500">Esta caixa segue as regras de roteamento dos agentes e o agente padrão do sistema — o comportamento de antes desta opção existir.</span>
+                </span>
+              </label>
+            )}
           </div>
         </Section>
 
