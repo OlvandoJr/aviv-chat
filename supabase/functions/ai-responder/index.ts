@@ -167,7 +167,7 @@ Deno.serve(async (req) => {
     // ── 1. Buscar conversa ────────────────────────────────────────────────────
     const { data: conv, error: convErr } = await supabase
       .from('chat_conversations')
-      .select('id, handled_by, contact_id, agent_id, inbox_id, bloqueio:chat_contacts(bot_bloqueado), caixa:chat_inboxes(ia_ativa, default_agent_id)')
+      .select('id, handled_by, contact_id, agent_id, inbox_id, bloqueio:chat_contacts(bot_bloqueado), caixa:chat_inboxes(ia_ativa, default_agent_id, auto_resposta, phone_number_id, access_token)')
       .eq('id', conversationId)
       .single()
 
@@ -212,10 +212,42 @@ Deno.serve(async (req) => {
     // routeSubagentFlow (caminho de ENVIO paralelo — depois dele vazaria fluxo
     // de subagente). Marca a conversa para a fila humana, como no bloco de
     // campanha com IA desligada; o auto-return-bot ignora caixas assim.
-    const caixa = (conv as any).caixa as { ia_ativa?: boolean; default_agent_id?: string | null } | null
+    const caixa = (conv as any).caixa as {
+      ia_ativa?: boolean; default_agent_id?: string | null; auto_resposta?: string | null
+      phone_number_id?: string | null; access_token?: string | null
+    } | null
     if (caixa && caixa.ia_ativa === false) {
-      await supabase.from('chat_conversations')
-        .update({ handled_by: 'human' }).eq('id', conversationId)
+      // Claim atômico bot→human: com duas mensagens chegando juntas (o portão
+      // vem ANTES do debounce), só a invocação que ganhar o UPDATE manda a
+      // saudação — a outra vê 0 linhas e sai calada.
+      const { data: claim } = await supabase.from('chat_conversations')
+        .update({ handled_by: 'human' })
+        .eq('id', conversationId).eq('handled_by', 'bot')
+        .select('id').maybeSingle()
+
+      // Saudação automática (migration 085): o texto fixo da caixa substitui a
+      // "mensagem de saudação" do app WhatsApp Business (que morre no registro
+      // Cloud API). Uma vez só: apenas se a conversa nunca teve mensagem 'out'.
+      const saudacao = String(caixa.auto_resposta || '').trim()
+      if (claim && saudacao) {
+        const { data: jaFalamos } = await supabase.from('chat_messages')
+          .select('id').eq('conversation_id', conversationId)
+          .eq('direction', 'out').limit(1).maybeSingle()
+        if (!jaFalamos) {
+          const { data: contato } = await supabase.from('chat_contacts')
+            .select('wa_id').eq('id', conv.contact_id).maybeSingle()
+          const to = normalizeWaId(contato?.wa_id || '') || String(contato?.wa_id || '')
+          if (to && caixa.phone_number_id && caixa.access_token) {
+            await sendPlainText(
+              { phone_number_id: caixa.phone_number_id, access_token: caixa.access_token },
+              to, saudacao, conversationId,
+            )
+            return new Response(JSON.stringify({ ok: true, reason: 'saudação automática da caixa' }), {
+              status: 200, headers: { 'Content-Type': 'application/json' },
+            })
+          }
+        }
+      }
       return new Response(JSON.stringify({ skipped: true, reason: 'caixa 100% humana' }), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       })
