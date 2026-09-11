@@ -116,28 +116,36 @@ function barra44ParaLinha47(b: string): string {
   return c1 + mod10(c1) + c2 + mod10(c2) + c3 + mod10(c3) + b[4] + b.slice(5, 19)
 }
 
-// O modelo derruba UM dígito ao copiar 47 dígitos sem separadores (observado
-// nos PDFs Caixa: devolve 46). Reparo determinístico: testa todas as inserções
-// possíveis (47 posições × 10 dígitos) e aceita SOMENTE se exatamente UMA
-// candidata valida nos DVs E o valor decodificado bate com o valor lido pelo
-// modelo (checagem cruzada independente — o valor vem de outro campo do
-// documento). Ambíguo ou sem confirmação de valor → descarta, sem adivinhar.
+// O modelo erra por UM dígito ao copiar a linha sem separadores, nos dois
+// sentidos: DERRUBA um dígito (PDFs Caixa: devolve 46) ou DUPLICA um dígito
+// (caso Talita, 10/09: print Nubank devolveu 48, com um zero a mais — o boleto
+// já pago não casou e o comprovante caiu em validação humana à toa). Reparo
+// determinístico: testa todas as inserções (46/43) ou remoções (48/45) e
+// aceita SOMENTE se exatamente UMA candidata valida nos DVs E o valor
+// decodificado bate com o valor lido pelo modelo (checagem cruzada
+// independente — o valor vem de outro campo do documento). Ambíguo ou sem
+// confirmação de valor → descarta, sem adivinhar.
 export function repararLinha(s: unknown, valorLido: number | null | undefined): LinhaDecodificada {
   const d = String(s ?? '').replace(/\D/g, '')
-  if (d.length !== 46 && d.length !== 43) return { valida: false }
   if (valorLido == null) return { valida: false }   // sem valor independente não há checagem cruzada
   // O filtro de VALOR entra antes da unicidade: o módulo 10 sozinho deixa
   // passar ~1 candidata espúria a cada duas tentativas, mas a espúria quase
   // sempre altera o campo de valor — e valor errado é eliminado aqui.
   const unicas = new Set<string>()
-  for (let pos = 0; pos <= d.length; pos++) {
-    for (let dig = 0; dig <= 9; dig++) {
-      const cand = d.slice(0, pos) + String(dig) + d.slice(pos)
-      const dec = decodificarLinha(cand)
-      if (dec.valida && dec.linha && dec.valor != null && Math.abs(dec.valor - valorLido) < 0.001) {
-        unicas.add(dec.linha)
-      }
+  const testar = (cand: string) => {
+    const dec = decodificarLinha(cand)
+    if (dec.valida && dec.linha && dec.valor != null && Math.abs(dec.valor - valorLido) < 0.001) {
+      unicas.add(dec.linha)
     }
+  }
+  if (d.length === 46 || d.length === 43) {
+    for (let pos = 0; pos <= d.length; pos++) {
+      for (let dig = 0; dig <= 9; dig++) testar(d.slice(0, pos) + String(dig) + d.slice(pos))
+    }
+  } else if (d.length === 48 || d.length === 45) {
+    for (let pos = 0; pos < d.length; pos++) testar(d.slice(0, pos) + d.slice(pos + 1))
+  } else {
+    return { valida: false }
   }
   if (unicas.size !== 1) return { valida: false }   // ambíguo → não adivinha
   return decodificarLinha([...unicas][0])

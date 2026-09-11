@@ -517,6 +517,7 @@ async function getBoletoPorLinha(linha: string): Promise<any | null> {
     parcela_descricao: `Boleto venc. ${String(b.vencimento).slice(0, 10).split('-').reverse().join('/')}`,
     amount: Number(b.valor), due_date: b.vencimento,
     _source: 'emitido', _status_atual: String(b.status || 'aberto').toLowerCase(),
+    _casado_por_linha: true,
   }
 }
 
@@ -571,6 +572,36 @@ async function getBoletoEmitido(waId: string, cpfCnpj?: string, valorHint?: numb
         .order('due_date', { ascending: true }).limit(10)
       const c = escolher(byCpf)
       if (c) { console.log('Boleto emitido por CPF:', c.parcela_descricao); return mapEmitido(c) }
+    }
+  }
+
+  // 3. Tabela direta, INCLUINDO pagos. A vw_boleto_chat esconde boletos
+  // pagos/cancelados (ela existe para OFERECER 2ª via) — mas para COMPROVANTE
+  // o boleto já baixado é justamente o melhor casamento: o cliente costuma
+  // mandar o comprovante DEPOIS da baixa (caso Talita, 10/09: baixa às 15:04,
+  // comprovante às 15:05 → caiu na parcela errada e virou pendência falsa).
+  // O chamador decide o veredito "já consta paga" só quando o VALOR bate.
+  {
+    const desde = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10)
+    const { data: diretos } = await supabase
+      .from('boletos_emitidos')
+      .select('id, client_id, customer_name, vencimento, valor, status, receivable_bill_id, installment_id')
+      .eq('phone_norm', normalizePhone(waId))
+      .neq('status', 'cancelado')
+      .gte('vencimento', desde)
+      .order('vencimento', { ascending: true })
+      .limit(10)
+    const cands = (diretos || []).map((b: any) => ({
+      emitido_id: b.id, client_id: b.client_id, customer_name: b.customer_name, customer_cpf: null,
+      parcela_descricao: `Boleto venc. ${String(b.vencimento).slice(0, 10).split('-').reverse().join('/')}`,
+      amount: Number(b.valor), due_date: b.vencimento,
+      receivable_bill_id: b.receivable_bill_id, installment_id: b.installment_id,
+      _status_atual: String(b.status || 'aberto').toLowerCase(),
+    }))
+    const e = escolher(cands)
+    if (e) {
+      console.log('Boleto emitido (tabela direta, inclui pagos):', e.parcela_descricao, e._status_atual)
+      return { ...mapEmitido(e), _status_atual: e._status_atual }
     }
   }
   return null
@@ -1010,7 +1041,13 @@ async function analyzeImage(
   // ÂNCORA primeiro: linha digitável válida corrige valor/venc e casa exato.
   const ancora = aplicarAncoraLinha(extractedData)
   let boleto: any = ancora ? await getBoletoPorLinha(ancora.linha) : null
-  if (boleto && ['pago', 'baixado', 'comprovante_confirmado'].includes(boleto._status_atual)) {
+  if (!boleto) boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
+  // "Já paga": pela LINHA a identidade é certa; por telefone/CPF só quando o
+  // VALOR bate exato (senão pode ser comprovante de OUTRA parcela → fluxo normal).
+  const valorIgualAoCasado = boleto?.amount != null &&
+    Math.abs(parseMoney(extractedData?.valor) - Number(boleto.amount)) <= 0.01
+  if (boleto && ['pago', 'baixado', 'comprovante_confirmado'].includes(boleto._status_atual || '') &&
+      (boleto._casado_por_linha || valorIgualAoCasado)) {
     // Comprovante de parcela JÁ PAGA (caso Andréia): informar, sem re-baixar e
     // sem mandar para validação humana — não é pendência, é esclarecimento.
     const vencBR = String(boleto.due_date).slice(0, 10).split('-').reverse().join('/')
@@ -1026,7 +1063,6 @@ async function analyzeImage(
     }).eq('id', messageId)
     return
   }
-  if (!boleto) boleto = await getBoletoEmitido(waId, extractedData.cpf_cnpj, parseMoney(extractedData?.valor))
   let siengeStatus: 'pago' | 'pendente' | null = null
   if (!boleto) {
     boleto = await getSiengeBoleto(waId, extractedData.cpf_cnpj)
