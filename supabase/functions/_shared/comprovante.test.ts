@@ -247,3 +247,37 @@ Deno.test('reparo NÃO adivinha: sem confirmação de valor, descarta', () => {
   assertEquals(repararLinha(capenga, null).valida, false)          // sem valor lido
   assertEquals(repararLinha(capenga, 999.99).valida, false)        // valor não bate
 })
+
+// ── Reparo por REMOÇÃO (dígito duplicado pelo OCR) — caso Talita, 10/09/2026 ──
+// Print Nubank: a linha saiu com 48 dígitos (um zero a mais). O boleto emitido
+// (R$ 407,36, já pago) não casou e o comprovante virou pendência humana à toa.
+const LINHA_TALITA_BASE = '10491246038400010004400000161463115650000040736'    // 47 (linha_norm)
+const LINHA_TALITA_OCR  = '104912460384000100044000001614631156500000040736'   // 48 (extraída)
+
+Deno.test('CASO TALITA: 48 dígitos (zero duplicado) → remoção recupera a linha exata', () => {
+  const r = repararLinha(LINHA_TALITA_OCR, 407.36)
+  assert(r.valida)
+  assertEquals(r.linha, LINHA_TALITA_BASE)
+  assertEquals(r.valor, 407.36)
+})
+
+Deno.test('remoção também exige confirmação de valor: valor da parcela errada → rejeita', () => {
+  // 456,26 era o valor da parcela que o fallback casou por engano — a linha
+  // jamais pode validar contra ele.
+  assertEquals(repararLinha(LINHA_TALITA_OCR, 456.26).valida, false)
+  assertEquals(repararLinha(LINHA_TALITA_OCR, null).valida, false)
+})
+
+Deno.test('remoção é SEGURA: para qualquer dígito duplicado, ou recupera a linha CERTA ou rejeita', () => {
+  const l = LINHA_TALITA_BASE
+  let recuperadas = 0
+  for (let pos = 0; pos < 47; pos++) {
+    const inchada = l.slice(0, pos) + l[pos] + l.slice(pos)   // duplica o dígito da posição
+    const r = repararLinha(inchada, 407.36)
+    if (r.valida) {
+      assertEquals(r.linha, l, `pos ${pos}: reparo devolveu linha ERRADA`)
+      recuperadas++
+    }
+  }
+  assert(recuperadas >= 1, 'o reparo deve recuperar ao menos algum caso')
+})
