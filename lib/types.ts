@@ -182,6 +182,7 @@ export interface Agent {
   escalation_keywords:  string[]
   escalation_message:   string | null
   escalation_rules:     string | null
+  contato_urgencia?:    string | null
   created_at:           string
   updated_at:           string
   // join

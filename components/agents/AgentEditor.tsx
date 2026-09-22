@@ -117,6 +117,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
   const [escalationContexts,    setEscalationContexts]   = useState<string>((agent as any)?.escalation_contexts   || '')
   const [escalationBotPhrases,  setEscalationBotPhrases] = useState<string[]>((agent as any)?.escalation_bot_phrases || [])
   const [escalationMessage,     setEscalationMessage]    = useState(agent?.escalation_message || '')
+  const [contatoUrgencia,       setContatoUrgencia]      = useState(agent?.contato_urgencia || '')
   const [escalationRules,       setEscalationRules]      = useState<string>((agent as any)?.escalation_rules || '')
   const [newKeyword,            setNewKeyword]           = useState('')
   const [newBotPhrase,          setNewBotPhrase]         = useState('')
@@ -268,6 +269,7 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
       escalation_bot_phrases: escalationBotPhrases,
       escalation_message:     escalationMessage.trim()     || null,
       escalation_rules:       escalationRules.trim()       || null,
+      contato_urgencia:       contatoUrgencia.trim()       || null,
       updated_at:           new Date().toISOString(),
     }
 
@@ -950,6 +952,21 @@ export default function AgentEditor({ agent, rules: initialRules, inboxes, avail
               value={escalationMessage}
               onChange={(e) => setEscalationMessage(e.target.value)}
               placeholder='Ex: "Entendido! Vou encaminhar você para um atendente agora mesmo. Aguarde um momento. 🙏"'
+              rows={2}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+            />
+          </div>
+
+          {/* Contato para urgências — anexado a TODA escalação */}
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-0.5 block">Contato para urgências</label>
+            <p className="text-[11px] text-gray-400 mb-2">
+              Acrescentado ao final de <strong>toda</strong> mensagem de encaminhamento para humano — pelo token, por uma frase de escalação do bot ou por uma trava de segurança. Deixe vazio para não enviar.
+            </p>
+            <textarea
+              value={contatoUrgencia}
+              onChange={(e) => setContatoUrgencia(e.target.value)}
+              placeholder='Ex: "Se for urgente, mande uma mensagem no WhatsApp da nossa equipe: https://wa.me/55DDDNUMERO"'
               rows={2}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
             />
