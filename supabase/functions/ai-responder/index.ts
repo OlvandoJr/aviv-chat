@@ -149,6 +149,25 @@ function afirmaPagamentoSemProva(msg: string, boletos: any[]): boolean {
 }
 
 // ── Handler principal ──────────────────────────────────────────────────────────
+// Data e hora de AGORA em Brasília, com o período do dia já resolvido.
+//
+// Sem isto o modelo não faz ideia da hora e chuta a saudação — foi assim que
+// saiu "Boa tarde" às 08h41. O período vai mastigado (não só o relógio) porque
+// o modelo erra ao converter hora em saudação.
+function agoraBRT(): string {
+  const fmt = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit',
+    month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  })
+  const hora = Number(new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false,
+  }).format(new Date()))
+  const periodo = hora < 12 ? 'manhã' : hora < 18 ? 'tarde' : 'noite'
+  const saudacao = hora < 12 ? 'Bom dia' : hora < 18 ? 'Boa tarde' : 'Boa noite'
+  return `Agora em Brasília: ${fmt.format(new Date())} (${periodo}).\n` +
+         `Se for saudar, a saudação correta AGORA é "${saudacao}" — nunca use outra.`
+}
+
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 })
@@ -456,24 +475,6 @@ Deno.serve(async (req) => {
       : ''
 
     // Prompt final = prompt do agente + regras de escalação (UI) + contextos + proteção técnica fixa
-// Data e hora de AGORA em Brasília, com o período do dia já resolvido.
-//
-// Sem isto o modelo não faz ideia da hora e chuta a saudação — foi assim que
-// saiu "Boa tarde" às 08h41. O período vai mastigado (não só o relógio) porque
-// o modelo erra ao converter hora em saudação.
-function agoraBRT(): string {
-  const fmt = new Intl.DateTimeFormat('pt-BR', {
-    timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit',
-    month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-  })
-  const hora = Number(new Intl.DateTimeFormat('pt-BR', {
-    timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false,
-  }).format(new Date()))
-  const periodo = hora < 12 ? 'manhã' : hora < 18 ? 'tarde' : 'noite'
-  const saudacao = hora < 12 ? 'Bom dia' : hora < 18 ? 'Boa tarde' : 'Boa noite'
-  return `Agora em Brasília: ${fmt.format(new Date())} (${periodo}).\n` +
-         `Se for saudar, a saudação correta AGORA é "${saudacao}" — nunca use outra.`
-}
 
     const systemPrompt = (agent?.system_prompt || FALLBACK_SYSTEM_PROMPT)
       + '\n\n' + agoraBRT()
@@ -1304,6 +1305,15 @@ function agoraBRT(): string {
         + 'desse boleto com um atendente e já te retorno. Um momento, por favor. 🙏'
       travouPagamento = true
       shouldEscalate  = true
+    }
+
+    // ── 9b½. Contato para urgências em TODA escalação (migration 086) ─────────
+    // Ponto único em que a decisão de escalar já está tomada — token, frase do
+    // modelo ou trava acima. Só a via do token usa a escalation_message; nas
+    // outras duas o contato sumiria se morasse lá.
+    const contatoUrgencia = String(agent?.contato_urgencia || '').trim()
+    if (shouldEscalate && contatoUrgencia && !messageToSend.includes(contatoUrgencia)) {
+      messageToSend = `${messageToSend}\n\n${contatoUrgencia}`
     }
 
     // ── 9c. ÚLTIMA CHECAGEM ANTES DE ENVIAR ───────────────────────────────────
